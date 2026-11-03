@@ -1,0 +1,485 @@
+use super::*;
+
+type OnEdit = Box<dyn Fn(&mut AppView, &mut Window, &mut Context<AppView>)>;
+
+impl AppView {
+    pub(super) fn rail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.panel_open {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let locked = !self.vault.state().is_unlocked();
+        let query = self.form.line.read(cx).value().trim().to_string();
+        let lowered = query.to_lowercase();
+
+        let sessions: Vec<AnyElement> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| self.session_row(index, tab, cx))
+            .collect();
+
+        let saved: Vec<HostRecord> = self
+            .vault
+            .unlocked()
+            .map(|unlocked| {
+                unlocked
+                    .hosts()
+                    .into_iter()
+                    .map(|entry| entry.host)
+                    .filter(|host| host.matches(&query))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let from_config: Vec<KnownHost> = self
+            .hosts
+            .iter()
+            .filter(|host| {
+                lowered.is_empty()
+                    || host.alias.to_lowercase().contains(&lowered)
+                    || host.detail.to_lowercase().contains(&lowered)
+            })
+            .cloned()
+            .collect();
+
+        let looks_like_address = !query.is_empty() && connect::parse_target(&query).is_ok();
+
+        Some(
+            v_flex()
+                .w(px(self.settings.rail_width))
+                .h_full()
+                .flex_shrink_0()
+                .bg(theme.sidebar)
+                .border_r_1()
+                .border_color(theme.border)
+                .child(
+                    h_flex()
+                        .px_3()
+                        .pt_3()
+                        .pb_2()
+                        .gap_1()
+                        .items_center()
+                        .child(div().flex_1().child(Input::new(&self.form.line).small()))
+                        .child(
+                            Button::new("rail-new-host")
+                                .ghost()
+                                .small()
+                                .icon(Icon::new(IconName::Plus))
+                                .tooltip(if locked {
+                                    "Новый хост (требуется разблокировать хранилище)"
+                                } else {
+                                    "Новый хост"
+                                })
+                                .disabled(locked)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.new_host(window, cx)),
+                                ),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .id("rail-scroll")
+                        .flex_grow()
+                        .min_h(px(0.))
+                        .overflow_y_scrollbar()
+                        .px_2()
+                        .pb_2()
+                        .gap_4()
+                        .when(looks_like_address, |this| {
+                            this.child(self.rail_group(
+                                "Подключиться",
+                                vec![self.address_row(&query, cx)],
+                                cx,
+                            ))
+                        })
+                        .when(!sessions.is_empty(), |this| {
+                            this.child(self.rail_group("Сеансы", sessions, cx))
+                        })
+                        .child(self.rail_group(
+                            "Хосты",
+                            if locked {
+                                vec![self.locked_row(cx)]
+                            } else if saved.is_empty() {
+                                vec![self.empty_row(
+                                    if query.is_empty() {
+                                        "Хосты не добавлены"
+                                    } else {
+                                        "Ничего не нашлось"
+                                    },
+                                    cx,
+                                )]
+                            } else {
+                                saved
+                                    .into_iter()
+                                    .map(|host| self.saved_row(host, cx))
+                                    .collect()
+                            },
+                            cx,
+                        ))
+                        .when(!from_config.is_empty(), |this| {
+                            this.child(
+                                self.rail_group(
+                                    "Из ~/.ssh/config",
+                                    from_config
+                                        .into_iter()
+                                        .map(|host| self.config_row(host, cx))
+                                        .collect(),
+                                    cx,
+                                ),
+                            )
+                        }),
+                )
+                .child(self.rail_footer(cx))
+                .into_any_element(),
+        )
+    }
+
+    fn rail_group(&self, title: &'static str, rows: Vec<AnyElement>, cx: &App) -> AnyElement {
+        v_flex()
+            .gap_px()
+            .child(
+                div().h(px(22.)).px_2().flex().items_center().child(
+                    Label::new(title)
+                        .text_xs()
+                        .font_medium()
+                        .text_color(cx.theme().muted_foreground),
+                ),
+            )
+            .children(rows)
+            .into_any_element()
+    }
+
+    fn rail_row(id: SharedString, selected: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
+        let theme = cx.theme();
+        let (selected_bg, hover_bg) = (theme.secondary_active, theme.secondary_hover);
+        h_flex()
+            .id(id)
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded(px(7.))
+            .when(selected, |this| this.bg(selected_bg))
+            .when(!selected, |this| {
+                this.hover(move |style| style.bg(hover_bg))
+            })
+    }
+
+    fn session_row(&self, index: usize, tab: &SessionTab, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let selected = !self.showing_page && self.active == Some(index);
+        let marker = if tab.is_files() {
+            Icon::empty()
+                .path("icons/folder.svg")
+                .small()
+                .text_color(theme.muted_foreground)
+                .into_any_element()
+        } else if let Some(editor) = tab.editor() {
+            if editor.read(cx).is_dirty() {
+                Self::dot(theme.warning)
+            } else {
+                Icon::empty()
+                    .path("icons/file.svg")
+                    .small()
+                    .text_color(theme.muted_foreground)
+                    .into_any_element()
+            }
+        } else if tab.is_closed(cx) {
+            Self::dot(theme.danger)
+        } else if tab.terminal().is_some_and(|view| {
+            matches!(
+                view.read(cx).status(),
+                crate::ui::terminal::Status::Connecting { .. }
+            )
+        }) {
+            Self::dot(theme.warning)
+        } else {
+            Self::dot(theme.success)
+        };
+
+        Self::rail_row(
+            SharedString::from(format!("rail-tab-{index}")),
+            selected,
+            cx,
+        )
+        .h(px(30.))
+        .child(div().w(px(16.)).flex().justify_center().child(marker))
+        .child(
+            div().flex_1().min_w(px(0.)).overflow_hidden().child(
+                Label::new(tab.title.clone())
+                    .text_sm()
+                    .when(selected, |this| this.font_medium())
+                    .line_clamp(1)
+                    .text_ellipsis(),
+            ),
+        )
+        .child(
+            Button::new(SharedString::from(format!("rail-close-{index}")))
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(IconName::Close))
+                .tooltip("Закрыть")
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    cx.stop_propagation();
+                    this.close_tab(index, cx)
+                })),
+        )
+        .on_mouse_down(
+            MouseButton::Middle,
+            cx.listener(move |this, _, _window, cx| this.close_tab(index, cx)),
+        )
+        .on_click(cx.listener(move |this, _, _window, cx| this.select(index, cx)))
+        .into_any_element()
+    }
+
+    pub(super) fn dot(color: gpui::Hsla) -> AnyElement {
+        div()
+            .size(px(7.))
+            .rounded_full()
+            .bg(color)
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn host_row(
+        &self,
+        id: SharedString,
+        title: String,
+        detail: String,
+        on_open: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        on_files: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        on_edit: Option<OnEdit>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        let files_id = SharedString::from(format!("{id}-files"));
+        let edit_id = SharedString::from(format!("{id}-edit"));
+        Self::rail_row(id, false, cx)
+            .h(px(42.))
+            .child(
+                Icon::empty()
+                    .path("icons/server.svg")
+                    .small()
+                    .text_color(theme.muted_foreground),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .child(
+                        Label::new(SharedString::from(title))
+                            .text_sm()
+                            .line_clamp(1)
+                            .text_ellipsis(),
+                    )
+                    .child(
+                        Label::new(SharedString::from(detail))
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .line_clamp(1)
+                            .text_ellipsis(),
+                    ),
+            )
+            .child(
+                Button::new(files_id)
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::empty().path("icons/folder.svg"))
+                    .tooltip("Файлы (SFTP)")
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        cx.stop_propagation();
+                        on_files(this, cx)
+                    })),
+            )
+            .children(on_edit.map(|on_edit| {
+                Button::new(edit_id)
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::empty().path("icons/pencil.svg"))
+                    .tooltip("Изменить")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        on_edit(this, window, cx)
+                    }))
+            }))
+            .on_click(cx.listener(move |this, _, _window, cx| on_open(this, cx)))
+            .into_any_element()
+    }
+
+    fn saved_row(&self, host: HostRecord, cx: &mut Context<Self>) -> AnyElement {
+        let target = host.target();
+        let (open_target, files_target, edit_target) =
+            (target.clone(), target.clone(), target.clone());
+        self.host_row(
+            SharedString::from(format!("rail-host-{target}")),
+            shorten(&host.title(), ROW_TITLE_CHARS + 6),
+            target.clone(),
+            move |this, cx| this.open_saved(&open_target, cx),
+            move |this, cx| {
+                let credentials = this.saved_credentials(&files_target);
+                this.open_files(&files_target, credentials, cx);
+            },
+            Some(Box::new(move |this, window, cx| {
+                this.edit(&edit_target, window, cx)
+            })),
+            cx,
+        )
+    }
+
+    fn config_row(&self, host: KnownHost, cx: &mut Context<Self>) -> AnyElement {
+        let (open_alias, files_alias) = (host.alias.clone(), host.alias.clone());
+        self.host_row(
+            SharedString::from(format!("rail-config-{}", host.alias)),
+            host.alias.clone(),
+            host.detail.clone(),
+            move |this, cx| this.open(&open_alias, &connect::Credentials::default(), cx),
+            move |this, cx| this.open_files(&files_alias, connect::Credentials::default(), cx),
+            None,
+            cx,
+        )
+    }
+
+    fn address_row(&self, query: &str, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        Self::rail_row("rail-address".into(), false, cx)
+            .h(px(30.))
+            .child(
+                Icon::empty()
+                    .path("icons/square-terminal.svg")
+                    .small()
+                    .text_color(theme.primary),
+            )
+            .child(
+                div().flex_1().min_w(px(0.)).overflow_hidden().child(
+                    Label::new(SharedString::from(format!("ssh {query}")))
+                        .text_sm()
+                        .line_clamp(1)
+                        .text_ellipsis(),
+                ),
+            )
+            .child(
+                Label::new("Enter")
+                    .text_xs()
+                    .text_color(theme.muted_foreground),
+            )
+            .on_click(cx.listener(|this, _, _window, cx| this.quick_connect(cx)))
+            .into_any_element()
+    }
+
+    fn locked_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let (title, hint) = if self.vault.state().is_absent() {
+            ("Хранилище не создано", "Создать хранилище")
+        } else {
+            ("Хранилище заблокировано", "Разблокировать")
+        };
+        Self::rail_row("rail-locked".into(), false, cx)
+            .h(px(42.))
+            .child(
+                Icon::empty()
+                    .path("icons/lock.svg")
+                    .small()
+                    .text_color(theme.muted_foreground),
+            )
+            .child(
+                v_flex().child(Label::new(title).text_sm()).child(
+                    Label::new(hint)
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                ),
+            )
+            .on_click(cx.listener(|this, _, _window, cx| this.go(Section::Hosts, cx)))
+            .into_any_element()
+    }
+
+    fn empty_row(&self, text: &'static str, cx: &App) -> AnyElement {
+        div()
+            .px_2()
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .child(
+                Label::new(text)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .into_any_element()
+    }
+
+    fn rail_footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let unlocked = self.vault.state().is_unlocked();
+        let nav = |id: &'static str, icon: Icon, tip: &'static str, section: Section| {
+            Button::new(id)
+                .ghost()
+                .small()
+                .icon(icon)
+                .tooltip(tip)
+                .selected(self.showing_page && self.section == section)
+                .on_click(cx.listener(move |this, _, _window, cx| this.go(section, cx)))
+        };
+        h_flex()
+            .px_2()
+            .py_2()
+            .gap_1()
+            .items_center()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(nav(
+                "rail-keys",
+                Icon::empty().path("icons/key-round.svg"),
+                "Ключи",
+                Section::Keys,
+            ))
+            .child(nav(
+                "rail-proxies",
+                Icon::empty().path("icons/route.svg"),
+                "Прокси",
+                Section::Proxies,
+            ))
+            .child(nav(
+                "rail-snippets",
+                Icon::empty().path("icons/square-terminal.svg"),
+                "Сниппеты",
+                Section::Snippets,
+            ))
+            .child(nav(
+                "rail-settings",
+                Icon::new(IconName::Settings),
+                "Настройки",
+                Section::Settings,
+            ))
+            .child(div().flex_grow())
+            .child(
+                Button::new("rail-vault")
+                    .ghost()
+                    .small()
+                    .icon(
+                        Icon::empty()
+                            .path(if unlocked {
+                                "icons/lock-open.svg"
+                            } else {
+                                "icons/lock.svg"
+                            })
+                            .text_color(if unlocked {
+                                theme.success
+                            } else {
+                                theme.muted_foreground
+                            }),
+                    )
+                    .tooltip(if unlocked {
+                        "Заблокировать хранилище"
+                    } else {
+                        "Разблокировать хранилище"
+                    })
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        if unlocked {
+                            this.lock_vault(cx);
+                        } else {
+                            this.go(Section::Hosts, cx);
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+}

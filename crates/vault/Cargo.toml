@@ -1,0 +1,24 @@
+[package]
+name = "vault"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Криптоядро: иерархия ключей, обёртки Data Key, шифрование записей"
+
+# Зависимостей от UI, сети и файловой системы здесь нет и не должно появиться:
+# это условие того, что крейт тестируется без единого мока. Из std берётся
+# только `std::time` (калибровка Argon2id) и `alloc`.
+[dependencies]
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+hkdf = "0.13.0"
+sha2 = { version = "0.11.0", default-features = false }
+# Единственный источник случайности в крейте — CSPRNG операционной системы.
+# `rand_core` 0.10 больше не поставляет `OsRng`; его место занял `getrandom`.
+getrandom = { version = "0.4.3", default-features = false }
+secrecy = "0.10.3"
+subtle = "2.6.1"
+zeroize = { version = "1.9.0", features = ["derive", "alloc"] }
+
+[dev-dependencies]
+hex-literal = "1.0"

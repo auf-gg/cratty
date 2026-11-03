@@ -1,0 +1,19 @@
+[package]
+name = "proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Типы записей, сериализация и версионирование формата хранилища"
+
+# Как и `vault`, не знает ни про UI, ни про сеть, ни про файловую систему:
+# здесь только байты и их смысл. Куда эти байты лягут — дело слоя приложения
+# (локальный каталог) и `sync` (папка или сервер).
+[dependencies]
+vault = { path = "../vault" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+getrandom = { version = "0.4.3", default-features = false }
+# Сравнение секретов за постоянное время и затирание открытого текста
+# записи после шифрования.
+subtle = "2.6.1"
+zeroize = "1.9.0"

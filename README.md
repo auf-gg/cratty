@@ -20,7 +20,7 @@ The user interface is currently available in Russian only.
 
 ### Connections
 
-- Saved hosts, quick connect by address (`user@host:port`), and import of hosts from `~/.ssh/config`, including `ProxyJump`.
+- Saved hosts and quick connect by address (`user@host:port`). Hosts from `~/.ssh/config` are not loaded automatically: import them into a chosen vault from its menu (**Import from ~/.ssh/config**), including `ProxyJump`.
 - Authentication with SSH agent keys, keys from `~/.ssh`, a specific key file, or a password.
 - Host key verification against `~/.ssh/known_hosts`, with confirmation on first connect and a warning when a key changes.
 
@@ -41,8 +41,9 @@ The user interface is currently available in Russian only.
 
 ### Vault
 
+- Several vaults can exist and be unlocked at the same time. Create and delete them from the sidebar; each vault has its own password, recovery code, lock state and sync folder, and the sidebar groups hosts by vault.
 - Hosts, keys, passwords and proxies are stored in an encrypted vault. The key is derived from the master password with Argon2id; records are encrypted with ChaCha20-Poly1305.
-- A recovery code in case the master password is lost.
+- A 24-word BIP39 recovery phrase (English wordlist) in case the master password is lost; 12-word phrases and legacy recovery codes (`XXXX-XXXX-…`) are still accepted.
 - Optional passwordless unlock through the OS credential store: Keychain (macOS), Credential Manager (Windows), Secret Service (Linux).
 - Automatic lock after inactivity and after the computer resumes from sleep.
 - Built-in SSH agent that serves keys from the vault.
@@ -92,7 +93,7 @@ cratty user@host:2222   # open the window and connect immediately
 
 | | Windows | Linux | macOS |
 | --- | --- | --- | --- |
-| Vault | `%APPDATA%\cratty\vault` | `$XDG_DATA_HOME/cratty/vault`<br>(`~/.local/share/cratty/vault`) | `~/.local/share/cratty/vault` |
+| Vaults | `%APPDATA%\cratty\vaults.json` (list), `%APPDATA%\cratty\vault` (first), `%APPDATA%\cratty\vaults\<id>` (others) | `$XDG_DATA_HOME/cratty/vaults.json` (list), `…/cratty/vault` (first), `…/cratty/vaults/<id>` (others)<br>(`~/.local/share/cratty/…`) | `~/.local/share/cratty/vaults.json`, `…/vault`, `…/vaults/<id>` |
 | Settings | `%APPDATA%\cratty\settings.json` | `$XDG_CONFIG_HOME/cratty/settings.json`<br>(`~/.config/cratty/settings.json`) | `~/.config/cratty/settings.json` |
 
 The exact paths are shown in the app under Settings → General → Data locations («Настройки → Общие → Расположение данных»).

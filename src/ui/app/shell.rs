@@ -85,7 +85,7 @@ impl AppView {
                                 div()
                                     .flex()
                                     .flex_row()
-                                    .flex_grow()
+                                    .flex_grow_1()
                                     .min_h(px(0.))
                                     .child(
                                         div()
@@ -134,7 +134,7 @@ impl AppView {
             .size_full()
             .child(
                 div()
-                    .flex_grow()
+                    .flex_grow_1()
                     .min_h(px(0.))
                     .overflow_hidden()
                     .child(content),
@@ -178,7 +178,7 @@ impl AppView {
             .child(
                 div()
                     .id(SharedString::from(format!("page-{title}")))
-                    .flex_grow()
+                    .flex_grow_1()
                     .min_h(px(0.))
                     .overflow_y_scrollbar()
                     .px_6()
@@ -203,7 +203,9 @@ impl AppView {
             .size_full()
             .items_center()
             .justify_center()
+            .gap_3()
             .p_6()
+            .children(self.vault_picker(cx))
             .child(
                 v_flex()
                     .w(px(460.))
@@ -225,7 +227,7 @@ impl AppView {
             cx.notify();
             return;
         }
-        self.open(&raw, &connect::Credentials::default(), cx);
+        self.open(&raw, &connect::Credentials::default(), None, cx);
     }
 
     fn quick_files(&mut self, cx: &mut Context<Self>) {
@@ -235,7 +237,7 @@ impl AppView {
             cx.notify();
             return;
         }
-        self.open_files(&raw, connect::Credentials::default(), cx);
+        self.open_files(&raw, connect::Credentials::default(), None, cx);
     }
 
     pub(super) fn new_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -249,6 +251,14 @@ impl AppView {
         ] {
             input.update(cx, |state, cx| state.set_value("", window, cx));
         }
+        self.form.vault = if self.vault().state().is_unlocked() {
+            self.current_id()
+        } else {
+            self.unlocked_slots()
+                .next()
+                .map(|slot| slot.id.clone())
+                .unwrap_or_else(|| self.current_id())
+        };
         self.form.editing = None;
         self.form.auth = HostAuth::Auto;
         self.form.via.clear();
@@ -285,7 +295,7 @@ impl AppView {
                 .rounded(px(7.))
                 .hover(|style| style.bg(theme.secondary_hover))
                 .child(icon.small().text_color(theme.muted_foreground))
-                .child(Label::new(label).text_sm().flex_grow())
+                .child(Label::new(label).text_sm().flex_grow_1())
                 .child(
                     Label::new(hint)
                         .text_xs()
@@ -380,12 +390,11 @@ impl AppView {
             .into_any_element()
     }
 
-    pub(super) fn saved_credentials(&self, target: &str) -> connect::Credentials {
-        self.vault
-            .unlocked()
+    pub(super) fn saved_credentials(&self, vault: &str, target: &str) -> connect::Credentials {
+        self.unlocked_of(vault)
             .and_then(|unlocked| unlocked.find_by_target(target))
             .map(|entry| {
-                let (via, proxy_error) = self.resolve_chain(&entry.host.via);
+                let (via, proxy_error) = self.resolve_chain(vault, &entry.host.via);
                 connect::Credentials {
                     auth: entry.host.auth.clone(),
                     password: None,
@@ -399,11 +408,55 @@ impl AppView {
             .unwrap_or_default()
     }
 
+    fn form_vault_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let muted = cx.theme().muted_foreground;
+        let unlocked: Vec<(String, String)> = self
+            .unlocked_slots()
+            .map(|slot| (slot.id.clone(), slot.name.clone()))
+            .collect();
+        if unlocked.len() < 2 && self.listed().count() < 2 {
+            return None;
+        }
+
+        let editing = self.form.editing.is_some();
+        Some(
+            v_flex()
+                .gap_1()
+                .child(Self::field_label("Хранилище", muted))
+                .child(if editing {
+                    Label::new(SharedString::from(self.vault_name(&self.form.vault)))
+                        .text_sm()
+                        .into_any_element()
+                } else {
+                    h_flex()
+                        .gap_1()
+                        .flex_wrap()
+                        .children(unlocked.into_iter().map(|(id, name)| {
+                            let selected = self.form.vault == id;
+                            let pick = id.clone();
+                            Button::new(SharedString::from(format!("form-vault-{id}")))
+                                .ghost()
+                                .small()
+                                .selected(selected)
+                                .label(SharedString::from(shorten(&name, ROW_TITLE_CHARS)))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.form.via.clear();
+                                    this.form.vault = pick.clone();
+                                    cx.notify();
+                                }))
+                        }))
+                        .into_any_element()
+                })
+                .into_any_element(),
+        )
+    }
+
     fn editor_drawer(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let existing = self.form.editing.clone();
         let editing = existing.is_some();
 
+        let vault_pick = self.form_vault_block(cx);
         let form_fields = self.form_fields(cx);
         let auth_switch = self.auth_switch(cx);
         let auth_fields = self.auth_fields(cx);
@@ -447,12 +500,13 @@ impl AppView {
                     .child(
                         v_flex()
                             .id("editor-body")
-                            .flex_grow()
+                            .flex_grow_1()
                             .min_h(px(0.))
                             .overflow_y_scrollbar()
                             .px_4()
                             .py_3()
                             .gap_3()
+                            .children(vault_pick)
                             .child(Label::new("Сервер").text_sm().font_semibold())
                             .child(form_fields)
                             .child(Self::drawer_group(
@@ -506,14 +560,15 @@ impl AppView {
                                         }
                                     })),
                             )
-                            .child(div().flex_grow())
+                            .child(div().flex_grow_1())
                             .children(existing.map(|target| {
+                                let vault = self.form.vault.clone();
                                 Button::new("editor-delete")
                                     .ghost()
                                     .icon(Icon::new(IconName::Delete))
                                     .label("Удалить")
                                     .on_click(cx.listener(move |this, _, _window, cx| {
-                                        this.forget(&target, cx);
+                                        this.forget(&vault, &target, cx);
                                         if this.error.is_none() {
                                             this.editor_open = false;
                                         }

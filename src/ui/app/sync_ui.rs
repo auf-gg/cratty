@@ -3,33 +3,36 @@ use super::*;
 impl AppView {
     pub(super) fn apply_sync_folder(&mut self, cx: &mut Context<Self>) {
         let typed = self.sync_input.read(cx).value().trim().to_string();
-        self.settings.sync_folder = typed;
-        if let Err(error) = settings::save(&self.settings) {
-            self.error = Some(SharedString::from(format!("{error:#}")));
-        }
+        let id = self.current_id();
+        self.vaults[self.current].sync_folder = typed;
+        self.save_registry();
         self.sync_status = None;
         self.sync_error = None;
 
-        self.start_sync_watch(cx);
-        if self.settings.sync_folder().is_some() {
-            self.sync_now(cx);
+        self.start_sync_watch(&id, cx);
+        if self.vaults[self.current].sync_path().is_some() {
+            self.sync_now(&id, cx);
         }
         cx.notify();
     }
 
-    pub(super) fn sync_now(&mut self, cx: &mut Context<Self>) {
-        if self.syncing {
+    pub(super) fn sync_now(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.syncing.contains(id) {
             return;
         }
-        let Some(unlocked) = self.vault.unlocked() else {
+        let Some(ix) = self.vault_ix(id) else {
+            return;
+        };
+        let slot = &self.vaults[ix];
+        let Some(unlocked) = slot.session.unlocked() else {
             return;
         };
 
-        let Some(path) = self.settings.sync_folder() else {
+        let Some(path) = slot.sync_path() else {
             return;
         };
 
-        let store = VaultStore::new(self.vault.store().root().to_path_buf());
+        let store = VaultStore::new(slot.root());
         let vault_id = unlocked.vault_id().clone();
         let records = match unlocked.records_for_push(&store) {
             Ok(records) => records,
@@ -56,25 +59,35 @@ impl AppView {
             outcome
         });
 
-        self.syncing = true;
+        self.syncing.insert(id.to_owned());
         self.sync_error = None;
         cx.notify();
 
-        self.sync_task = Some(cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
-            let outcome = exchange.await;
-            this.update(cx, |this, cx| this.finish_sync(outcome, cx))
-                .ok();
-        }));
+        let id = id.to_owned();
+        let task = cx.spawn({
+            let id = id.clone();
+            async move |this: gpui_kit::WeakEntity<Self>, cx| {
+                let outcome = exchange.await;
+                this.update(cx, |this, cx| this.finish_sync(&id, outcome, cx))
+                    .ok();
+            }
+        });
+        self.sync_tasks.insert(id, task);
     }
 
-    pub(super) fn finish_sync(&mut self, outcome: SyncOutcome, cx: &mut Context<Self>) {
-        self.syncing = false;
+    pub(super) fn finish_sync(&mut self, id: &str, outcome: SyncOutcome, cx: &mut Context<Self>) {
+        self.syncing.remove(id);
 
-        let store = VaultStore::new(self.vault.store().root().to_path_buf());
-        let Some(unlocked) = self.vault.unlocked_mut() else {
-            self.sync_error = Some(SharedString::from(
-                "Хранилище было заблокировано во время синхронизации.",
-            ));
+        let Some(ix) = self.vault_ix(id) else {
+            return;
+        };
+        let store = VaultStore::new(self.vaults[ix].root());
+        let Some(unlocked) = self.vaults[ix].session.unlocked_mut() else {
+            if ix == self.current {
+                self.sync_error = Some(SharedString::from(
+                    "Хранилище было заблокировано во время синхронизации.",
+                ));
+            }
             cx.notify();
             return;
         };
@@ -85,27 +98,33 @@ impl AppView {
         troubles.extend(outcome.broken);
         troubles.extend(report.broken.iter().cloned());
 
-        self.sync_status = Some(SharedString::from(format!(
-            "Получено записей: {}, локальные новее: {}",
-            report.applied, report.kept
-        )));
-        self.sync_error = troubles.first().map(|first| {
-            SharedString::from(if troubles.len() == 1 {
-                first.clone()
-            } else {
-                format!("{first} (и ещё {})", troubles.len() - 1)
-            })
-        });
+        if ix == self.current {
+            self.sync_status = Some(SharedString::from(format!(
+                "Получено записей: {}, локальные новее: {}",
+                report.applied, report.kept
+            )));
+            self.sync_error = troubles.first().map(|first| {
+                SharedString::from(if troubles.len() == 1 {
+                    first.clone()
+                } else {
+                    format!("{first} (и ещё {})", troubles.len() - 1)
+                })
+            });
+        }
         cx.notify();
     }
 
-    pub(super) fn start_sync_watch(&mut self, cx: &mut Context<Self>) {
-        self.sync_watch = None;
+    pub(super) fn start_sync_watch(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.sync_watches.remove(id);
 
-        let Some(path) = self.settings.sync_folder() else {
+        let Some(ix) = self.vault_ix(id) else {
             return;
         };
-        let Some(vault_id) = self.vault.unlocked().map(|u| u.vault_id().clone()) else {
+        let slot = &self.vaults[ix];
+        let Some(path) = slot.sync_path() else {
+            return;
+        };
+        let Some(vault_id) = slot.session.unlocked().map(|u| u.vault_id().clone()) else {
             return;
         };
         let Ok(backend) = sync::FolderBackend::open(path, &vault_id) else {
@@ -114,16 +133,21 @@ impl AppView {
         use sync::VaultBackend as _;
 
         let mut changes = backend.watch();
-        self.sync_watch = Some(cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
-            drop(backend);
-            while changes.next().await.is_some() {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(300))
-                    .await;
-                if this.update(cx, |this, cx| this.sync_now(cx)).is_err() {
-                    return;
+        let id = id.to_owned();
+        let watch = cx.spawn({
+            let id = id.clone();
+            async move |this: gpui_kit::WeakEntity<Self>, cx| {
+                drop(backend);
+                while changes.next().await.is_some() {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(300))
+                        .await;
+                    if this.update(cx, |this, cx| this.sync_now(&id, cx)).is_err() {
+                        return;
+                    }
                 }
             }
-        }));
+        });
+        self.sync_watches.insert(id, watch);
     }
 }

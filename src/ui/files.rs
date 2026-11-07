@@ -3,11 +3,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use gpui::{
-    AnyElement, Context, Entity, ExternalPaths, Focusable, IntoElement, Modifiers, MouseButton,
-    MouseDownEvent, Render, SharedString, Subscription, Window, div, prelude::*, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
@@ -15,6 +11,10 @@ use gpui_component::{
     label::Label,
     scroll::ScrollableElement,
     v_flex,
+};
+use gpui_kit::{
+    AnyElement, Context, Entity, ExternalPaths, Focusable, IntoElement, Modifiers, MouseButton,
+    MouseDownEvent, Render, SharedString, Subscription, Window, div, prelude::*, px,
 };
 
 use crate::ssh::sftp::{self, FromSftp, RemoteEntry, SftpHandle, ToSftp, TransferId};
@@ -167,10 +167,10 @@ pub enum FilesEvent {
     },
 }
 
-impl gpui::EventEmitter<FilesEvent> for FilesView {}
+impl gpui_kit::EventEmitter<FilesEvent> for FilesView {}
 
 pub struct FilesView {
-    _pump: gpui::Task<()>,
+    _pump: gpui_kit::Task<()>,
     handle: Option<SftpHandle>,
     config: Option<SshConfig>,
     compact: bool,
@@ -213,7 +213,7 @@ impl FilesView {
     fn blank(title: SharedString, config: Option<SshConfig>, compact: bool) -> Self {
         let local_path = home_dir();
         let mut this = Self {
-            _pump: gpui::Task::ready(()),
+            _pump: gpui_kit::Task::ready(()),
             handle: None,
             config,
             compact,
@@ -268,7 +268,7 @@ impl FilesView {
             std::mem::replace(&mut handle.events, futures::channel::mpsc::channel(0).1);
         self.handle = Some(handle);
 
-        self._pump = cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        self._pump = cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             use futures::StreamExt;
             while let Some(event) = events.next().await {
                 let mut batch = vec![event];
@@ -321,7 +321,7 @@ impl FilesView {
             reply,
         });
         self.remote_error = None;
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             let result = answer.await;
             let _ = this.update(cx, |this, cx| {
                 match result {
@@ -356,13 +356,13 @@ impl FilesView {
         if entries.is_empty() {
             return;
         }
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+        let receiver = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
             prompt: Some("Скачать сюда".into()),
         });
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await
                 && let Some(dir) = paths.into_iter().next()
             {
@@ -732,13 +732,13 @@ impl FilesView {
     }
 
     fn pick_and_upload(&mut self, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+        let receiver = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
             files: true,
             directories: true,
             multiple: true,
             prompt: Some("Загрузить на сервер".into()),
         });
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await {
                 let _ = this.update(cx, |this, cx| this.upload(paths, cx));
             }
@@ -805,7 +805,7 @@ impl FilesView {
             state.set_value(initial, window, cx);
             state
         });
-        window.focus(&state.focus_handle(cx));
+        window.focus(&state.focus_handle(cx), cx);
         self._dialog_subscription =
             Some(cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
@@ -1238,7 +1238,7 @@ impl FilesView {
                                 .child(Label::new(arrow).text_sm())
                                 .child(
                                     v_flex()
-                                        .flex_grow()
+                                        .flex_grow_1()
                                         .min_w(px(0.))
                                         .gap_px()
                                         .child(
@@ -1273,7 +1273,7 @@ impl FilesView {
                                                             }
                                                             _ => theme.primary,
                                                         })
-                                                        .w(gpui::relative(fraction)),
+                                                        .w(gpui_kit::relative(fraction)),
                                                 ),
                                         ),
                                 )
@@ -1377,7 +1377,7 @@ impl FilesView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::black().opacity(0.4))
+                .bg(gpui_kit::black().opacity(0.4))
                 .child(
                     v_flex()
                         .w(px(440.))
@@ -1524,7 +1524,7 @@ impl Render for FilesView {
                         div()
                             .flex()
                             .flex_row()
-                            .flex_grow()
+                            .flex_grow_1()
                             .min_h(px(0.))
                             .gap_2()
                             .p_2()
@@ -1556,12 +1556,12 @@ fn pane(
     title: &'static str,
     icon: &'static str,
     path: Option<Entity<InputState>>,
-    theme: &gpui_component::Theme,
+    theme: &gpui_kit::component::Theme,
     toolbar: AnyElement,
     error: Option<SharedString>,
     rows: Vec<AnyElement>,
     empty: bool,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     v_flex()
         .size_full()
         .rounded_lg()
@@ -1600,7 +1600,7 @@ fn pane(
         .child(
             v_flex()
                 .id(SharedString::from(format!("{title}-rows")))
-                .flex_grow()
+                .flex_grow_1()
                 .overflow_y_scrollbar()
                 .children(rows)
                 .when(empty, |this| {
@@ -1615,7 +1615,10 @@ fn pane(
         )
 }
 
-fn up_row(id: &'static str, theme: &gpui_component::Theme) -> gpui::Stateful<gpui::Div> {
+fn up_row(
+    id: &'static str,
+    theme: &gpui_kit::component::Theme,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     h_flex()
         .id(id)
         .px_3()
@@ -1623,7 +1626,7 @@ fn up_row(id: &'static str, theme: &gpui_component::Theme) -> gpui::Stateful<gpu
         .gap_2()
         .items_center()
         .border_l_2()
-        .border_color(gpui::transparent_black())
+        .border_color(gpui_kit::transparent_black())
         .hover(|style| style.bg(theme.list_hover))
         .child(
             Icon::empty()
@@ -1641,8 +1644,8 @@ fn row(
     size: String,
     modified: String,
     selected: bool,
-    theme: &gpui_component::Theme,
-) -> gpui::Stateful<gpui::Div> {
+    theme: &gpui_kit::component::Theme,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     h_flex()
         .id(id)
         .px_3()
@@ -1653,7 +1656,7 @@ fn row(
         .border_color(if selected {
             theme.list_active_border
         } else {
-            gpui::transparent_black()
+            gpui_kit::transparent_black()
         })
         .when(selected, |this| this.bg(theme.list_active))
         .when(!selected, |this| {
@@ -1675,7 +1678,7 @@ fn row(
         )
         .child(
             div()
-                .flex_grow()
+                .flex_grow_1()
                 .min_w(px(0.))
                 .overflow_hidden()
                 .text_sm()

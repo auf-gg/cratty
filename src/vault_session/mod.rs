@@ -1215,6 +1215,30 @@ mod tests {
     }
 
     #[test]
+    fn hranilishche_otkryvaetsya_frazoy_iz_slov_bip39_kak_ona_vvedena() {
+        use vault::secrecy::ExposeSecret;
+
+        let mut session = session("mnemonic");
+        let code = session
+            .create_for_tests("забытый".as_bytes(), params(), Vec::new())
+            .expect("создание");
+        let words = std::str::from_utf8(code.format_for_user().expose_secret())
+            .expect("ASCII")
+            .to_uppercase()
+            .replace(' ', "  ");
+        assert_eq!(words.split_whitespace().count(), 24);
+        session.lock(None);
+
+        let typed = RecoveryCode::parse(words.as_bytes()).expect("разбор");
+        session
+            .unlock_with_recovery_code(&typed)
+            .expect("разблокировка фразой");
+        assert!(session.state().is_unlocked());
+
+        cleanup(&session);
+    }
+
+    #[test]
     fn povtornoe_sohranenie_hosta_ne_plodit_zapisi() {
         let mut session = session("upsert");
         session

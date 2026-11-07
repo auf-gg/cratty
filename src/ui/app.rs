@@ -1,9 +1,4 @@
-use gpui::{
-    AnyElement, App, Bounds, Context, Entity, Focusable, KeyBinding, MouseButton, NoAction, Render,
-    Result, SharedString, Subscription, Window, WindowBounds, WindowOptions, actions, div, img,
-    prelude::*, px, size,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
@@ -11,6 +6,11 @@ use gpui_component::{
     label::Label,
     scroll::ScrollableElement,
     v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, Bounds, Context, Entity, Focusable, KeyBinding, MouseButton, NoAction, Render,
+    Result, SharedString, Subscription, Window, WindowBounds, WindowOptions, actions, div, img,
+    prelude::*, px, size,
 };
 
 mod keys_ui;
@@ -25,12 +25,14 @@ mod shell;
 mod snippets_ui;
 mod sync_ui;
 mod vault_flow;
+mod vaults;
 
 use crate::agent as ssh_agent;
 use crate::keychain::OsKeychain;
-use crate::ssh::{PtySize, spawn_ssh};
+use crate::ssh::{PtySize, spawn_local, spawn_ssh};
+use crate::store::registry;
 use crate::store::{VaultStore, migrate};
-use crate::ui::connect::{self, HostSettings, KeyEntry, KnownHost, Target};
+use crate::ui::connect::{self, HostSettings, KeyEntry, Target};
 use crate::ui::settings::{self, Settings};
 use crate::ui::terminal::{TerminalEvent, TerminalView};
 use crate::ui::vault_ui::{self, Stage};
@@ -38,6 +40,7 @@ use crate::vault_session::StoredKey;
 use crate::vault_session::VaultSession;
 use futures::StreamExt;
 use proto::{HostAuth, HostRecord};
+use vaults::VaultSlot;
 use zeroize::Zeroize;
 
 actions!(app, [Quit, NewTab, CloseTab, NextTab, PrevTab, TogglePanel]);
@@ -76,15 +79,19 @@ struct EdgeDrag;
 
 impl Render for EdgeDrag {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        gpui::Empty
+        gpui_kit::Empty
     }
 }
 
 struct SessionTab {
     title: SharedString,
+    vault: Option<String>,
     kind: TabKind,
     request: connect::Request,
     credentials: connect::Credentials,
+    /// Локальная вкладка без хранилища: переподключается в новый PTY,
+    /// а не по SSH-адресу из `request`.
+    local: bool,
 }
 
 enum TabKind {
@@ -162,33 +169,38 @@ pub struct AppView {
     snippet_form: snippets_ui::SnippetForm,
     snippets_open: bool,
     split_menu: bool,
-    auto_unlock: bool,
     _subscriptions: Vec<Subscription>,
 
-    vault: VaultSession,
+    vaults: Vec<VaultSlot>,
+    current: usize,
+    registry_file: Option<std::path::PathBuf>,
+    base_dir: Option<std::path::PathBuf>,
+    os_unlocking: Vec<String>,
+    os_tasks: Vec<gpui_kit::Task<()>>,
+    confirm_delete: Option<String>,
+    import_notice: Option<SharedString>,
     stage: Option<Stage>,
     vault_form: VaultForm,
     pending_import: Vec<HostRecord>,
     vault_warnings: Vec<SharedString>,
-    autolock_task: Option<gpui::Task<()>>,
+    autolock_task: Option<gpui_kit::Task<()>>,
     vault_error: Option<SharedString>,
     reveal: Option<Reveal>,
-    stored_rejected: Option<String>,
+    stored_rejected: Option<Rejected>,
     vault_busy: bool,
-    vault_task: Option<gpui::Task<()>>,
-    hosts: Vec<KnownHost>,
+    vault_task: Option<gpui_kit::Task<()>>,
     keys: Vec<KeyEntry>,
     agent: Option<ssh_agent::Running>,
-    agent_task: Option<gpui::Task<()>>,
+    agent_task: Option<gpui_kit::Task<()>>,
     agent_error: Option<SharedString>,
     sign_queue: std::collections::VecDeque<PendingSign>,
     importing: Option<PendingImport>,
     sync_input: Entity<InputState>,
     sync_status: Option<SharedString>,
     sync_error: Option<SharedString>,
-    syncing: bool,
-    sync_task: Option<gpui::Task<()>>,
-    sync_watch: Option<gpui::Task<()>>,
+    syncing: std::collections::HashSet<String>,
+    sync_tasks: std::collections::HashMap<String, gpui_kit::Task<()>>,
+    sync_watches: std::collections::HashMap<String, gpui_kit::Task<()>>,
     settings: Settings,
     error: Option<SharedString>,
 }
@@ -216,20 +228,37 @@ struct PendingImport {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Reveal {
-    Confirming { target: String, copy: bool },
-    Showing { target: String, text: SharedString },
+    Confirming {
+        vault: String,
+        target: String,
+        copy: bool,
+    },
+    Showing {
+        vault: String,
+        target: String,
+        text: SharedString,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Rejected {
+    vault: Option<String>,
+    target: String,
 }
 
 struct VaultForm {
+    name: Entity<InputState>,
     password: Entity<InputState>,
     repeat: Entity<InputState>,
     code: Entity<InputState>,
     passphrase: Entity<InputState>,
     import: bool,
+    remember: bool,
     notice: Option<SharedString>,
 }
 
 struct Form {
+    vault: String,
     editing: Option<String>,
     line: Entity<InputState>,
     label: Entity<InputState>,
@@ -294,7 +323,8 @@ impl AppView {
                 .placeholder("Повторите мастер-пароль")
                 .masked(true)
         });
-        let vault_code = field("XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-X", cx, window);
+        let vault_code = field("12 или 24 слова через пробел", cx, window);
+        let vault_name = field("Например, Работа", cx, window);
         let sync_input = field("Путь к общей папке", cx, window);
         let key_passphrase = cx.new(|cx| {
             InputState::new(window, cx)
@@ -302,7 +332,7 @@ impl AppView {
                 .masked(true)
         });
 
-        for input in [&vault_password, &vault_repeat, &vault_code] {
+        for input in [&vault_password, &vault_repeat, &vault_code, &vault_name] {
             subscriptions.push(cx.subscribe_in(
                 input,
                 window,
@@ -314,25 +344,37 @@ impl AppView {
             ));
         }
 
-        let settings = settings::load();
+        let mut settings = settings::load();
         let (legacy_path, pending_import) = VaultSession::legacy_hosts();
         let _ = legacy_path;
 
-        let vault_warnings: Vec<SharedString> = crate::platform::harden_process()
+        let mut vault_warnings: Vec<SharedString> = crate::platform::harden_process()
             .into_iter()
             .map(SharedString::from)
             .collect();
 
-        let store = VaultStore::new(
-            VaultStore::default_root().unwrap_or_else(|| std::path::PathBuf::from("vault")),
+        let base_dir = VaultStore::default_base();
+        let registry_file = base_dir.as_ref().map(|base| base.join(registry::FILE_NAME));
+        let legacy_root =
+            VaultStore::default_root().unwrap_or_else(|| std::path::PathBuf::from("vault"));
+        let entries = Self::load_registry(
+            registry_file.as_deref(),
+            &legacy_root,
+            &mut settings,
+            &mut vault_warnings,
         );
-        let vault = VaultSession::open(store, settings.autolock_timeout());
 
-        let stage = if vault.state().is_absent() {
-            Some(Stage::Create)
-        } else {
-            Some(Stage::Unlock)
-        };
+        let timeout = settings.autolock_timeout();
+        let mut vaults: Vec<VaultSlot> = entries
+            .into_iter()
+            .map(|entry| VaultSlot {
+                id: entry.id,
+                name: entry.name,
+                sync_folder: entry.sync_folder,
+                draft: false,
+                session: VaultSession::open(VaultStore::new(entry.path), timeout),
+            })
+            .collect();
 
         let mut this = Self {
             tabs: Vec::new(),
@@ -345,6 +387,7 @@ impl AppView {
             editor_open: false,
             settings_tab: SettingsTab::General,
             form: Form {
+                vault: String::new(),
                 editing: None,
                 line,
                 label,
@@ -362,16 +405,24 @@ impl AppView {
             snippet_form,
             snippets_open: false,
             split_menu: false,
-            auto_unlock: false,
             _subscriptions: subscriptions,
-            vault,
-            stage,
+            vaults: Vec::new(),
+            current: 0,
+            registry_file,
+            base_dir,
+            os_unlocking: Vec::new(),
+            os_tasks: Vec::new(),
+            confirm_delete: None,
+            import_notice: None,
+            stage: None,
             vault_form: VaultForm {
+                name: vault_name,
                 password: vault_password,
                 repeat: vault_repeat,
                 code: vault_code,
                 passphrase: key_passphrase,
-                import: !pending_import.is_empty(),
+                import: false,
+                remember: false,
                 notice: None,
             },
             pending_import,
@@ -382,7 +433,6 @@ impl AppView {
             stored_rejected: None,
             vault_busy: false,
             vault_task: None,
-            hosts: connect::list_known_hosts(),
             keys: connect::list_keys(),
             agent: None,
             agent_task: None,
@@ -392,20 +442,33 @@ impl AppView {
             sync_input,
             sync_status: None,
             sync_error: None,
-            syncing: false,
-            sync_task: None,
-            sync_watch: None,
+            syncing: std::collections::HashSet::new(),
+            sync_tasks: std::collections::HashMap::new(),
+            sync_watches: std::collections::HashMap::new(),
             settings,
             error: None,
         };
 
-        let folder = this.settings.sync_folder.clone();
+        if vaults.is_empty() {
+            vaults.push(this.make_draft(registry::FIRST_VAULT_NAME));
+        }
+        this.vaults = vaults;
+        this.form.vault = this.vaults[0].id.clone();
+        this.stage = this.stage_for(0);
+        this.vault_form.import = !this.import_pending().is_empty();
+        if this.vaults[0].draft {
+            let name = this.vaults[0].name.clone();
+            this.vault_form
+                .name
+                .update(cx, |state, cx| state.set_value(name, window, cx));
+        }
+        let folder = this.vaults[0].sync_folder.clone();
         if !folder.is_empty() {
             this.sync_input
                 .update(cx, |state, cx| state.set_value(&folder, window, cx));
         }
 
-        this.autolock_task = Some(cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        this.autolock_task = Some(cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(30))
@@ -416,13 +479,18 @@ impl AppView {
             }
         }));
 
-        if matches!(this.stage, Some(Stage::Unlock)) && this.vault.has_os_key() {
-            this.auto_unlock = true;
-            this.unlock_with_os_key(cx);
+        let startup: Vec<String> = this
+            .vaults
+            .iter()
+            .filter(|slot| slot.session.account().is_some() && slot.session.has_os_key())
+            .map(|slot| slot.id.clone())
+            .collect();
+        for id in startup {
+            this.unlock_with_os_key_for(&id, false, cx);
         }
 
         if let Some(raw) = std::env::args().nth(1) {
-            this.open(&raw, &connect::Credentials::default(), cx);
+            this.open(&raw, &connect::Credentials::default(), None, cx);
         }
 
         this
@@ -469,7 +537,7 @@ impl AppView {
             target.push_str(&port);
         }
 
-        let (via, proxy_error) = self.resolve_chain(&self.form.via);
+        let (via, proxy_error) = self.resolve_chain(&self.form.vault, &self.form.via);
         Ok((
             target,
             connect::Credentials {
@@ -486,7 +554,10 @@ impl AppView {
 
     fn connect_from_form(&mut self, cx: &mut Context<Self>) {
         match self.read_form(cx) {
-            Ok((target, credentials)) => self.open(&target, &credentials, cx),
+            Ok((target, credentials)) => {
+                let vault = Some(self.form.vault.clone()).filter(|id| !id.is_empty());
+                self.open(&target, &credentials, vault, cx)
+            }
             Err(error) => {
                 self.error = Some(error.into());
                 cx.notify();
@@ -518,9 +589,9 @@ impl AppView {
         host.port = request.port.unwrap_or(22);
 
         let original = self.form.editing.clone().unwrap_or_else(|| host.target());
+        let vault_id = self.form.vault.clone();
         let existing = self
-            .vault
-            .unlocked()
+            .unlocked_of(&vault_id)
             .and_then(|unlocked| unlocked.find_by_target(&original));
         let device_only = existing.as_ref().is_some_and(|entry| entry.device_only);
         if let Some(existing) = &existing {
@@ -537,7 +608,7 @@ impl AppView {
         host.forwards = self.form.forwards.clone();
         let saved_target = host.target();
 
-        self.persist(cx, |unlocked, store| {
+        self.persist(&vault_id, cx, |unlocked, store| {
             unlocked.upsert_host_with(store, host, device_only)?;
             if let Some(old) = renamed {
                 unlocked.remove_host(store, &old)?;
@@ -552,19 +623,25 @@ impl AppView {
         }
     }
 
-    fn edit(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn edit(&mut self, vault: &str, target: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self
-            .vault
-            .unlocked()
+            .unlocked_of(vault)
             .and_then(|unlocked| unlocked.find_by_target(target))
             .map(|entry| entry.host)
         else {
             return;
         };
-        self.fill_form(host, window, cx);
+        self.fill_form(vault, host, window, cx);
     }
 
-    fn fill_form(&mut self, host: HostRecord, window: &mut Window, cx: &mut Context<Self>) {
+    fn fill_form(
+        &mut self,
+        vault: &str,
+        host: HostRecord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.form.vault = vault.to_owned();
         self.form.editing = Some(host.target());
         self.form.auth = host.auth.clone();
         self.form.via = host.via.clone();
@@ -599,43 +676,35 @@ impl AppView {
         cx.notify();
     }
 
-    fn forget(&mut self, target: &str, cx: &mut Context<Self>) {
+    fn forget(&mut self, vault: &str, target: &str, cx: &mut Context<Self>) {
         let Some(id) = self
-            .vault
-            .unlocked()
+            .unlocked_of(vault)
             .and_then(|unlocked| unlocked.find_by_target(target))
             .map(|entry| entry.id)
         else {
             return;
         };
-        self.persist(cx, move |unlocked, store| unlocked.remove_host(store, &id));
+        self.persist(vault, cx, move |unlocked, store| {
+            unlocked.remove_host(store, &id)
+        });
     }
 
-    fn persist<F>(&mut self, cx: &mut Context<Self>, edit: F)
-    where
-        F: FnOnce(&mut crate::vault_session::Unlocked, &VaultStore) -> anyhow::Result<()>,
-    {
-        let store = VaultStore::new(self.vault.store().root().to_path_buf());
-        let Some(unlocked) = self.vault.unlocked_mut() else {
-            self.error = Some("Хранилище заблокировано.".into());
-            cx.notify();
-            return;
-        };
-
-        self.error = edit(unlocked, &store)
-            .err()
-            .map(|error| SharedString::from(format!("{error:#}")));
-        self.vault.touch(std::time::Instant::now());
-        cx.notify();
-    }
-
-    fn on_terminal_event(&mut self, target: &str, event: &TerminalEvent, cx: &mut Context<Self>) {
+    fn on_terminal_event(
+        &mut self,
+        vault: Option<&str>,
+        target: &str,
+        event: &TerminalEvent,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             TerminalEvent::SaveSecret { purpose, secret } => {
-                self.remember_secret(target, *purpose, secret.clone(), cx);
+                self.remember_secret(vault, target, *purpose, secret.clone(), cx);
             }
             TerminalEvent::StoredPasswordRejected => {
-                self.stored_rejected = Some(target.to_owned());
+                self.stored_rejected = Some(Rejected {
+                    vault: vault.map(str::to_owned),
+                    target: target.to_owned(),
+                });
                 cx.notify();
             }
             TerminalEvent::Typed(_) => {}
@@ -644,12 +713,18 @@ impl AppView {
 
     fn remember_secret(
         &mut self,
+        vault: Option<&str>,
         target: &str,
         purpose: proto::SecretPurpose,
         secret: proto::Secret,
         cx: &mut Context<Self>,
     ) {
-        let Some(unlocked) = self.vault.unlocked() else {
+        let Some(vault_id) = self.vault_for_write(vault, target) else {
+            self.error = Some("Хранилище заблокировано. Пароль не сохранён.".into());
+            cx.notify();
+            return;
+        };
+        let Some(unlocked) = self.unlocked_of(&vault_id) else {
             self.error = Some("Хранилище заблокировано. Пароль не сохранён.".into());
             cx.notify();
             return;
@@ -675,67 +750,57 @@ impl AppView {
         };
         host.secrets.set(purpose, secret);
 
-        self.persist(cx, |unlocked, store| {
+        self.persist(&vault_id, cx, |unlocked, store| {
             unlocked.upsert_host(store, host).map(|_| ())
         });
     }
 
     fn forget_secret(
         &mut self,
+        vault: Option<&str>,
         target: &str,
         purpose: proto::SecretPurpose,
         cx: &mut Context<Self>,
     ) {
-        let Some(mut host) = self
-            .vault
-            .unlocked()
-            .and_then(|unlocked| unlocked.find_by_target(target))
-            .map(|entry| entry.host)
-        else {
+        let Some((vault_id, entry)) = self.find_host(vault, target) else {
             return;
         };
+        let mut host = entry.host;
         if !host.secrets.remove(purpose) {
             return;
         }
-        self.persist(cx, |unlocked, store| {
+        self.persist(&vault_id, cx, |unlocked, store| {
             unlocked.upsert_host(store, host).map(|_| ())
         });
     }
 
-    fn toggle_device_only(&mut self, target: &str, cx: &mut Context<Self>) {
-        let Some(entry) = self
-            .vault
-            .unlocked()
-            .and_then(|unlocked| unlocked.find_by_target(target))
-        else {
+    fn toggle_device_only(&mut self, vault: &str, target: &str, cx: &mut Context<Self>) {
+        let Some((_, entry)) = self.find_host(Some(vault), target) else {
             return;
         };
         let host = entry.host;
         let device_only = !entry.device_only;
-        self.persist(cx, move |unlocked, store| {
+        self.persist(vault, cx, move |unlocked, store| {
             unlocked
                 .upsert_host_with(store, host, device_only)
                 .map(|_| ())
         });
     }
 
-    fn toggle_forward_agent(&mut self, target: &str, cx: &mut Context<Self>) {
-        let Some(entry) = self
-            .vault
-            .unlocked()
-            .and_then(|unlocked| unlocked.find_by_target(target))
-        else {
+    fn toggle_forward_agent(&mut self, vault: &str, target: &str, cx: &mut Context<Self>) {
+        let Some((_, entry)) = self.find_host(Some(vault), target) else {
             return;
         };
         let mut host = entry.host;
         host.forward_agent = !host.forward_agent;
-        self.persist(cx, move |unlocked, store| {
+        self.persist(vault, cx, move |unlocked, store| {
             unlocked.upsert_host(store, host).map(|_| ())
         });
     }
 
-    fn ask_reveal(&mut self, target: &str, copy: bool, cx: &mut Context<Self>) {
+    fn ask_reveal(&mut self, vault: &str, target: &str, copy: bool, cx: &mut Context<Self>) {
         self.reveal = Some(Reveal::Confirming {
+            vault: vault.to_owned(),
             target: target.to_owned(),
             copy,
         });
@@ -743,13 +808,17 @@ impl AppView {
     }
 
     fn confirm_reveal(&mut self, cx: &mut Context<Self>) {
-        let Some(Reveal::Confirming { target, copy }) = self.reveal.clone() else {
+        let Some(Reveal::Confirming {
+            vault,
+            target,
+            copy,
+        }) = self.reveal.clone()
+        else {
             return;
         };
 
         let Some(secret) = self
-            .vault
-            .unlocked()
+            .unlocked_of(&vault)
             .and_then(|unlocked| unlocked.find_by_target(&target))
             .and_then(|entry| entry.host.password().cloned())
         else {
@@ -769,11 +838,12 @@ impl AppView {
         };
 
         if copy {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned()));
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.to_owned()));
             self.reveal = None;
             self.error = Some("Пароль скопирован в буфер обмена.".into());
         } else {
             self.reveal = Some(Reveal::Showing {
+                vault,
                 target,
                 text: SharedString::from(text.to_owned()),
             });
@@ -788,32 +858,51 @@ impl AppView {
     }
 
     fn sync_can_save_secrets(&mut self, cx: &mut Context<Self>) {
-        let can = self.vault.state().is_unlocked();
-        for view in self.tabs.iter().flat_map(SessionTab::terminals) {
-            view.update(cx, |view, cx| view.set_can_save_secrets(can, cx));
+        let tabs: Vec<(bool, Vec<Entity<TerminalView>>)> = self
+            .tabs
+            .iter()
+            .map(|tab| (self.can_save_for(tab.vault.as_deref()), tab.terminals()))
+            .collect();
+        for (can, views) in tabs {
+            for view in views {
+                view.update(cx, |view, cx| view.set_can_save_secrets(can, cx));
+            }
         }
     }
 
     fn check_autolock(&mut self, cx: &mut Context<Self>) {
-        let Some(reason) = self
-            .vault
-            .tick(std::time::Instant::now(), crate::store::now_ms())
-        else {
+        let now = std::time::Instant::now();
+        let wall = crate::store::now_ms();
+        let mut locked = false;
+        for (ix, slot) in self.vaults.iter_mut().enumerate() {
+            if let Some(reason) = slot.session.tick(now, wall) {
+                locked = true;
+                if ix == self.current {
+                    self.stage = Some(Stage::Unlock);
+                    self.vault_error = Some(reason.into());
+                }
+            }
+        }
+        if !locked {
             return;
-        };
-        self.stage = Some(Stage::Unlock);
-        self.vault_error = Some(reason.into());
+        }
         self.reveal = None;
         self.sync_can_save_secrets(cx);
         cx.notify();
     }
 
-    fn open(&mut self, raw: &str, credentials: &connect::Credentials, cx: &mut Context<Self>) {
-        self.vault.touch(std::time::Instant::now());
+    fn open(
+        &mut self,
+        raw: &str,
+        credentials: &connect::Credentials,
+        vault: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.touch_all();
         match connect::parse_target(raw) {
             Ok(request) => {
                 self.error = None;
-                self.spawn_tab(request, credentials.clone(), cx);
+                self.spawn_tab(request, credentials.clone(), vault, cx);
             }
             Err(error) => {
                 self.error = Some(error.into());
@@ -822,13 +911,11 @@ impl AppView {
         }
     }
 
-    fn open_saved(&mut self, target: &str, cx: &mut Context<Self>) {
+    fn open_saved(&mut self, vault: &str, target: &str, cx: &mut Context<Self>) {
         let credentials = self
-            .vault
-            .unlocked()
-            .and_then(|unlocked| unlocked.find_by_target(target))
-            .map(|entry| {
-                let (via, proxy_error) = self.resolve_chain(&entry.host.via);
+            .find_host(Some(vault), target)
+            .map(|(_, entry)| {
+                let (via, proxy_error) = self.resolve_chain(vault, &entry.host.via);
                 connect::Credentials {
                     auth: entry.host.auth.clone(),
                     password: None,
@@ -841,13 +928,14 @@ impl AppView {
             })
             .unwrap_or_default();
         let target = target.to_string();
-        self.open(&target, &credentials, cx);
+        self.open(&target, &credentials, Some(vault.to_owned()), cx);
     }
 
     fn spawn_tab(
         &mut self,
         request: connect::Request,
         credentials: connect::Credentials,
+        vault: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let settings = connect::read_ssh_config(&request.alias);
@@ -860,20 +948,21 @@ impl AppView {
             return;
         };
 
-        let title = self
-            .vault
-            .unlocked()
-            .and_then(|unlocked| unlocked.find_by_target(&target.to_string()))
-            .map(|entry| entry.host.title())
+        let found = self.find_host(vault.as_deref(), &target.to_string());
+        let title = found
+            .as_ref()
+            .map(|(_, entry)| entry.host.title())
             .unwrap_or_else(|| target.to_string());
+        let vault = vault.or_else(|| found.map(|(id, _)| id));
 
-        let can_save = self.vault.state().is_unlocked();
+        let can_save = self.can_save_for(vault.as_deref());
         view.update(cx, |view, cx| view.set_can_save_secrets(can_save, cx));
 
-        let events = self.subscribe_terminal(&view, target.to_string(), cx);
+        let events = self.subscribe_terminal(&view, vault.clone(), target.to_string(), cx);
 
         self.tabs.push(SessionTab {
             title: title.into(),
+            vault,
             kind: TabKind::Terminal {
                 view,
                 _events: events,
@@ -883,6 +972,7 @@ impl AppView {
             },
             request,
             credentials,
+            local: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -890,8 +980,14 @@ impl AppView {
         self.focus_active(cx);
     }
 
-    fn open_files(&mut self, raw: &str, credentials: connect::Credentials, cx: &mut Context<Self>) {
-        self.vault.touch(std::time::Instant::now());
+    fn open_files(
+        &mut self,
+        raw: &str,
+        credentials: connect::Credentials,
+        vault: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.touch_all();
         let request = match connect::parse_target(raw) {
             Ok(request) => request,
             Err(error) => {
@@ -905,12 +1001,12 @@ impl AppView {
         let agent = self.agent_address();
         let config = connect::config_for(&target, &settings, &credentials, DEFAULT_PTY, agent);
 
-        let name = self
-            .vault
-            .unlocked()
-            .and_then(|unlocked| unlocked.find_by_target(&target.to_string()))
-            .map(|entry| entry.host.title())
+        let found = self.find_host(vault.as_deref(), &target.to_string());
+        let name = found
+            .as_ref()
+            .map(|(_, entry)| entry.host.title())
             .unwrap_or_else(|| target.to_string());
+        let vault = vault.or_else(|| found.map(|(id, _)| id));
         let title = format!("Файлы: {name}");
         let view_title = title.clone();
         let view = cx.new(|cx| crate::ui::files::FilesView::new(view_title, config, cx));
@@ -923,12 +1019,14 @@ impl AppView {
 
         self.tabs.push(SessionTab {
             title: title.into(),
+            vault,
             kind: TabKind::Files {
                 view,
                 _events: events,
             },
             request,
             credentials,
+            local: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -951,6 +1049,47 @@ impl AppView {
         )
     }
 
+    fn start_local_session(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
+        let session = spawn_local(DEFAULT_PTY, "xterm-256color").map_err(|err| {
+            self.error = Some(format!("Локальный терминал: {err}").into());
+        });
+        let session = session.ok()?;
+        Some(cx.new(|cx| TerminalView::new("Локальный", DEFAULT_PTY, session, cx)))
+    }
+
+    /// Вкладка локальной оболочки: без SSH и без хранилища, доступна даже
+    /// на экране блокировки.
+    fn spawn_local_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(view) = self.start_local_session(cx) else {
+            cx.notify();
+            return;
+        };
+        let events = self.subscribe_terminal(&view, None, "Локальный".into(), cx);
+
+        self.tabs.push(SessionTab {
+            title: "Локальный".into(),
+            vault: None,
+            kind: TabKind::Terminal {
+                view,
+                _events: events,
+                files: None,
+                editor: None,
+                split: Default::default(),
+            },
+            request: connect::Request {
+                alias: String::new(),
+                user: None,
+                port: None,
+            },
+            credentials: connect::Credentials::default(),
+            local: true,
+        });
+        self.active = Some(self.tabs.len() - 1);
+        self.showing_page = false;
+        self.apply_appearance(cx);
+        self.focus_active(cx);
+    }
+
     fn reconnect(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(index) else {
             return;
@@ -960,15 +1099,24 @@ impl AppView {
         }
         let request = tab.request.clone();
         let credentials = tab.credentials.clone();
-        let settings = connect::read_ssh_config(&request.alias);
-        let target = connect::resolve(&request, &settings);
+        let vault = tab.vault.clone();
+        let local = tab.local;
 
         let agent = self.agent_address();
-        if let Some(view) = Self::start_session(&target, &settings, &credentials, agent, cx) {
-            let can_save = self.vault.state().is_unlocked();
+        let (target_text, started) = if local {
+            ("Локальный".to_string(), self.start_local_session(cx))
+        } else {
+            let settings = connect::read_ssh_config(&request.alias);
+            let target = connect::resolve(&request, &settings);
+            let text = target.to_string();
+            let started = Self::start_session(&target, &settings, &credentials, agent, cx);
+            (text, started)
+        };
+        if let Some(view) = started {
+            let can_save = self.can_save_for(vault.as_deref());
             view.update(cx, |view, cx| view.set_can_save_secrets(can_save, cx));
 
-            let events = self.subscribe_terminal(&view, target.to_string(), cx);
+            let events = self.subscribe_terminal(&view, vault, target_text, cx);
 
             if let Some(tab) = self.tabs.get_mut(index) {
                 let (editor, split) = match &mut tab.kind {
@@ -1145,6 +1293,7 @@ impl AppView {
         );
         self.tabs.push(SessionTab {
             title: name.clone().into(),
+            vault: None,
             kind: TabKind::Editor {
                 view,
                 _events: events,
@@ -1155,6 +1304,7 @@ impl AppView {
                 port: None,
             },
             credentials: connect::Credentials::default(),
+            local: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1229,7 +1379,7 @@ impl AppView {
     fn on_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         self.panel_open = true;
         self.section = Section::Hosts;
-        self.form.line.read(cx).focus_handle(cx).focus(window);
+        self.form.line.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
 
@@ -1350,7 +1500,7 @@ impl AppView {
             .into_any_element()
     }
 
-    fn panel_title(text: &'static str, muted: gpui::Hsla) -> AnyElement {
+    fn panel_title(text: &'static str, muted: gpui_kit::Hsla) -> AnyElement {
         div()
             .px_3()
             .pt_3()
@@ -1359,7 +1509,7 @@ impl AppView {
             .into_any_element()
     }
 
-    fn field_label(text: &'static str, muted: gpui::Hsla) -> AnyElement {
+    fn field_label(text: &'static str, muted: gpui_kit::Hsla) -> AnyElement {
         Label::new(text)
             .text_xs()
             .text_color(muted)
@@ -1432,7 +1582,7 @@ impl AppView {
                     .items_end()
                     .child(
                         v_flex()
-                            .flex_grow()
+                            .flex_grow_1()
                             .gap_1()
                             .child(Self::field_label("Адрес", muted))
                             .child(Input::new(&self.form.host)),
@@ -1495,7 +1645,8 @@ impl AppView {
         let border = cx.theme().border;
 
         let target = self.form.editing.clone()?;
-        let entry = self.vault.unlocked()?.find_by_target(&target)?;
+        let vault = self.form.vault.clone();
+        let entry = self.unlocked_of(&vault)?.find_by_target(&target)?;
 
         let has_password = entry.host.has_password();
         let device_only = entry.device_only;
@@ -1505,17 +1656,26 @@ impl AppView {
         let for_show = target.clone();
         let for_copy = target.clone();
         let for_bind = target.clone();
+        let (v_forward, v_forget, v_show, v_copy, v_bind) = (
+            vault.clone(),
+            vault.clone(),
+            vault.clone(),
+            vault.clone(),
+            vault.clone(),
+        );
 
         let showing = match &self.reveal {
             Some(Reveal::Showing {
+                vault: shown_vault,
                 target: shown,
                 text,
-            }) if *shown == target => Some(text.clone()),
+            }) if *shown == target && *shown_vault == vault => Some(text.clone()),
             _ => None,
         };
         let confirming = matches!(
             &self.reveal,
-            Some(Reveal::Confirming { target: asked, .. }) if *asked == target
+            Some(Reveal::Confirming { vault: asked_vault, target: asked, .. })
+                if *asked == target && *asked_vault == vault
         );
 
         Some(
@@ -1536,7 +1696,7 @@ impl AppView {
                                 )
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     let target = for_bind.clone();
-                                    this.toggle_device_only(&target, cx);
+                                    this.toggle_device_only(&v_bind, &target, cx);
                                 })),
                         )
                         .child(
@@ -1550,7 +1710,7 @@ impl AppView {
                                 )
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     let target = for_forward.clone();
-                                    this.toggle_forward_agent(&target, cx);
+                                    this.toggle_forward_agent(&v_forward, &target, cx);
                                 })),
                         ),
                 )
@@ -1566,7 +1726,7 @@ impl AppView {
                                     .label("Показать")
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         let target = for_show.clone();
-                                        this.ask_reveal(&target, false, cx);
+                                        this.ask_reveal(&v_show, &target, false, cx);
                                     })),
                             )
                             .child(
@@ -1576,7 +1736,7 @@ impl AppView {
                                     .label("Скопировать")
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         let target = for_copy.clone();
-                                        this.ask_reveal(&target, true, cx);
+                                        this.ask_reveal(&v_copy, &target, true, cx);
                                     })),
                             )
                             .child(
@@ -1587,6 +1747,7 @@ impl AppView {
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         let target = for_forget.clone();
                                         this.forget_secret(
+                                            Some(&v_forget),
                                             &target,
                                             proto::SecretPurpose::Password,
                                             cx,
@@ -1657,7 +1818,7 @@ impl AppView {
     fn stored_rejected_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let danger = cx.theme().danger;
         let border = cx.theme().border;
-        let target = self.stored_rejected.clone()?;
+        let Rejected { vault, target } = self.stored_rejected.clone()?;
         let for_forget = target.clone();
 
         Some(
@@ -1684,7 +1845,7 @@ impl AppView {
                                 .label("Удалить пароль и запросить заново")
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     let target = for_forget.clone();
-                                    this.forget_secret(&target, proto::SecretPurpose::Password, cx);
+                                    this.forget_secret(vault.as_deref(), &target, proto::SecretPurpose::Password, cx);
                                     this.stored_rejected = None;
                                     cx.notify();
                                 })),
@@ -1742,6 +1903,7 @@ impl Render for AppView {
         let foreground = cx.theme().foreground;
 
         let sign_dialog = self.sign_dialog(cx);
+        let delete_dialog = self.delete_vault_dialog(cx);
 
         div()
             .relative()
@@ -1761,7 +1923,7 @@ impl Render for AppView {
                         div()
                             .flex()
                             .flex_row()
-                            .flex_grow()
+                            .flex_grow_1()
                             .overflow_hidden()
                             .when(rail.is_some(), |this| {
                                 this.children(rail).child(self.edge_handle(
@@ -1770,13 +1932,13 @@ impl Render for AppView {
                                     cx,
                                 ))
                             })
-                            .child(div().flex_grow().overflow_hidden().child(workspace))
+                            .child(div().flex_grow_1().overflow_hidden().child(workspace))
                             .when(session_panel.is_some(), |this| {
                                 this.child(self.edge_handle("edge-panel", Edge::Panel, cx))
                                     .children(session_panel)
                             })
                             .on_drag_move(cx.listener(
-                                |this, event: &gpui::DragMoveEvent<Edge>, window, cx| {
+                                |this, event: &gpui_kit::DragMoveEvent<Edge>, window, cx| {
                                     let x = f32::from(event.event.position.x);
                                     match *event.drag(cx) {
                                         Edge::Rail => {
@@ -1825,16 +1987,20 @@ impl Render for AppView {
                     ),
             )
             .children(sign_dialog)
+            .children(delete_dialog)
     }
 }
 
 pub fn open_main_window(cx: &mut App) -> Result<()> {
     crate::ui::font::MonoFont::init(cx);
-    gpui_component::init(cx);
+    gpui_kit::init(cx);
 
     let startup = settings::load();
     crate::ui::theme::apply(&startup, None, cx);
 
+    let bind = |keys: &str, action: Box<dyn gpui_kit::Action>| {
+        KeyBinding::load(keys, action, None, false, None, cx).expect("корректное сочетание клавиш")
+    };
     cx.bind_keys([
         KeyBinding::new(
             if cfg!(target_os = "macos") {
@@ -1845,16 +2011,16 @@ pub fn open_main_window(cx: &mut App) -> Result<()> {
             Quit,
             None,
         ),
-        KeyBinding::new(&shortcut("t"), NewTab, None),
-        KeyBinding::new(&shortcut("w"), CloseTab, None),
-        KeyBinding::new(&shortcut("]"), NextTab, None),
-        KeyBinding::new(&shortcut("["), PrevTab, None),
-        KeyBinding::new(&shortcut("b"), TogglePanel, None),
+        bind(&shortcut("t"), Box::new(NewTab)),
+        bind(&shortcut("w"), Box::new(CloseTab)),
+        bind(&shortcut("]"), Box::new(NextTab)),
+        bind(&shortcut("["), Box::new(PrevTab)),
+        bind(&shortcut("b"), Box::new(TogglePanel)),
         KeyBinding::new("tab", NoAction, Some("Terminal")),
         KeyBinding::new("shift-tab", NoAction, Some("Terminal")),
     ]);
 
-    cx.on_window_closed(|cx| {
+    cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
             cx.quit();
         }
@@ -1862,28 +2028,25 @@ pub fn open_main_window(cx: &mut App) -> Result<()> {
     .detach();
 
     let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
-    cx.open_window(
+    gpui_kit::open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(640.), px(400.))),
             titlebar: Some(TitleBar::title_bar_options()),
-            window_decorations: Some(gpui::WindowDecorations::Client),
+            window_decorations: Some(gpui_kit::WindowDecorations::Client),
             app_id: Some("cratty".into()),
             window_background: crate::ui::theme::window_background(&startup),
             ..Default::default()
         },
-        |window, cx| {
-            let app: Entity<AppView> = cx.new(|cx| AppView::new(window, cx));
-            let view: gpui::AnyView = app.into();
-            cx.new(|cx| gpui_component::Root::new(view, window, cx))
-        },
+        cx,
+        |window, cx| cx.new(|cx| AppView::new(window, cx)),
     )?;
 
     Ok(())
 }
 
-fn to_rgb(color: gpui::Hsla) -> crate::term::Rgb {
-    let rgba: gpui::Rgba = color.into();
+fn to_rgb(color: gpui_kit::Hsla) -> crate::term::Rgb {
+    let rgba: gpui_kit::Rgba = color.into();
     crate::term::Rgb::new(
         (rgba.r * 255.).round().clamp(0., 255.) as u8,
         (rgba.g * 255.).round().clamp(0., 255.) as u8,

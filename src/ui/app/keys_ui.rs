@@ -20,17 +20,18 @@ impl AppView {
             Ok((running, asks)) => {
                 self.agent = Some(running);
                 self.agent_error = None;
-                self.agent_task = Some(cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
-                    let mut asks = asks;
-                    while let Some(ask) = asks.next().await {
-                        if this
-                            .update(cx, |this, cx| this.on_agent_ask(ask, cx))
-                            .is_err()
-                        {
-                            return;
+                self.agent_task =
+                    Some(cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
+                        let mut asks = asks;
+                        while let Some(ask) = asks.next().await {
+                            if this
+                                .update(cx, |this, cx| this.on_agent_ask(ask, cx))
+                                .is_err()
+                            {
+                                return;
+                            }
                         }
-                    }
-                }));
+                    }));
             }
             Err(error) => self.agent_error = Some(SharedString::from(format!("{error:#}"))),
         }
@@ -46,10 +47,19 @@ impl AppView {
     }
 
     pub(super) fn agent_identities(&self) -> Vec<::agent::Identity> {
-        self.vault_keys()
-            .into_iter()
-            .map(|entry| ::agent::Identity::new(entry.key.public.clone(), entry.key.title()))
-            .collect()
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        let mut identities = Vec::new();
+        for entry in self.all_vault_keys() {
+            if seen.contains(&entry.key.public) {
+                continue;
+            }
+            seen.push(entry.key.public.clone());
+            identities.push(::agent::Identity::new(
+                entry.key.public.clone(),
+                entry.key.title(),
+            ));
+        }
+        identities
     }
 
     pub(super) fn agent_address(&self) -> Option<ssh_agent::Address> {
@@ -57,10 +67,22 @@ impl AppView {
     }
 
     pub(super) fn vault_keys(&self) -> Vec<StoredKey> {
-        self.vault
-            .unlocked()
+        self.current_unlocked()
             .map(|unlocked| unlocked.keys())
             .unwrap_or_default()
+    }
+
+    pub(super) fn all_vault_keys(&self) -> Vec<StoredKey> {
+        self.unlocked_slots()
+            .filter_map(|slot| slot.session.unlocked())
+            .flat_map(|unlocked| unlocked.keys())
+            .collect()
+    }
+
+    fn find_key_anywhere(&self, public: &[u8]) -> Option<StoredKey> {
+        self.unlocked_slots()
+            .filter_map(|slot| slot.session.unlocked())
+            .find_map(|unlocked| unlocked.find_key_by_public(public))
     }
 
     pub(super) fn on_agent_ask(&mut self, ask: ssh_agent::Ask, cx: &mut Context<Self>) {
@@ -69,11 +91,7 @@ impl AppView {
                 let _ = reply.send(self.agent_identities());
             }
             ssh_agent::Ask::Sign(ask) => {
-                let Some(entry) = self
-                    .vault
-                    .unlocked()
-                    .and_then(|unlocked| unlocked.find_key_by_public(&ask.public))
-                else {
+                let Some(entry) = self.find_key_anywhere(&ask.public) else {
                     let _ = ask.reply.send(None);
                     return;
                 };
@@ -107,15 +125,11 @@ impl AppView {
 
     pub(super) fn name_for_host_key(&self, key: &russh::keys::PublicKey) -> Option<String> {
         let policy = crate::ssh::known_hosts::HostKeyPolicy::KnownHosts;
-        let saved = self
-            .vault
-            .unlocked()
-            .map(|unlocked| unlocked.hosts())
-            .unwrap_or_default();
-        let hosts: Vec<(String, u16)> = saved
-            .into_iter()
+        let hosts: Vec<(String, u16)> = self
+            .unlocked_slots()
+            .filter_map(|slot| slot.session.unlocked())
+            .flat_map(|unlocked| unlocked.hosts())
             .map(|entry| (entry.host.host, entry.host.port))
-            .chain(self.hosts.iter().map(|host| (host.alias.clone(), 22u16)))
             .take(256)
             .collect();
 
@@ -143,13 +157,12 @@ impl AppView {
         }
         let _ = pending.ask.reply.send(answer);
 
-        self.vault.touch(std::time::Instant::now());
+        self.touch_all();
         cx.notify();
     }
 
     pub(super) fn sign_with_vault(&self, pending: &PendingSign) -> Option<Vec<u8>> {
-        let unlocked = self.vault.unlocked()?;
-        let entry = unlocked.find_key_by_public(&pending.ask.public)?;
+        let entry = self.find_key_anywhere(&pending.ask.public)?;
         let private = entry.key.private()?;
         let text = std::str::from_utf8(private.expose()).ok()?;
         let key = ssh_agent::keys::decode_private(text, None).ok()?;
@@ -235,9 +248,10 @@ impl AppView {
         record.fingerprint = ssh_agent::keys::fingerprint(public);
         record.source = pending.path.display().to_string();
 
-        let store = VaultStore::new(self.vault.store().root().to_path_buf());
-        let unlocked = self
-            .vault
+        let current = self.current;
+        let store = VaultStore::new(self.vaults[current].root());
+        let unlocked = self.vaults[current]
+            .session
             .unlocked_mut()
             .ok_or_else(|| anyhow::anyhow!("Хранилище заблокировано."))?;
         unlocked.upsert_key(&store, record)?;
@@ -251,9 +265,10 @@ impl AppView {
     }
 
     pub(super) fn forget_key(&mut self, id: &proto::RecordId, cx: &mut Context<Self>) {
-        let store = VaultStore::new(self.vault.store().root().to_path_buf());
-        let result = self
-            .vault
+        let current = self.current;
+        let store = VaultStore::new(self.vaults[current].root());
+        let result = self.vaults[current]
+            .session
             .unlocked_mut()
             .ok_or_else(|| anyhow::anyhow!("Хранилище заблокировано."))
             .and_then(|unlocked| unlocked.remove_key(&store, id));
@@ -381,7 +396,7 @@ impl AppView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::hsla(0., 0., 0., 0.5))
+                .bg(gpui_kit::hsla(0., 0., 0., 0.5))
                 .on_mouse_down(MouseButton::Left, |_, _, _| {})
                 .child(
                     v_flex()
@@ -472,7 +487,7 @@ impl AppView {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
         let running = self.agent.is_some();
-        let unlocked = self.vault.state().is_unlocked();
+        let unlocked = self.vault().state().is_unlocked();
 
         let address = self
             .agent
@@ -491,7 +506,7 @@ impl AppView {
                             .bg(if running { theme.success } else { muted }),
                     )
                     .child(Label::new(if running { "Работает" } else { "Остановлен" }).text_sm())
-                    .child(div().flex_grow())
+                    .child(div().flex_grow_1())
                     .child(
                         Button::new("agent-toggle")
                             .when(running, |button| button.outline())
@@ -508,7 +523,7 @@ impl AppView {
                     .items_center()
                     .child(
                         div()
-                            .flex_grow()
+                            .flex_grow_1()
                             .min_w(px(0.))
                             .px_2()
                             .py_1()
@@ -528,7 +543,7 @@ impl AppView {
                             .label("Копировать")
                             .tooltip("Команда для оболочки: ssh и git будут использовать этот агент")
                             .on_click(cx.listener(move |_, _, _window, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()));
+                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
                             })),
                     )
             }))
@@ -574,7 +589,7 @@ impl AppView {
                     )
                     .child(
                         v_flex()
-                            .flex_grow()
+                            .flex_grow_1()
                             .min_w(px(0.))
                             .child(Label::new(SharedString::from(entry.key.title())).text_sm())
                             .child(
@@ -622,7 +637,7 @@ impl AppView {
                     )
                     .child(
                         v_flex()
-                            .flex_grow()
+                            .flex_grow_1()
                             .child(Label::new(SharedString::from(key.name.clone())).text_sm())
                             .when(key.encrypted, |this| {
                                 this.child(
@@ -662,10 +677,11 @@ impl AppView {
                     .pb_3()
                     .child(Label::new("Ключи").text_xl().font_semibold()),
             )
+            .children(self.vault_picker(cx))
             .child(
                 v_flex()
                     .id("keys-page")
-                    .flex_grow()
+                    .flex_grow_1()
                     .min_h(px(0.))
                     .overflow_y_scrollbar()
                     .px_6()

@@ -1,4 +1,4 @@
-use gpui::SharedString;
+use gpui_kit::SharedString;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -16,7 +16,7 @@ impl Stage {
     pub fn title(&self) -> &'static str {
         match self {
             Self::Create => "Создать хранилище",
-            Self::Recovery { .. } => "Запишите код восстановления",
+            Self::Recovery { .. } => "Запишите фразу восстановления",
             Self::Unlock => "Хранилище заблокировано",
             Self::UnlockWithCode => "Вход по коду восстановления",
         }
@@ -79,7 +79,7 @@ pub fn create_explainer(import_count: usize) -> String {
     text
 }
 
-pub const RECOVERY_EXPLAINER: &str = "Сохраните код в надёжном месте отдельно от компьютера. Это единственный способ разблокировать хранилище без мастер-пароля; код показывается однократно.";
+pub const RECOVERY_EXPLAINER: &str = "Запишите 24 слова из английского словаря BIP39 на бумаге и сохраните отдельно от компьютера. Порядок слов важен. Это единственный способ разблокировать хранилище без мастер-пароля; фраза показывается однократно.";
 
 pub const MIGRATION_WARNING: &str = "Файл hosts.json удалён, однако его копии могли сохраниться в резервных копиях и снимках диска.";
 

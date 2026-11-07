@@ -1,4 +1,4 @@
-use gpui::{
+use gpui_kit::{
     App, Bounds, Element, ElementId, Font, FontStyle, FontWeight, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine,
     SharedString, StrikethroughStyle, Style, TextRun, UnderlineStyle, Window, point, px, size,
@@ -246,7 +246,7 @@ fn mergeable(last: &TextRun, next: &TextRun) -> bool {
 }
 
 fn hsla(rgb: Rgb) -> Hsla {
-    gpui::rgb(rgb.to_hex()).into()
+    gpui_kit::rgb(rgb.to_hex()).into()
 }
 
 fn cell_width(character: char) -> usize {
@@ -294,8 +294,8 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) -> (LayoutId, ()) {
         let mut style = Style::default();
-        style.size.width = gpui::relative(1.).into();
-        style.size.height = gpui::relative(1.).into();
+        style.size.width = gpui_kit::relative(1.).into();
+        style.size.height = gpui_kit::relative(1.).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -318,7 +318,6 @@ impl Element for TerminalElement {
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
         }
     }
-
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
@@ -331,28 +330,46 @@ impl Element for TerminalElement {
     ) {
         let _ = bounds;
 
-        for (row, line) in prepaint.lines.iter().enumerate() {
+        for (row, shaped) in prepaint.lines.iter().enumerate() {
             let origin = point(
                 bounds.origin.x,
                 bounds.origin.y + self.metrics.height * row as f32,
             );
-            let _ = line.paint_background(origin, self.metrics.height, window, cx);
+            let _ = shaped.paint_background(
+                origin,
+                self.metrics.height,
+                gpui_kit::TextAlign::default(),
+                None,
+                window,
+                cx,
+            );
         }
 
-        for (row, line) in prepaint.lines.iter().enumerate() {
+        for (row, shaped) in prepaint.lines.iter().enumerate() {
             let origin = point(
                 bounds.origin.x,
                 bounds.origin.y + self.metrics.height * row as f32,
             );
-            let _ = line.paint(origin, self.metrics.height, window, cx);
+            let _ = shaped.paint(
+                origin,
+                self.metrics.height,
+                gpui_kit::TextAlign::default(),
+                None,
+                window,
+                cx,
+            );
         }
 
         if let Some(cursor) = prepaint.cursor {
             let color = hsla(self.cursor_color);
             if self.focused {
-                window.paint_quad(gpui::fill(cursor, color.opacity(0.6)));
+                window.paint_quad(gpui_kit::fill(cursor, color.opacity(0.6)));
             } else {
-                window.paint_quad(gpui::outline(cursor, color, gpui::BorderStyle::Solid));
+                window.paint_quad(gpui_kit::outline(
+                    cursor,
+                    color,
+                    gpui_kit::BorderStyle::Solid,
+                ));
             }
         }
     }

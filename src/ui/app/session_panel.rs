@@ -107,7 +107,7 @@ impl AppView {
                         .items_center()
                         .child(tab_label("panel-tab-info", "Сведения", InfoTab::Info))
                         .child(tab_label("panel-tab-files", "Файлы", InfoTab::Files))
-                        .child(div().flex_grow())
+                        .child(div().flex_grow_1())
                         .child(
                             Button::new("panel-close")
                                 .ghost()
@@ -120,7 +120,7 @@ impl AppView {
                                 })),
                         ),
                 )
-                .child(div().flex_grow().min_h(px(0.)).child(body))
+                .child(div().flex_grow_1().min_h(px(0.)).child(body))
                 .into_any_element(),
         )
     }
@@ -135,7 +135,7 @@ impl AppView {
         }
     }
 
-    fn info_section(title: &'static str, cx: &App) -> gpui::Div {
+    fn info_section(title: &'static str, cx: &App) -> gpui_kit::Div {
         v_flex().gap_1().child(
             div().h(px(28.)).flex().items_center().child(
                 Label::new(title)
@@ -191,10 +191,8 @@ impl AppView {
         let server = tab.request.alias.clone();
         let target = address(&tab.request);
         let saved_target = self
-            .vault
-            .unlocked()
-            .and_then(|unlocked| unlocked.find_by_target(&target))
-            .map(|entry| entry.host.target());
+            .find_host(tab.vault.as_deref(), &target)
+            .map(|(vault, entry)| (vault, entry.host.target()));
 
         let status = h_flex()
             .gap_2()
@@ -257,7 +255,7 @@ impl AppView {
                                 )))
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .flex_grow(),
+                                .flex_grow_1(),
                             )
                             .child(
                                 Button::new(SharedString::from(format!("panel-forward-{index}")))
@@ -321,7 +319,7 @@ impl AppView {
                         )
                     })
                     .children(port_rows)
-                    .children(saved_target.map(|target| {
+                    .children(saved_target.map(|(vault, target)| {
                         h_flex().child(
                             Button::new("panel-edit-host")
                                 .ghost()
@@ -329,7 +327,7 @@ impl AppView {
                                 .icon(Icon::empty().path("icons/pencil.svg"))
                                 .label("Изменить маршрут и переадресацию")
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.edit(&target, window, cx)
+                                    this.edit(&vault, &target, window, cx)
                                 })),
                         )
                     })),

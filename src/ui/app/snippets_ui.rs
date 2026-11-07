@@ -1,20 +1,20 @@
-use gpui::{AnyElement, Context, Entity, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputState, Textarea, TextareaState},
     label::Label,
     scroll::ScrollableElement,
     v_flex,
 };
+use gpui_kit::{AnyElement, Context, Entity, SharedString, Window, div, prelude::*, px};
 use proto::{RecordId, SnippetRecord};
 
 use super::{AppView, ROW_TITLE_CHARS, TabKind, shorten};
 
 pub(super) struct SnippetForm {
     pub label: Entity<InputState>,
-    pub command: Entity<InputState>,
+    pub command: Entity<TextareaState>,
     pub run: bool,
     pub editing: Option<RecordId>,
     pub open: bool,
@@ -26,8 +26,7 @@ impl SnippetForm {
             label: cx
                 .new(|cx| InputState::new(window, cx).placeholder("Например, Перезапуск сервиса")),
             command: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
+                TextareaState::new(window, cx)
                     .auto_grow(3, 12)
                     .placeholder("Команда (допускается несколько строк)")
             }),
@@ -67,9 +66,10 @@ impl AppView {
 
     fn snippet_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let form = &self.snippet_form;
-        for input in [&form.label, &form.command] {
-            input.update(cx, |state, cx| state.set_value("", window, cx));
-        }
+        form.label
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        form.command
+            .update(cx, |state, cx| state.set_value("", window, cx));
         self.snippet_form.run = true;
         self.snippet_form.editing = None;
         self.snippet_form.open = false;
@@ -88,7 +88,7 @@ impl AppView {
             return;
         }
         let editing = self.snippet_form.editing.clone();
-        self.persist(cx, move |unlocked, store| {
+        self.persist_current(cx, move |unlocked, store| {
             unlocked.upsert_snippet(store, editing, snippet).map(|_| ())
         });
         if self.error.is_none() {
@@ -100,7 +100,7 @@ impl AppView {
         let Some(id) = self.snippet_form.editing.clone() else {
             return;
         };
-        self.persist(cx, move |unlocked, store| {
+        self.persist_current(cx, move |unlocked, store| {
             unlocked.remove_snippet(store, &id)
         });
         if self.error.is_none() {
@@ -135,7 +135,7 @@ impl AppView {
         }
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let snippets = self.vault.unlocked().map(|unlocked| unlocked.snippets());
+        let snippets = self.current_unlocked().map(|unlocked| unlocked.snippets());
         let body: AnyElement =
             match snippets {
                 None => Label::new("Хранилище заблокировано. Сниппеты недоступны.")
@@ -177,7 +177,7 @@ impl AppView {
                                             ROW_TITLE_CHARS,
                                         )))
                                         .text_sm()
-                                        .flex_grow(),
+                                        .flex_grow_1(),
                                     )
                                     .child(
                                         Label::new(if run {
@@ -210,7 +210,7 @@ impl AppView {
     pub(super) fn snippets_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let Some(unlocked) = self.vault.unlocked() else {
+        let Some(unlocked) = self.current_unlocked() else {
             return div().into_any_element();
         };
         let mono = crate::ui::font::MonoFont::get(cx).family.clone();
@@ -301,10 +301,11 @@ impl AppView {
                 v_flex()
                     .size_full()
                     .child(header)
+                    .children(self.vault_picker(cx))
                     .child(
                         v_flex()
                             .id("snippets-grid")
-                            .flex_grow()
+                            .flex_grow_1()
                             .min_h(px(0.))
                             .overflow_y_scrollbar()
                             .px_6()
@@ -390,7 +391,7 @@ impl AppView {
                     .child(
                         v_flex()
                             .id("snippet-editor-body")
-                            .flex_grow()
+                            .flex_grow_1()
                             .min_h(px(0.))
                             .overflow_y_scrollbar()
                             .px_4()
@@ -407,7 +408,7 @@ impl AppView {
                                     .gap_1()
                                     .child(Self::field_label("Команда", muted))
                                     .child(
-                                        div().font_family(mono).child(Input::new(&form.command)),
+                                        div().font_family(mono).child(Textarea::new(&form.command)),
                                     ),
                             )
                             .child(
@@ -459,7 +460,7 @@ impl AppView {
                                         this.snippet_save(window, cx)
                                     })),
                             )
-                            .child(div().flex_grow())
+                            .child(div().flex_grow_1())
                             .when(editing, |this| {
                                 this.child(
                                     Button::new("snippet-remove")

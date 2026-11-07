@@ -1,14 +1,14 @@
-use gpui::{
-    AnyElement, Context, Entity, EntityId, MouseDownEvent, SharedString, Subscription, div,
-    prelude::*, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     scroll::ScrollableElement,
     v_flex,
+};
+use gpui_kit::{
+    AnyElement, Context, Entity, EntityId, MouseDownEvent, SharedString, Subscription, div,
+    prelude::*, px,
 };
 
 use super::{AppView, ROW_TITLE_CHARS, SessionTab, TabKind, shorten};
@@ -17,6 +17,7 @@ use crate::ui::terminal::{TerminalEvent, TerminalView};
 
 pub(super) struct Pane {
     pub title: SharedString,
+    pub vault: Option<String>,
     pub view: Entity<TerminalView>,
     pub _events: Subscription,
     pub request: connect::Request,
@@ -72,6 +73,7 @@ impl AppView {
     pub(super) fn subscribe_terminal(
         &mut self,
         view: &Entity<TerminalView>,
+        vault: Option<String>,
         target: String,
         cx: &mut Context<Self>,
     ) -> Subscription {
@@ -79,7 +81,7 @@ impl AppView {
             view,
             move |this, emitter, event: &TerminalEvent, cx| match event {
                 TerminalEvent::Typed(bytes) => this.broadcast_from(emitter.entity_id(), bytes, cx),
-                _ => this.on_terminal_event(&target, event, cx),
+                _ => this.on_terminal_event(vault.as_deref(), &target, event, cx),
             },
         )
     }
@@ -102,17 +104,18 @@ impl AppView {
         }
     }
 
-    fn split_tab(&mut self, index: usize, target: Option<String>, cx: &mut Context<Self>) {
+    fn split_tab(&mut self, index: usize, pick: Option<(String, String)>, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(index) else {
             return;
         };
-        let (request, mut credentials, title) = match &target {
+        let (request, mut credentials, title, vault) = match &pick {
             None => (
                 tab.request.clone(),
                 tab.credentials.clone(),
                 tab.title.clone(),
+                tab.vault.clone(),
             ),
-            Some(raw) => {
+            Some((vault, raw)) => {
                 let request = match connect::parse_target(raw) {
                     Ok(request) => request,
                     Err(error) => {
@@ -122,22 +125,28 @@ impl AppView {
                     }
                 };
                 let title = self
-                    .vault
-                    .unlocked()
+                    .unlocked_of(vault)
                     .and_then(|unlocked| unlocked.find_by_target(raw))
                     .map_or_else(|| raw.clone(), |entry| entry.host.title());
-                (request, self.saved_credentials(raw), title.into())
+                (
+                    request,
+                    self.saved_credentials(vault, raw),
+                    title.into(),
+                    Some(vault.clone()),
+                )
             }
         };
         credentials.forwards.clear();
 
-        let Some((view, events)) = self.start_pane(&request, &credentials, cx) else {
+        let Some((view, events)) = self.start_pane(&request, &credentials, vault.clone(), cx)
+        else {
             return;
         };
         if let Some(split) = self.tabs.get_mut(index).and_then(SessionTab::split_mut) {
             let broadcast = split.broadcast;
             split.panes.push(Pane {
                 title,
+                vault,
                 view: view.clone(),
                 _events: events,
                 request,
@@ -158,6 +167,7 @@ impl AppView {
         &mut self,
         request: &connect::Request,
         credentials: &connect::Credentials,
+        vault: Option<String>,
         cx: &mut Context<Self>,
     ) -> Option<(Entity<TerminalView>, Subscription)> {
         let settings = connect::read_ssh_config(&request.alias);
@@ -168,9 +178,9 @@ impl AppView {
             cx.notify();
             return None;
         };
-        let can_save = self.vault.state().is_unlocked();
+        let can_save = self.can_save_for(vault.as_deref());
         view.update(cx, |view, cx| view.set_can_save_secrets(can_save, cx));
-        let events = self.subscribe_terminal(&view, target.to_string(), cx);
+        let events = self.subscribe_terminal(&view, vault, target.to_string(), cx);
         Some((view, events))
     }
 
@@ -183,8 +193,12 @@ impl AppView {
         else {
             return;
         };
-        let (request, credentials) = (old.request.clone(), old.credentials.clone());
-        let Some((view, events)) = self.start_pane(&request, &credentials, cx) else {
+        let (request, credentials, vault) = (
+            old.request.clone(),
+            old.credentials.clone(),
+            old.vault.clone(),
+        );
+        let Some((view, events)) = self.start_pane(&request, &credentials, vault, cx) else {
             return;
         };
         if let Some(split) = self.tabs.get_mut(index).and_then(SessionTab::split_mut)
@@ -240,12 +254,12 @@ impl AppView {
         cx.notify();
     }
 
-    pub(super) fn track_pane_focus(&mut self, window: &gpui::Window, cx: &gpui::App) {
+    pub(super) fn track_pane_focus(&mut self, window: &gpui_kit::Window, cx: &gpui_kit::App) {
         let Some(tab) = self.active.and_then(|index| self.tabs.get_mut(index)) else {
             return;
         };
         let focused = tab.terminals().iter().position(|view| {
-            gpui::Focusable::focus_handle(view.read(cx), cx).contains_focused(window, cx)
+            gpui_kit::Focusable::focus_handle(view.read(cx), cx).contains_focused(window, cx)
         });
         if let (Some(focused), Some(split)) = (focused, tab.split_mut()) {
             split.focused = focused;
@@ -349,7 +363,7 @@ impl AppView {
                 .child(
                     Label::new(SharedString::from(shorten(title, ROW_TITLE_CHARS)))
                         .text_xs()
-                        .flex_grow()
+                        .flex_grow_1()
                         .text_color(if focused {
                             theme.foreground
                         } else {
@@ -415,12 +429,28 @@ impl AppView {
             return None;
         }
         let theme = cx.theme().clone();
-        let hosts = self
-            .vault
-            .unlocked()
-            .map(|unlocked| unlocked.hosts())
-            .unwrap_or_default();
-        let host_row = |id: SharedString, title: String, target: Option<String>| {
+        let many = self.unlocked_slots().count() > 1;
+        let hosts: Vec<(String, String, proto::RecordId, String)> = self
+            .unlocked_slots()
+            .filter_map(|slot| {
+                slot.session.unlocked().map(|unlocked| {
+                    unlocked
+                        .hosts()
+                        .into_iter()
+                        .map(|entry| {
+                            let title = if many {
+                                format!("{} · {}", slot.name, entry.host.title())
+                            } else {
+                                entry.host.title()
+                            };
+                            (slot.id.clone(), title, entry.id, entry.host.target())
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .flatten()
+            .collect();
+        let host_row = |id: SharedString, title: String, pick: Option<(String, String)>| {
             div()
                 .id(id)
                 .px_2()
@@ -428,9 +458,11 @@ impl AppView {
                 .rounded_md()
                 .hover(|style| style.bg(theme.secondary_hover))
                 .child(Label::new(SharedString::from(shorten(&title, ROW_TITLE_CHARS))).text_sm())
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                    this.split_tab(index, target.clone(), cx)
-                }))
+                .on_click(
+                    cx.listener(move |this, _, _window, cx| {
+                        this.split_tab(index, pick.clone(), cx)
+                    }),
+                )
         };
         Some(
             Self::popover("Подключение для новой панели", px(300.), cx)
@@ -440,12 +472,11 @@ impl AppView {
                         .id("split-hosts")
                         .max_h(px(300.))
                         .overflow_y_scrollbar()
-                        .children(hosts.into_iter().map(|entry| {
-                            let target = entry.host.target();
+                        .children(hosts.into_iter().map(|(vault, title, id, target)| {
                             host_row(
-                                SharedString::from(format!("split-host-{}", entry.id)),
-                                entry.host.title(),
-                                Some(target),
+                                SharedString::from(format!("split-host-{vault}-{id}")),
+                                title,
+                                Some((vault, target)),
                             )
                         })),
                 )

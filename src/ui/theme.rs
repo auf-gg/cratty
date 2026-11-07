@@ -1,5 +1,5 @@
-use gpui::{App, Global, Hsla, Window, rgb, rgba};
-use gpui_component::{Theme, ThemeColor, ThemeMode};
+use gpui_kit::component::{Theme, ThemeColor, ThemeMode};
+use gpui_kit::{App, Global, Hsla, Window, rgb, rgba};
 
 use crate::term::palette::{self, Palette};
 
@@ -48,9 +48,9 @@ pub trait MainAction {
     fn main_action(self, enabled: bool) -> Self;
 }
 
-impl MainAction for gpui_component::button::Button {
+impl MainAction for gpui_kit::component::button::Button {
     fn main_action(self, enabled: bool) -> Self {
-        use gpui_component::{Disableable, button::ButtonVariants};
+        use gpui_kit::component::{Disableable, button::ButtonVariants};
         if enabled {
             self.primary()
         } else {
@@ -73,7 +73,7 @@ pub fn active(cx: &App) -> Scheme {
 }
 
 pub fn solid_background(cx: &App) -> Hsla {
-    use gpui_component::ActiveTheme;
+    use gpui_kit::component::ActiveTheme;
     cx.try_global::<Active>()
         .map_or_else(|| cx.theme().background, |active| active.solid)
 }
@@ -85,8 +85,8 @@ pub fn terminal_opacity(cx: &App) -> f32 {
 
 pub fn window_background(
     settings: &crate::ui::settings::Settings,
-) -> gpui::WindowBackgroundAppearance {
-    use gpui::WindowBackgroundAppearance as Appearance;
+) -> gpui_kit::WindowBackgroundAppearance {
+    use gpui_kit::WindowBackgroundAppearance as Appearance;
     match (settings.opacity() < 1.0, settings.blur) {
         (false, _) => Appearance::Opaque,
         (true, false) => Appearance::Transparent,
@@ -123,17 +123,17 @@ pub fn apply(settings: &crate::ui::settings::Settings, window: Option<&mut Windo
         None,
         cx,
     );
-    {
-        let colors = &mut Theme::global_mut(cx).colors;
+    // Только через `Theme::update`: тема хранит цвета дважды (`colors` и
+    // `tokens`), а корень окна gpui-component красит `tokens.background`.
+    // Правка через `global_mut` оставляет токены от стандартной темы — под
+    // окном тогда лежит её непрозрачный фон, и прозрачность пропадает.
+    let solid = Theme::update(cx, |theme| {
         match scheme {
-            Scheme::Cratty => cratty(colors),
-            Scheme::Synthwave => synthwave(colors),
-            Scheme::Graphite => graphite(colors),
+            Scheme::Cratty => cratty(&mut theme.colors),
+            Scheme::Synthwave => synthwave(&mut theme.colors),
+            Scheme::Graphite => graphite(&mut theme.colors),
             Scheme::Light => {}
         }
-    }
-    {
-        let theme = Theme::global_mut(cx);
         let (background, active_line, number, active_number) = (
             theme.colors.background,
             theme.colors.secondary,
@@ -145,11 +145,11 @@ pub fn apply(settings: &crate::ui::settings::Settings, window: Option<&mut Windo
         style.editor_active_line = Some(active_line);
         style.editor_line_number = Some(number);
         style.editor_active_line_number = Some(active_number);
-    }
-    let solid = Theme::global(cx).colors.background;
-    if opacity < 1.0 {
-        Theme::global_mut(cx).colors.background = solid.opacity(opacity);
-    }
+        if opacity < 1.0 {
+            theme.colors.background = background.opacity(opacity);
+        }
+        background
+    });
     cx.set_global(Active {
         scheme,
         solid,
@@ -354,5 +354,23 @@ mod tests {
         ] {
             assert_eq!(Scheme::parse(scheme.as_str()), scheme);
         }
+    }
+
+    // Корень окна gpui-component красит `tokens.background`, а не
+    // `colors.background`: без синхронизации окно остаётся непрозрачным.
+    #[test]
+    fn prozrachnost_dohodit_do_tokenov_kornya() {
+        let mut cx = gpui_kit::TestAppContext::single();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let settings: crate::ui::settings::Settings =
+                serde_json::from_str(r#"{"terminal_opacity":60}"#).expect("разбор");
+            apply(&settings, None, cx);
+
+            let theme = Theme::global(cx);
+            let token = theme.tokens.background.background.as_solid().expect("сплошной фон");
+            assert!((token.a - 0.6).abs() < 0.01, "альфа токена: {}", token.a);
+            assert_eq!(token, theme.colors.background);
+        });
     }
 }

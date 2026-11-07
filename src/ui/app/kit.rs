@@ -1,8 +1,8 @@
-use gpui::{AnyElement, App, Context, Div, Pixels, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, button::Button, h_flex,
     label::Label, v_flex,
 };
+use gpui_kit::{AnyElement, App, Context, Div, Pixels, SharedString, Window, div, prelude::*, px};
 
 use super::AppView;
 
@@ -71,7 +71,7 @@ impl AppView {
             .top(px(8.))
             .right(px(12.))
             .w(width)
-            .max_w(gpui::relative(0.9))
+            .max_w(gpui_kit::relative(0.9))
             .p_2()
             .gap_1()
             .rounded_lg()

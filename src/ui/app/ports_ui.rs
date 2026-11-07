@@ -1,5 +1,4 @@
-use gpui::{AnyElement, Context, Entity, SharedString, Window, prelude::*};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
@@ -7,6 +6,7 @@ use gpui_component::{
     label::Label,
     v_flex,
 };
+use gpui_kit::{AnyElement, Context, Entity, SharedString, Window, prelude::*};
 use proto::{ForwardKind, PortForward};
 
 use super::AppView;
@@ -110,7 +110,7 @@ impl AppView {
                                 )))
                                 .text_xs()
                                 .text_color(muted)
-                                .flex_grow(),
+                                .flex_grow_1(),
                             )
                             .child(
                                 Button::new(SharedString::from(format!("forward-auto-{index}")))
@@ -231,14 +231,14 @@ impl AppView {
                                 .child(
                                     Input::new(&self.form.forward_draft.listen)
                                         .small()
-                                        .w(gpui::px(90.)),
+                                        .w(gpui_kit::px(90.)),
                                 )
                                 .when(kind != ForwardKind::Dynamic, |this| {
                                     this.child(Label::new("→").text_sm().text_color(muted))
                                         .child(
                                             Input::new(&self.form.forward_draft.target)
                                                 .small()
-                                                .flex_grow(),
+                                                .flex_grow_1(),
                                         )
                                 })
                                 .child(

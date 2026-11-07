@@ -1,7 +1,6 @@
 use crate::ui::route;
 use crate::vault_session::ViaItem;
-use gpui::{AnyElement, Context, Entity, SharedString, Window, div, prelude::*, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
@@ -10,6 +9,7 @@ use gpui_component::{
     scroll::ScrollableElement,
     v_flex,
 };
+use gpui_kit::{AnyElement, Context, Entity, SharedString, Window, div, prelude::*, px};
 use proto::{ProxyKind, ProxyRecord, RecordId, SOCKS_PORT};
 
 use super::{AppView, ROW_TITLE_CHARS, Section, shorten};
@@ -47,12 +47,13 @@ impl ProxyForm {
 impl AppView {
     pub(super) fn resolve_chain(
         &self,
+        vault: &str,
         via: &[RecordId],
     ) -> (Vec<crate::vault_session::ViaItem>, Option<String>) {
         if via.is_empty() {
             return (Vec::new(), None);
         }
-        let Some(unlocked) = self.vault.unlocked() else {
+        let Some(unlocked) = self.unlocked_of(vault) else {
             return (
                 Vec::new(),
                 Some("Хранилище заблокировано: цепочку прокси невозможно построить. Разблокируйте хранилище.".into()),
@@ -95,8 +96,7 @@ impl AppView {
         let existing = editing
             .as_ref()
             .and_then(|id| {
-                self.vault
-                    .unlocked()
+                self.current_unlocked()
                     .and_then(|unlocked| unlocked.proxy(id))
             })
             .map(|entry| entry.proxy);
@@ -125,7 +125,7 @@ impl AppView {
             record.forget_password();
         }
 
-        self.persist(cx, move |unlocked, store| {
+        self.persist_current(cx, move |unlocked, store| {
             unlocked.upsert_proxy(store, editing, record).map(|_| ())
         });
         if self.error.is_none() {
@@ -140,8 +140,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let Some(entry) = self
-            .vault
-            .unlocked()
+            .current_unlocked()
             .and_then(|unlocked| unlocked.proxy(id))
         else {
             return;
@@ -196,8 +195,7 @@ impl AppView {
             return;
         };
         let Some(mut proxy) = self
-            .vault
-            .unlocked()
+            .current_unlocked()
             .and_then(|unlocked| unlocked.proxy(&id))
             .map(|entry| entry.proxy)
         else {
@@ -206,7 +204,7 @@ impl AppView {
         if !proxy.forget_password() {
             return;
         }
-        self.persist(cx, move |unlocked, store| {
+        self.persist_current(cx, move |unlocked, store| {
             unlocked.upsert_proxy(store, Some(id), proxy).map(|_| ())
         });
     }
@@ -214,7 +212,7 @@ impl AppView {
     fn proxy_remove(&mut self, id: &RecordId, window: &mut Window, cx: &mut Context<Self>) {
         let id = id.clone();
         let was_editing = self.proxy_form.editing.as_ref() == Some(&id);
-        self.persist(cx, move |unlocked, store| unlocked.remove_proxy(store, &id));
+        self.persist_current(cx, move |unlocked, store| unlocked.remove_proxy(store, &id));
         if was_editing && self.error.is_none() {
             self.proxy_clear(window, cx);
         }
@@ -235,7 +233,7 @@ impl AppView {
     }
 
     pub(super) fn chain_block(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let unlocked = self.vault.unlocked()?;
+        let unlocked = self.unlocked_of(&self.form.vault)?;
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
         let proxies = unlocked.proxies();
@@ -359,7 +357,7 @@ impl AppView {
     pub(super) fn proxies_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let Some(unlocked) = self.vault.unlocked() else {
+        let Some(unlocked) = self.current_unlocked() else {
             return div().into_any_element();
         };
         let proxies = unlocked.proxies();
@@ -441,10 +439,10 @@ impl AppView {
             .relative()
             .size_full()
             .child(
-                v_flex().size_full().child(header).child(
+                v_flex().size_full().child(header).children(self.vault_picker(cx)).child(
                     v_flex()
                         .id("proxies-grid")
-                        .flex_grow()
+                        .flex_grow_1()
                         .min_h(px(0.))
                         .overflow_y_scrollbar()
                         .px_6()
@@ -492,8 +490,7 @@ impl AppView {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
         let editing = self.proxy_form.editing.as_ref().and_then(|id| {
-            self.vault
-                .unlocked()
+            self.current_unlocked()
                 .and_then(|unlocked| unlocked.proxy(id))
         });
         let has_password = editing
@@ -502,7 +499,7 @@ impl AppView {
         let used_by: Vec<String> = editing
             .as_ref()
             .and_then(|entry| {
-                self.vault.unlocked().map(|unlocked| {
+                self.current_unlocked().map(|unlocked| {
                     unlocked
                         .hosts_via(&entry.id)
                         .into_iter()
@@ -566,7 +563,7 @@ impl AppView {
                     .child(
                         v_flex()
                             .id("proxy-editor-body")
-                            .flex_grow()
+                            .flex_grow_1()
                             .min_h(px(0.))
                             .overflow_y_scrollbar()
                             .px_4()
@@ -582,7 +579,7 @@ impl AppView {
                                 h_flex()
                                     .gap_2()
                                     .items_end()
-                                    .child(div().flex_grow().child(field("Адрес", &form.host)))
+                                    .child(div().flex_grow_1().child(field("Адрес", &form.host)))
                                     .child(div().w(px(80.)).child(field("Порт", &form.port))),
                             )
                             .child(field("Имя пользователя", &form.user))
@@ -642,7 +639,7 @@ impl AppView {
                                         this.proxy_save(window, cx)
                                     })),
                             )
-                            .child(div().flex_grow())
+                            .child(div().flex_grow_1())
                             .children(remove_id.map(|id| {
                                 Button::new("proxy-remove")
                                     .ghost()

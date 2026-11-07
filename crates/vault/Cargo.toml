@@ -9,6 +9,7 @@ description = "Криптоядро: иерархия ключей, обёртк
 # это условие того, что крейт тестируется без единого мока. Из std берётся
 # только `std::time` (калибровка Argon2id) и `alloc`.
 [dependencies]
+bip39 = { version = "2", features = ["zeroize"] }
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 hkdf = "0.13.0"

@@ -221,7 +221,10 @@ impl AppView {
         if !self.settings.set_autolock_minutes(next) {
             return;
         }
-        self.vault.set_timeout(self.settings.autolock_timeout());
+        let timeout = self.settings.autolock_timeout();
+        for slot in &mut self.vaults {
+            slot.session.set_timeout(timeout);
+        }
         self.error = settings::save(&self.settings).err().map(SharedString::from);
         cx.notify();
     }
@@ -258,13 +261,20 @@ impl AppView {
         let danger = cx.theme().danger;
         let size = self.settings.font_size;
         let minutes = self.settings.autolock_minutes;
-        let has_os_key = self.vault.has_os_key();
-        let vault_unlocked = self.vault.state().is_unlocked();
+        let has_os_key = self.vault().has_os_key();
+        let vault_unlocked = self.vault().state().is_unlocked();
         let success = cx.theme().success;
-        let syncing_possible = vault_unlocked && self.settings.sync_folder().is_some();
+        let current_slot = &self.vaults[self.current];
+        let syncing_possible = vault_unlocked && current_slot.sync_path().is_some();
+        let vault_name = current_slot.name.clone();
+        let picker = self.vault_picker(cx);
+        let current_id = self.current_id();
 
         v_flex()
             .py_2()
+            .when(tab != SettingsTab::General, |this| {
+                this.children(picker.map(|picker| div().pt_2().child(picker)))
+            })
             .when(tab == SettingsTab::General, |this| {
                 this.child(self.theme_block(cx))
             })
@@ -316,6 +326,10 @@ impl AppView {
             .when(tab == SettingsTab::Security, |this| {
                 this.child(
                     Self::section("Разблокировка без пароля на этом компьютере", cx)
+                        .child(Self::hint(
+                            SharedString::from(format!("Хранилище: {vault_name}")),
+                            cx,
+                        ))
                         .child(
                             Button::new("os-key-toggle")
                                 .outline()
@@ -334,7 +348,7 @@ impl AppView {
                             Label::new(if has_os_key {
                                 "Хранилище разблокируется без пароля на этом компьютере. Ключ хранится в системном хранилище учётных данных: Keychain (macOS), диспетчер учётных данных (Windows), Secret Service (Linux)."
                             } else if vault_unlocked {
-                                "Ключ будет сохранён в системном хранилище учётных данных. Мастер-пароль и код восстановления продолжат действовать; функцию можно отключить в любой момент."
+                                "Ключ будет сохранён в системном хранилище учётных данных. Мастер-пароль и фраза восстановления продолжат действовать; функцию можно отключить в любой момент."
                             } else {
                                 "Доступно только при разблокированном хранилище."
                             })
@@ -360,6 +374,10 @@ impl AppView {
             .when(tab == SettingsTab::Sync, |this| {
                 this.child(
                     Self::section("Синхронизация через папку", cx)
+                        .child(Self::hint(
+                            SharedString::from(format!("Хранилище: {vault_name}")),
+                            cx,
+                        ))
                         .child(div().w_full().child(Input::new(&self.sync_input)))
                         .child(
                             Button::new("sync-apply")
@@ -374,7 +392,7 @@ impl AppView {
                             Button::new("sync-now")
                                 .ghost()
                                 .w_full()
-                                .label(if self.syncing {
+                                .label(if self.syncing.contains(&current_id) {
                                     "Синхронизация…"
                                 } else {
                                     "Синхронизировать сейчас"
@@ -384,8 +402,11 @@ impl AppView {
                                 } else {
                                     "Требуются разблокированное хранилище и указанная папка"
                                 })
-                                .disabled(self.syncing || !syncing_possible)
-                                .on_click(cx.listener(|this, _, _window, cx| this.sync_now(cx))),
+                                .disabled(self.syncing.contains(&current_id) || !syncing_possible)
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    let id = this.current_id();
+                                    this.sync_now(&id, cx)
+                                })),
                         )
                         .child(
                             Label::new(concat!(
@@ -419,14 +440,15 @@ impl AppView {
             .when(tab == SettingsTab::General, |this| {
                 this.child(
                     Self::section("Расположение данных", cx)
-                        .child(
+                        .children(self.listed().map(|(_, slot)| {
                             Label::new(SharedString::from(format!(
-                                "Хранилище: {}",
-                                self.vault.store().root().display()
+                                "Хранилище «{}»: {}",
+                                slot.name,
+                                slot.root().display()
                             )))
                             .text_xs()
-                            .text_color(muted),
-                        )
+                            .text_color(muted)
+                        }))
                         .child(
                             Label::new(SharedString::from(format!(
                                 "Настройки: {}",

@@ -33,6 +33,13 @@ impl AppView {
             return;
         }
 
+        let name = self.vault_form.name.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            self.vault_error = Some("Укажите название хранилища.".into());
+            cx.notify();
+            return;
+        }
+
         let mut password = self.vault_form.password.read(cx).value().to_string();
         let mut repeat = self.vault_form.repeat.read(cx).value().to_string();
 
@@ -47,10 +54,12 @@ impl AppView {
         }
 
         let import = if self.vault_form.import {
-            self.pending_import.clone()
+            self.import_pending().to_vec()
         } else {
             Vec::new()
         };
+        let imported = !import.is_empty();
+        let id = self.current_id();
 
         let mut secret = Self::take_password(&self.vault_form.password, window, cx);
         self.vault_form
@@ -70,12 +79,25 @@ impl AppView {
         self.vault_error = None;
         cx.notify();
 
-        self.vault_task = Some(cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        self.vault_task = Some(cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             let prepared = prepare.await;
             this.update(cx, |this, cx| {
                 this.vault_busy = false;
-                match prepared.and_then(|prepared| this.vault.install(prepared, import)) {
-                    Ok(code) => this.show_recovery_code(&code, cx),
+                let installed = match this.vault_ix(&id) {
+                    Some(ix) => prepared
+                        .and_then(|prepared| this.vaults[ix].session.install(prepared, import))
+                        .map(|code| (ix, code)),
+                    None => Err(anyhow::anyhow!("хранилище было удалено при создании")),
+                };
+                match installed {
+                    Ok((ix, code)) => {
+                        let slot = &mut this.vaults[ix];
+                        slot.name = name;
+                        slot.draft = false;
+                        this.current = ix;
+                        this.save_registry();
+                        this.show_recovery_code(&code, imported, cx);
+                    }
                     Err(error) => this.vault_error = Some(SharedString::from(format!("{error:#}"))),
                 }
                 cx.notify();
@@ -87,6 +109,7 @@ impl AppView {
     pub(super) fn show_recovery_code(
         &mut self,
         code: &vault::RecoveryCode,
+        imported: bool,
         _cx: &mut Context<Self>,
     ) {
         use vault::secrecy::ExposeSecret;
@@ -94,7 +117,7 @@ impl AppView {
         let shown = code.format_for_user();
         let text = String::from_utf8_lossy(shown.expose_secret()).into_owned();
 
-        if !self.pending_import.is_empty()
+        if imported
             && self.vault_form.import
             && let (Some(path), _) = VaultSession::legacy_hosts()
         {
@@ -115,14 +138,22 @@ impl AppView {
             code: SharedString::from(text),
             confirmed: false,
         });
-        self.collect_vault_warnings();
+        let id = self.current_id();
+        self.collect_vault_warnings(&id);
+    }
+
+    fn adopt_into(&mut self, id: &str, data_key: vault::DataKey) -> anyhow::Result<()> {
+        match self.vault_ix(id) {
+            Some(ix) => self.vaults[ix].session.adopt(data_key),
+            None => anyhow::bail!("хранилище было удалено"),
+        }
     }
 
     pub(super) fn unlock_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.vault_busy {
             return;
         }
-        let account = match self.vault.locked_account() {
+        let account = match self.vault().locked_account() {
             Ok(account) => account,
             Err(error) => {
                 self.vault_error = Some(SharedString::from(format!("{error:#}")));
@@ -130,6 +161,8 @@ impl AppView {
                 return;
             }
         };
+        let id = self.current_id();
+        let remember = self.vault_form.remember;
 
         let mut secret = Self::take_password(&self.vault_form.password, window, cx);
 
@@ -143,12 +176,25 @@ impl AppView {
         self.vault_error = None;
         cx.notify();
 
-        self.vault_task = Some(cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        self.vault_task = Some(cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             let derived = derive.await;
             this.update(cx, |this, cx| {
                 this.vault_busy = false;
-                let result = derived.and_then(|data_key| this.vault.adopt(data_key));
-                this.after_unlock(result, cx);
+                let result = derived.and_then(|data_key| this.adopt_into(&id, data_key));
+                let unlocked = result.is_ok();
+                this.after_unlock(&id, result, cx);
+                if unlocked
+                    && remember
+                    && let Some(ix) = this.vault_ix(&id)
+                {
+                    this.vault_form.remember = false;
+                    if let Err(error) = this.vaults[ix].session.enable_os_key(&OsKeychain) {
+                        this.vault_error = Some(SharedString::from(format!(
+                            "Хранилище открыто, но запомнить его на этом компьютере не удалось: {error:#}"
+                        )));
+                        cx.notify();
+                    }
+                }
             })
             .ok();
         }));
@@ -158,7 +204,7 @@ impl AppView {
         if self.vault_busy {
             return;
         }
-        let account = match self.vault.locked_account() {
+        let account = match self.vault().locked_account() {
             Ok(account) => account,
             Err(error) => {
                 self.vault_error = Some(SharedString::from(format!("{error:#}")));
@@ -166,6 +212,7 @@ impl AppView {
                 return;
             }
         };
+        let id = self.current_id();
 
         let typed = self.vault_form.code.read(cx).value().to_string();
         let code = match vault::RecoveryCode::parse(typed.as_bytes()) {
@@ -188,26 +235,38 @@ impl AppView {
         self.vault_error = None;
         cx.notify();
 
-        self.vault_task = Some(cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        self.vault_task = Some(cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             let derived = derive.await;
             this.update(cx, |this, cx| {
                 this.vault_busy = false;
-                let result = derived.and_then(|data_key| this.vault.adopt(data_key));
-                this.after_unlock(result, cx);
+                let result = derived.and_then(|data_key| this.adopt_into(&id, data_key));
+                this.after_unlock(&id, result, cx);
             })
             .ok();
         }));
     }
 
-    pub(super) fn unlock_with_os_key(&mut self, cx: &mut Context<Self>) {
-        if self.vault_busy {
+    /// Разблокировка ключом из системного хранилища. `interactive` — по кнопке
+    /// на экране хранилища (с индикацией занятости); иначе — тихо, при запуске.
+    pub(super) fn unlock_with_os_key_for(
+        &mut self,
+        id: &str,
+        interactive: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if interactive && self.vault_busy {
             return;
         }
-        let account = match self.vault.locked_account() {
+        let Some(ix) = self.vault_ix(id) else {
+            return;
+        };
+        let account = match self.vaults[ix].session.locked_account() {
             Ok(account) => account,
             Err(error) => {
-                self.vault_error = Some(SharedString::from(format!("{error:#}")));
-                cx.notify();
+                if ix == self.current {
+                    self.vault_error = Some(SharedString::from(format!("{error:#}")));
+                    cx.notify();
+                }
                 return;
             }
         };
@@ -216,26 +275,39 @@ impl AppView {
             .background_executor()
             .spawn(async move { crate::vault_session::derive_from_os_key(&account, &OsKeychain) });
 
-        self.vault_busy = true;
-        self.vault_error = None;
+        if interactive {
+            self.vault_busy = true;
+            self.vault_error = None;
+        } else {
+            self.os_unlocking.push(id.to_owned());
+        }
         cx.notify();
 
-        self.vault_task = Some(cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        let id = id.to_owned();
+        let task = cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             let derived = derive.await;
             this.update(cx, |this, cx| {
-                this.vault_busy = false;
-                let result = derived.and_then(|data_key| this.vault.adopt(data_key));
-                this.after_unlock(result, cx);
+                if interactive {
+                    this.vault_busy = false;
+                }
+                let result = derived.and_then(|data_key| this.adopt_into(&id, data_key));
+                this.after_unlock(&id, result, cx);
             })
             .ok();
-        }));
+        });
+        if interactive {
+            self.vault_task = Some(task);
+        } else {
+            self.os_tasks.push(task);
+        }
     }
 
     pub(super) fn toggle_os_key(&mut self, cx: &mut Context<Self>) {
-        let result = if self.vault.has_os_key() {
-            self.vault.disable_os_key(&OsKeychain)
+        let current = self.current;
+        let result = if self.vaults[current].session.has_os_key() {
+            self.vaults[current].session.disable_os_key(&OsKeychain)
         } else {
-            self.vault.enable_os_key(&OsKeychain)
+            self.vaults[current].session.enable_os_key(&OsKeychain)
         };
 
         self.vault_error = match result {
@@ -245,44 +317,49 @@ impl AppView {
         cx.notify();
     }
 
-    pub(super) fn after_unlock(&mut self, result: anyhow::Result<()>, cx: &mut Context<Self>) {
-        self.auto_unlock = false;
+    pub(super) fn after_unlock(
+        &mut self,
+        id: &str,
+        result: anyhow::Result<()>,
+        cx: &mut Context<Self>,
+    ) {
+        self.os_unlocking.retain(|known| known != id);
+        let is_current = self.vault_ix(id) == Some(self.current);
         match result {
             Ok(()) => {
-                self.stage = None;
-                self.vault_error = None;
-                self.collect_vault_warnings();
+                if is_current {
+                    self.stage = None;
+                    self.vault_error = None;
+                }
+                self.collect_vault_warnings(id);
                 self.sync_can_save_secrets(cx);
-                self.start_sync_watch(cx);
-                self.sync_now(cx);
+                self.start_sync_watch(id, cx);
+                self.sync_now(id, cx);
             }
-            Err(error) => self.vault_error = Some(SharedString::from(format!("{error:#}"))),
+            Err(error) => {
+                if is_current {
+                    self.vault_error = Some(SharedString::from(format!("{error:#}")));
+                }
+            }
         }
         cx.notify();
     }
 
-    pub(super) fn collect_vault_warnings(&mut self) {
-        let Some(unlocked) = self.vault.unlocked() else {
+    pub(super) fn collect_vault_warnings(&mut self, id: &str) {
+        let Some(unlocked) = self.unlocked_of(id) else {
             return;
         };
-        for warning in unlocked.warnings.iter().chain(unlocked.broken.iter()) {
-            let warning = SharedString::from(warning.clone());
+        let found: Vec<SharedString> = unlocked
+            .warnings
+            .iter()
+            .chain(unlocked.broken.iter())
+            .map(|warning| SharedString::from(warning.clone()))
+            .collect();
+        for warning in found {
             if !self.vault_warnings.contains(&warning) {
                 self.vault_warnings.push(warning);
             }
         }
-    }
-
-    pub(super) fn lock_vault(&mut self, cx: &mut Context<Self>) {
-        self.reveal = None;
-        self.sync_watch = None;
-        self.refuse_all_signs();
-        self.proxy_form.editing = None;
-        self.vault.lock(None);
-        self.stage = Some(Stage::Unlock);
-        self.vault_error = None;
-        self.sync_can_save_secrets(cx);
-        cx.notify();
     }
 
     pub(super) fn vault_panel(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -295,7 +372,7 @@ impl AppView {
             return div().into_any_element();
         };
 
-        if let Some(reason) = self.vault.state().broken_reason() {
+        if let Some(reason) = self.vault().state().broken_reason() {
             return v_flex()
                 .px_3()
                 .pt_3()
@@ -314,7 +391,7 @@ impl AppView {
                 .child(
                     Label::new(SharedString::from(format!(
                         "Файл хранилища: {}. Не удаляйте его: повреждённым может оказаться только заголовок, а без файла записи не восстановить.",
-                        self.vault.store().root().display()
+                        self.vault().store().root().display()
                     )))
                     .text_xs()
                     .text_color(muted),
@@ -329,7 +406,8 @@ impl AppView {
                     self.vault_form.repeat.read(cx).value().as_ref(),
                 );
                 let typed = !self.vault_form.password.read(cx).value().is_empty();
-                let import_count = self.pending_import.len();
+                let import_count = self.import_pending().len();
+                let can_cancel = self.vaults.iter().any(|slot| !slot.draft);
 
                 v_flex()
                     .gap_2()
@@ -338,6 +416,8 @@ impl AppView {
                             .text_xs()
                             .text_color(muted),
                     )
+                    .child(Self::field_label("Название", muted))
+                    .child(Input::new(&self.vault_form.name))
                     .child(Input::new(&self.vault_form.password))
                     .child(Input::new(&self.vault_form.repeat))
                     .when(import_count > 0, |this| {
@@ -368,6 +448,18 @@ impl AppView {
                                 cx.listener(|this, _, window, cx| this.create_vault(window, cx)),
                             ),
                     )
+                    .when(can_cancel, |this| {
+                        this.child(
+                            Button::new("vault-create-cancel")
+                                .ghost()
+                                .xsmall()
+                                .label("Отмена")
+                                .disabled(self.vault_busy)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.cancel_new_vault(window, cx)
+                                })),
+                        )
+                    })
                     .children(
                         verdict
                             .message()
@@ -416,8 +508,8 @@ impl AppView {
                             .ghost()
                             .xsmall()
                             .selected(confirmed)
-                            .label("Код восстановления сохранён")
-                            .tooltip("Повторно код не отображается")
+                            .label("Фраза восстановления сохранена")
+                            .tooltip("Повторно фраза не отображается")
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 if let Some(Stage::Recovery { confirmed, .. }) = &mut this.stage {
                                     *confirmed = !*confirmed;
@@ -447,7 +539,7 @@ impl AppView {
                     )
             }
 
-            Stage::Unlock if self.auto_unlock => v_flex().gap_2().child(
+            Stage::Unlock if self.os_unlocking.contains(&self.vaults[self.current].id) => v_flex().gap_2().child(
                 Label::new("Разблокировка ключом этого компьютера…")
                     .text_sm()
                     .text_color(muted),
@@ -457,6 +549,19 @@ impl AppView {
                 .gap_2()
                 .child(Label::new(stage.subtitle()).text_xs().text_color(muted))
                 .child(Input::new(&self.vault_form.password))
+                .when(!self.vault().has_os_key(), |this| {
+                    this.child(
+                        gpui_kit::component::checkbox::Checkbox::new("vault-remember")
+                            .small()
+                            .label("Не спрашивать пароль на этом компьютере")
+                            .checked(self.vault_form.remember)
+                            .tooltip("Ключ сохранится в системном хранилище учётных данных: Keychain (macOS), диспетчер учётных данных (Windows), Secret Service (Linux). Отключить можно в Настройках → Безопасность.")
+                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                this.vault_form.remember = *checked;
+                                cx.notify();
+                            })),
+                    )
+                })
                 .child(
                     Button::new("vault-unlock")
                         .w_full()
@@ -477,7 +582,7 @@ impl AppView {
                         .text_color(muted),
                     )
                 })
-                .when(self.vault.has_os_key(), |this| {
+                .when(self.vault().has_os_key(), |this| {
                     this.child(
                         Button::new("vault-unlock-os")
                             .outline()
@@ -487,9 +592,10 @@ impl AppView {
                                 "Ключом этого компьютера из системного хранилища учётных данных",
                             )
                             .disabled(self.vault_busy)
-                            .on_click(
-                                cx.listener(|this, _, _window, cx| this.unlock_with_os_key(cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                let id = this.current_id();
+                                this.unlock_with_os_key_for(&id, true, cx)
+                            })),
                     )
                 })
                 .child(
@@ -509,7 +615,7 @@ impl AppView {
                 .gap_2()
                 .child(
                     Label::new(
-                        "Код выдан однократно при создании хранилища. Регистр символов и дефисы не учитываются.",
+                        "Введите 12 или 24 слова английского словаря BIP39 в том порядке, в каком они были выданы при создании хранилища. Регистр не учитывается. Код старого формата (XXXX-XXXX-…) по-прежнему принимается.",
                     )
                     .text_xs()
                     .text_color(muted),
@@ -541,8 +647,21 @@ impl AppView {
                 ),
         };
 
+        let named = !matches!(stage, Stage::Create);
         v_flex()
             .child(Self::panel_title(stage.title(), muted))
+            .when(named, |this| {
+                this.child(
+                    div().px_3().pb_2().child(
+                        Label::new(SharedString::from(format!(
+                            "Хранилище: {}",
+                            self.vaults[self.current].name
+                        )))
+                        .text_xs()
+                        .text_color(muted),
+                    ),
+                )
+            })
             .child(v_flex().px_3().pb_3().child(body))
             .children(self.vault_error.clone().map(|error| {
                 v_flex()

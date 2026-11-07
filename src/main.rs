@@ -1,8 +1,8 @@
 use cratty::ui;
-use gpui::{App, Application};
+use gpui_kit::App;
 
 fn main() {
-    Application::new()
+    gpui_kit::application()
         .with_assets(ui::assets::Assets)
         .run(|cx: &mut App| {
             if let Err(err) = ui::open_main_window(cx) {

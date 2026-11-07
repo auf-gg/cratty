@@ -1,5 +1,5 @@
-use gpui::{AnyElement, App, Div, SharedString, div, prelude::*};
-use gpui_component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, label::Label, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, label::Label, v_flex};
+use gpui_kit::{AnyElement, App, Div, SharedString, div, prelude::*};
 use proto::{ForwardKind, PortForward};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

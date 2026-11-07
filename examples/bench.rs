@@ -5,7 +5,9 @@ use cratty::ssh::PtySize;
 use cratty::term::{Responder, Snapshot, Terminal};
 use cratty::ui::element::TerminalElement;
 use cratty::ui::terminal::{CellMetrics, FONT_SIZE, LINE_HEIGHT, grid_element};
-use gpui::{AvailableSpace, TestAppContext, VisualTestContext, div, point, prelude::*, px, size};
+use gpui_kit::{
+    AvailableSpace, TestAppContext, VisualTestContext, div, point, prelude::*, px, size,
+};
 
 const GRID: PtySize = PtySize {
     cols: 200,
@@ -283,8 +285,14 @@ fn bench_element(label: &'static str, screen: &[u8]) -> Measurement {
 
     let draw_once = |visual: &mut VisualTestContext, snapshot: Snapshot| {
         visual.draw(point(px(0.), px(0.)), space, move |_window, _cx| {
-            TerminalElement::new(snapshot, metrics, gpui::font("monospace"), FONT_SIZE, true)
-                .into_any_element()
+            TerminalElement::new(
+                snapshot,
+                metrics,
+                gpui_kit::font("monospace"),
+                FONT_SIZE,
+                true,
+            )
+            .into_any_element()
         });
     };
 

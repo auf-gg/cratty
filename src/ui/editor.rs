@@ -1,16 +1,16 @@
 use crate::ui::theme::MainAction;
 use futures::channel::{mpsc, oneshot};
-use gpui::{
-    Context, Entity, EventEmitter, IntoElement, KeyDownEvent, Render, SharedString, Subscription,
-    Window, div, prelude::*, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Icon, Sizable,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, InputEvent},
     label::Label,
     v_flex,
+};
+use gpui_kit::{
+    Context, Entity, EventEmitter, IntoElement, KeyDownEvent, Render, SharedString, Subscription,
+    Window, div, prelude::*, px,
 };
 
 use crate::ssh::sftp::ToSftp;
@@ -26,7 +26,7 @@ pub struct EditorView {
     path: String,
     name: String,
     commands: mpsc::UnboundedSender<ToSftp>,
-    input: Option<Entity<InputState>>,
+    input: Option<Entity<EditorState>>,
     pending: Option<String>,
     crlf: bool,
     dirty: bool,
@@ -111,13 +111,13 @@ impl EditorView {
         };
         let language = language_of(&self.name);
         let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx)
-                .code_editor(language)
+            let mut state = EditorState::new(window, cx)
+                .language(language)
                 .line_number(true);
             state.set_value(text, window, cx);
             state
         });
-        window.focus(&gpui::Focusable::focus_handle(&input, cx));
+        window.focus(&gpui_kit::Focusable::focus_handle(&input, cx), cx);
         self._subscription = Some(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) && !this.dirty {
                 this.dirty = true;
@@ -158,7 +158,7 @@ impl EditorView {
         self.status = None;
         cx.notify();
 
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             let result = answer.await;
             let _ = this.update(cx, |this, cx| {
                 this.saving = false;
@@ -183,7 +183,7 @@ impl EditorView {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if event.keystroke.modifiers.secondary() && event.keystroke.key.as_str() == "s" {
+        if event.keystroke.modifiers.secondary(cx) && event.keystroke.key.as_str() == "s" {
             self.save(false, cx);
             cx.stop_propagation();
         }
@@ -227,7 +227,7 @@ impl Render for EditorView {
                     .child(
                         h_flex()
                             .id("editor-path")
-                            .flex_grow()
+                            .flex_grow_1()
                             .min_w(px(0.))
                             .gap_1p5()
                             .items_center()
@@ -235,7 +235,7 @@ impl Render for EditorView {
                             .tooltip({
                                 let path = SharedString::from(self.path.clone());
                                 move |window, cx| {
-                                    gpui_component::tooltip::Tooltip::new(path.clone())
+                                    gpui_kit::component::tooltip::Tooltip::new(path.clone())
                                         .build(window, cx)
                                 }
                             })
@@ -243,7 +243,7 @@ impl Render for EditorView {
                                 div()
                                     .flex_shrink_0()
                                     .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .whitespace_nowrap()
                                     .child(SharedString::from(file)),
                             )
@@ -367,14 +367,14 @@ impl Render for EditorView {
             })
             .child(
                 div()
-                    .flex_grow()
+                    .flex_grow_1()
                     .min_h(px(0.))
                     .font_family(mono)
                     .text_size(px(13.))
                     .children(
                         self.input
                             .as_ref()
-                            .map(|input| Input::new(input).h_full().appearance(false)),
+                            .map(|input| Editor::new(input).h_full().appearance(false)),
                     ),
             )
     }

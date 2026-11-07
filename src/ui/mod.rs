@@ -7,6 +7,7 @@ pub mod files;
 pub mod font;
 pub mod route;
 pub mod settings;
+pub mod ssh_import;
 pub mod terminal;
 pub mod theme;
 pub mod vault_ui;

@@ -8,9 +8,8 @@ impl AppView {
             return None;
         }
         let theme = cx.theme().clone();
-        let locked = !self.vault.state().is_unlocked();
+        let locked = !self.any_unlocked();
         let query = self.form.line.read(cx).value().trim().to_string();
-        let lowered = query.to_lowercase();
 
         let sessions: Vec<AnyElement> = self
             .tabs
@@ -19,27 +18,12 @@ impl AppView {
             .map(|(index, tab)| self.session_row(index, tab, cx))
             .collect();
 
-        let saved: Vec<HostRecord> = self
-            .vault
-            .unlocked()
-            .map(|unlocked| {
-                unlocked
-                    .hosts()
-                    .into_iter()
-                    .map(|entry| entry.host)
-                    .filter(|host| host.matches(&query))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let from_config: Vec<KnownHost> = self
-            .hosts
-            .iter()
-            .filter(|host| {
-                lowered.is_empty()
-                    || host.alias.to_lowercase().contains(&lowered)
-                    || host.detail.to_lowercase().contains(&lowered)
-            })
-            .cloned()
+        let vault_groups: Vec<AnyElement> = self
+            .listed()
+            .map(|(ix, _)| ix)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|ix| self.vault_group(ix, &query, cx))
             .collect();
 
         let looks_like_address = !query.is_empty() && connect::parse_target(&query).is_ok();
@@ -61,6 +45,21 @@ impl AppView {
                         .items_center()
                         .child(div().flex_1().child(Input::new(&self.form.line).small()))
                         .child(
+                            Button::new("rail-local-terminal")
+                                .ghost()
+                                .small()
+                                .icon(Icon::empty().path("icons/square-terminal.svg"))
+                                .tooltip(if cfg!(unix) {
+                                    "Локальный терминал (без хранилища)"
+                                } else {
+                                    "Локальный терминал поддерживается только на Unix"
+                                })
+                                .disabled(!cfg!(unix))
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.spawn_local_tab(cx)
+                                })),
+                        )
+                        .child(
                             Button::new("rail-new-host")
                                 .ghost()
                                 .small()
@@ -79,7 +78,7 @@ impl AppView {
                 .child(
                     v_flex()
                         .id("rail-scroll")
-                        .flex_grow()
+                        .flex_grow_1()
                         .min_h(px(0.))
                         .overflow_y_scrollbar()
                         .px_2()
@@ -95,43 +94,50 @@ impl AppView {
                         .when(!sessions.is_empty(), |this| {
                             this.child(self.rail_group("Сеансы", sessions, cx))
                         })
-                        .child(self.rail_group(
-                            "Хосты",
-                            if locked {
-                                vec![self.locked_row(cx)]
-                            } else if saved.is_empty() {
-                                vec![self.empty_row(
-                                    if query.is_empty() {
-                                        "Хосты не добавлены"
-                                    } else {
-                                        "Ничего не нашлось"
-                                    },
-                                    cx,
-                                )]
-                            } else {
-                                saved
-                                    .into_iter()
-                                    .map(|host| self.saved_row(host, cx))
-                                    .collect()
-                            },
-                            cx,
-                        ))
-                        .when(!from_config.is_empty(), |this| {
-                            this.child(
-                                self.rail_group(
-                                    "Из ~/.ssh/config",
-                                    from_config
-                                        .into_iter()
-                                        .map(|host| self.config_row(host, cx))
-                                        .collect(),
-                                    cx,
-                                ),
-                            )
-                        }),
+                        .children(self.import_notice_box(cx))
+                        .children(vault_groups)
+                        .child(self.new_vault_row(cx)),
                 )
                 .child(self.rail_footer(cx))
                 .into_any_element(),
         )
+    }
+
+    fn vault_group(&self, ix: usize, query: &str, cx: &mut Context<Self>) -> AnyElement {
+        let slot = &self.vaults[ix];
+        let id = slot.id.clone();
+        let rows: Vec<AnyElement> = match slot.session.unlocked() {
+            None => vec![self.locked_row(ix, cx)],
+            Some(unlocked) => {
+                let saved: Vec<HostRecord> = unlocked
+                    .hosts()
+                    .into_iter()
+                    .map(|entry| entry.host)
+                    .filter(|host| host.matches(query))
+                    .collect();
+                if saved.is_empty() {
+                    vec![self.empty_row(
+                        if query.is_empty() {
+                            "Хосты не добавлены"
+                        } else {
+                            "Ничего не нашлось"
+                        },
+                        cx,
+                    )]
+                } else {
+                    saved
+                        .into_iter()
+                        .map(|host| self.saved_row(&id, host, cx))
+                        .collect()
+                }
+            }
+        };
+
+        v_flex()
+            .gap_px()
+            .child(self.vault_header(ix, cx))
+            .children(rows)
+            .into_any_element()
     }
 
     fn rail_group(&self, title: &'static str, rows: Vec<AnyElement>, cx: &App) -> AnyElement {
@@ -149,7 +155,11 @@ impl AppView {
             .into_any_element()
     }
 
-    fn rail_row(id: SharedString, selected: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
+    pub(super) fn rail_row(
+        id: SharedString,
+        selected: bool,
+        cx: &App,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
         let theme = cx.theme();
         let (selected_bg, hover_bg) = (theme.secondary_active, theme.secondary_hover);
         h_flex()
@@ -231,7 +241,7 @@ impl AppView {
         .into_any_element()
     }
 
-    pub(super) fn dot(color: gpui::Hsla) -> AnyElement {
+    pub(super) fn dot(color: gpui_kit::Hsla) -> AnyElement {
         div()
             .size(px(7.))
             .rounded_full()
@@ -306,35 +316,24 @@ impl AppView {
             .into_any_element()
     }
 
-    fn saved_row(&self, host: HostRecord, cx: &mut Context<Self>) -> AnyElement {
+    fn saved_row(&self, vault: &str, host: HostRecord, cx: &mut Context<Self>) -> AnyElement {
         let target = host.target();
+        let (open_vault, files_vault, edit_vault) =
+            (vault.to_owned(), vault.to_owned(), vault.to_owned());
         let (open_target, files_target, edit_target) =
             (target.clone(), target.clone(), target.clone());
         self.host_row(
-            SharedString::from(format!("rail-host-{target}")),
+            SharedString::from(format!("rail-host-{vault}-{target}")),
             shorten(&host.title(), ROW_TITLE_CHARS + 6),
             target.clone(),
-            move |this, cx| this.open_saved(&open_target, cx),
+            move |this, cx| this.open_saved(&open_vault, &open_target, cx),
             move |this, cx| {
-                let credentials = this.saved_credentials(&files_target);
-                this.open_files(&files_target, credentials, cx);
+                let credentials = this.saved_credentials(&files_vault, &files_target);
+                this.open_files(&files_target, credentials, Some(files_vault.clone()), cx);
             },
             Some(Box::new(move |this, window, cx| {
-                this.edit(&edit_target, window, cx)
+                this.edit(&edit_vault, &edit_target, window, cx)
             })),
-            cx,
-        )
-    }
-
-    fn config_row(&self, host: KnownHost, cx: &mut Context<Self>) -> AnyElement {
-        let (open_alias, files_alias) = (host.alias.clone(), host.alias.clone());
-        self.host_row(
-            SharedString::from(format!("rail-config-{}", host.alias)),
-            host.alias.clone(),
-            host.detail.clone(),
-            move |this, cx| this.open(&open_alias, &connect::Credentials::default(), cx),
-            move |this, cx| this.open_files(&files_alias, connect::Credentials::default(), cx),
-            None,
             cx,
         )
     }
@@ -366,14 +365,15 @@ impl AppView {
             .into_any_element()
     }
 
-    fn locked_row(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn locked_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let (title, hint) = if self.vault.state().is_absent() {
+        let id = self.vaults[ix].id.clone();
+        let (title, hint) = if self.vaults[ix].session.state().is_absent() {
             ("Хранилище не создано", "Создать хранилище")
         } else {
             ("Хранилище заблокировано", "Разблокировать")
         };
-        Self::rail_row("rail-locked".into(), false, cx)
+        Self::rail_row(SharedString::from(format!("rail-locked-{id}")), false, cx)
             .h(px(42.))
             .child(
                 Icon::empty()
@@ -388,7 +388,9 @@ impl AppView {
                         .text_color(theme.muted_foreground),
                 ),
             )
-            .on_click(cx.listener(|this, _, _window, cx| this.go(Section::Hosts, cx)))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.open_vault_screen(&id, window, cx)),
+            )
             .into_any_element()
     }
 
@@ -408,7 +410,7 @@ impl AppView {
 
     fn rail_footer(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let unlocked = self.vault.state().is_unlocked();
+        let unlocked = self.any_unlocked();
         let nav = |id: &'static str, icon: Icon, tip: &'static str, section: Section| {
             Button::new(id)
                 .ghost()
@@ -449,7 +451,7 @@ impl AppView {
                 "Настройки",
                 Section::Settings,
             ))
-            .child(div().flex_grow())
+            .child(div().flex_grow_1())
             .child(
                 Button::new("rail-vault")
                     .ghost()
@@ -468,15 +470,16 @@ impl AppView {
                             }),
                     )
                     .tooltip(if unlocked {
-                        "Заблокировать хранилище"
+                        "Заблокировать все хранилища"
                     } else {
                         "Разблокировать хранилище"
                     })
-                    .on_click(cx.listener(move |this, _, _window, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         if unlocked {
-                            this.lock_vault(cx);
+                            this.lock_all(cx);
                         } else {
-                            this.go(Section::Hosts, cx);
+                            let id = this.current_id();
+                            this.open_vault_screen(&id, window, cx);
                         }
                     })),
             )

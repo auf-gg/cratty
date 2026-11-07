@@ -19,8 +19,18 @@ const CHECK_ALPHABET: &[u8; 37] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U";
 
 pub const RECOVERY_SALT_LEN: usize = 32;
 
+/// Энтропия новой фразы восстановления: 24 слова BIP39.
+pub const RECOVERY_ENTROPY_BYTES: usize = 32;
+
+const MAX_ENTROPY_BYTES: usize = RECOVERY_ENTROPY_BYTES;
+
+/// Секрет восстановления: 16 или 32 байта (12 или 24 слова BIP39) либо
+/// 20 байт прежнего формата. Ключ обёртки всегда — HKDF от этих байт.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct RecoveryCode([u8; RECOVERY_CODE_BYTES]);
+pub struct RecoveryCode {
+    bytes: [u8; MAX_ENTROPY_BYTES],
+    len: usize,
+}
 
 impl core::fmt::Debug for RecoveryCode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -29,21 +39,78 @@ impl core::fmt::Debug for RecoveryCode {
 }
 
 impl RecoveryCode {
-    pub fn generate() -> Result<Self> {
-        Ok(Self(rng::array()?))
+    fn from_slice(entropy: &[u8]) -> Self {
+        let mut bytes = [0u8; MAX_ENTROPY_BYTES];
+        bytes[..entropy.len()].copy_from_slice(entropy);
+        Self {
+            bytes,
+            len: entropy.len(),
+        }
     }
 
+    fn entropy(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    pub fn generate() -> Result<Self> {
+        let mut entropy = Zeroizing::new(rng::array::<RECOVERY_ENTROPY_BYTES>()?);
+        Ok(Self::from_slice(entropy.as_mut()))
+    }
+
+    /// Принимает 12 или 24 слова BIP39 (английский словарь) либо код прежнего
+    /// формата из 37 символов.
     pub fn parse(input: &[u8]) -> Result<Self> {
+        let words = input
+            .split(|byte| matches!(byte, b'-' | b' ' | b'\t' | b'\r' | b'\n'))
+            .filter(|word| !word.is_empty())
+            .count();
+
+        if matches!(words, 12 | 24) {
+            return Self::parse_mnemonic(input);
+        }
+
+        let stripped = input
+            .iter()
+            .filter(|byte| !matches!(byte, b'-' | b' ' | b'\t' | b'\r' | b'\n'))
+            .count();
+        if stripped == RECOVERY_CODE_SYMBOLS + 1 {
+            return Self::parse_legacy(input);
+        }
+        Err(Error::RecoveryCode("не то число слов"))
+    }
+
+    fn parse_mnemonic(input: &[u8]) -> Result<Self> {
+        let text = core::str::from_utf8(input)
+            .map_err(|_| Error::RecoveryCode("слова вне словаря BIP39"))?;
+        let mut normalized = Zeroizing::new(String::with_capacity(text.len()));
+        for word in text
+            .split(|c: char| c == '-' || c.is_whitespace())
+            .filter(|word| !word.is_empty())
+        {
+            if !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            normalized.push_str(&word.to_lowercase());
+        }
+
+        let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &normalized)
+            .map_err(|error| match error {
+                bip39::Error::BadWordCount(_) => Error::RecoveryCode("не то число слов"),
+                bip39::Error::UnknownWord(_) => Error::RecoveryCode("слова вне словаря BIP39"),
+                _ => Error::RecoveryCode("контрольная сумма не сошлась"),
+            })?;
+        let (entropy, len) = mnemonic.to_entropy_array();
+        let entropy = Zeroizing::new(entropy);
+        Ok(Self::from_slice(&entropy[..len]))
+    }
+
+    fn parse_legacy(input: &[u8]) -> Result<Self> {
         let mut symbols = Vec::with_capacity(RECOVERY_CODE_SYMBOLS + 1);
         for &byte in input {
             match byte {
                 b'-' | b' ' | b'\t' | b'\r' | b'\n' => continue,
                 other => symbols.push(other.to_ascii_uppercase()),
             }
-        }
-
-        if symbols.len() != RECOVERY_CODE_SYMBOLS + 1 {
-            return Err(Error::RecoveryCode("не то число символов"));
         }
 
         let mut bytes = Zeroizing::new([0u8; RECOVERY_CODE_BYTES]);
@@ -67,20 +134,34 @@ impl RecoveryCode {
             return Err(Error::RecoveryCode("контрольный символ не сошёлся"));
         }
 
-        Ok(Self(*bytes))
+        Ok(Self::from_slice(bytes.as_ref()))
     }
 
+    /// Слова BIP39 через пробел. Код прежнего формата (20 байт) показывается
+    /// в прежнем виде: в слова он не укладывается.
     pub fn format_for_user(&self) -> SecretSlice<u8> {
+        if self.len == RECOVERY_CODE_BYTES {
+            return self.format_legacy();
+        }
+        let words = bip39::Mnemonic::from_entropy_in(bip39::Language::English, self.entropy())
+            .map(|mnemonic| Zeroizing::new(mnemonic.to_string()))
+            .unwrap_or_default();
+        crate::aead::into_secret(words.as_bytes().to_vec())
+    }
+
+    fn format_legacy(&self) -> SecretSlice<u8> {
+        let mut raw = Zeroizing::new([0u8; RECOVERY_CODE_BYTES]);
+        raw.copy_from_slice(self.entropy());
         let mut out = Vec::with_capacity(RECOVERY_CODE_SYMBOLS + 8 + 1);
-        base32::encode_into(&self.0, RECOVERY_CODE_SYMBOLS, 4, &mut out);
+        base32::encode_into(raw.as_ref(), RECOVERY_CODE_SYMBOLS, 4, &mut out);
         out.push(b'-');
-        out.push(CHECK_ALPHABET[usize::from(check_value(&self.0))]);
+        out.push(CHECK_ALPHABET[usize::from(check_value(&raw))]);
 
         crate::aead::into_secret(out)
     }
 
     pub fn wrap_key(&self, salt: &[u8; RECOVERY_SALT_LEN]) -> Result<Key32> {
-        let hkdf = Hkdf::<Sha256>::new(Some(salt), &self.0);
+        let hkdf = Hkdf::<Sha256>::new(Some(salt), self.entropy());
         let mut info = Vec::with_capacity(DOMAIN.len() + 1 + 13);
         info.extend_from_slice(DOMAIN);
         info.push(b' ');
@@ -93,8 +174,9 @@ impl RecoveryCode {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_bytes(bytes: [u8; RECOVERY_CODE_BYTES]) -> Self {
-        Self(bytes)
+    pub(crate) fn from_bytes<const N: usize>(bytes: [u8; N]) -> Self {
+        assert!(matches!(N, 16 | 20 | 32));
+        Self::from_slice(&bytes)
     }
 }
 
@@ -157,7 +239,7 @@ mod tests {
             let code = RecoveryCode::from_bytes(bytes);
             assert_eq!(shown(&code), expected);
             let parsed = RecoveryCode::parse(expected.as_bytes()).expect("разбор");
-            assert_eq!(parsed.0, bytes);
+            assert_eq!(parsed.entropy(), bytes.as_slice());
         }
     }
 
@@ -165,9 +247,9 @@ mod tests {
     fn roundtrip_sgenerirovannogo_koda() {
         let code = RecoveryCode::generate().expect("CSPRNG");
         let shown = shown(&code);
-        assert_eq!(shown.len(), RECOVERY_CODE_SYMBOLS + 8 + 1);
+        assert_eq!(shown.split(' ').count(), 24);
         let parsed = RecoveryCode::parse(shown.as_bytes()).expect("разбор");
-        assert_eq!(parsed.0, code.0);
+        assert_eq!(parsed.entropy(), code.entropy());
     }
 
     #[test]
@@ -177,28 +259,34 @@ mod tests {
 
         let lowercase = canonical.to_lowercase();
         assert_eq!(
-            RecoveryCode::parse(lowercase.as_bytes()).expect("разбор").0,
-            code.0
+            RecoveryCode::parse(lowercase.as_bytes())
+                .expect("разбор")
+                .entropy(),
+            code.entropy()
         );
 
         let no_dashes: String = canonical.chars().filter(|c| *c != '-').collect();
         assert_eq!(
-            RecoveryCode::parse(no_dashes.as_bytes()).expect("разбор").0,
-            code.0
+            RecoveryCode::parse(no_dashes.as_bytes())
+                .expect("разбор")
+                .entropy(),
+            code.entropy()
         );
 
         let spaced = canonical.replace('-', "  ");
         assert_eq!(
-            RecoveryCode::parse(spaced.as_bytes()).expect("разбор").0,
-            code.0
+            RecoveryCode::parse(spaced.as_bytes())
+                .expect("разбор")
+                .entropy(),
+            code.entropy()
         );
 
         let handwritten = canonical.replace('1', "I").replace('0', "O");
         assert_eq!(
             RecoveryCode::parse(handwritten.as_bytes())
                 .expect("разбор")
-                .0,
-            code.0
+                .entropy(),
+            code.entropy()
         );
     }
 
@@ -285,12 +373,104 @@ mod tests {
     fn kody_ne_povtoryayutsya() {
         let a = RecoveryCode::generate().expect("CSPRNG");
         let b = RecoveryCode::generate().expect("CSPRNG");
-        assert_ne!(a.0, b.0);
+        assert_ne!(a.entropy(), b.entropy());
     }
 
     #[test]
     fn debug_ne_pechataet_kod() {
         let code = RecoveryCode::generate().expect("CSPRNG");
         assert_eq!(format!("{code:?}"), "RecoveryCode(<скрыт>)");
+    }
+
+    const WORDS_12: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const WORDS_24: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+    const WORDS_12_7F: &str =
+        "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+    #[test]
+    fn bip39_izvestnye_vektory_12_i_24_slov() {
+        let cases: [(&[u8], &str); 3] = [
+            (&[0x00; 16], WORDS_12),
+            (&[0x7f; 16], WORDS_12_7F),
+            (&[0x00; 32], WORDS_24),
+        ];
+        for (entropy, words) in cases {
+            let parsed = RecoveryCode::parse(words.as_bytes()).expect("разбор");
+            assert_eq!(parsed.entropy(), entropy);
+            assert_eq!(shown(&parsed), words);
+        }
+    }
+
+    #[test]
+    fn novaya_fraza_iz_24_slov_perezhivaet_roundtrip() {
+        let code = RecoveryCode::generate().expect("CSPRNG");
+        let text = shown(&code);
+        assert_eq!(text.split(' ').count(), 24);
+        assert!(!text.contains('-'));
+        let parsed = RecoveryCode::parse(text.as_bytes()).expect("разбор");
+        assert_eq!(parsed.entropy(), code.entropy());
+        let salt = [0x22; RECOVERY_SALT_LEN];
+        assert_eq!(
+            parsed.wrap_key(&salt).expect("вывод"),
+            code.wrap_key(&salt).expect("вывод")
+        );
+    }
+
+    #[test]
+    fn fraza_proshchaet_registr_defisy_i_perenosy() {
+        let messy = WORDS_12.to_uppercase().replace(' ', " \n-  ");
+        let parsed = RecoveryCode::parse(messy.as_bytes()).expect("разбор");
+        assert_eq!(parsed.entropy(), &[0x00; 16]);
+    }
+
+    #[test]
+    fn slova_v_drugom_poryadke_otvergayutsya() {
+        let swapped = WORDS_12_7F.split(' ').rev().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            RecoveryCode::parse(swapped.as_bytes()).unwrap_err(),
+            Error::RecoveryCode("контрольная сумма не сошлась")
+        );
+    }
+
+    #[test]
+    fn slovo_vne_slovarya_otvergaetsya() {
+        let text = WORDS_12.replace("about", "cratty");
+        assert_eq!(
+            RecoveryCode::parse(text.as_bytes()).unwrap_err(),
+            Error::RecoveryCode("слова вне словаря BIP39")
+        );
+    }
+
+    #[test]
+    fn podmenennoe_poslednee_slovo_otvergaetsya() {
+        let text = WORDS_12.replace("about", "abandon");
+        assert_eq!(
+            RecoveryCode::parse(text.as_bytes()).unwrap_err(),
+            Error::RecoveryCode("контрольная сумма не сошлась")
+        );
+    }
+
+    #[test]
+    fn nevernoe_chislo_slov_otvergaetsya() {
+        let eleven = WORDS_12.rsplit_once(' ').expect("слова").0;
+        assert_eq!(
+            RecoveryCode::parse(eleven.as_bytes()).unwrap_err(),
+            Error::RecoveryCode("не то число слов")
+        );
+    }
+
+    #[test]
+    fn staryy_kod_prinimaetsya_po_prezhnemu_i_pokazyvaetsya_po_prezhnemu() {
+        let legacy = "04HM-ASW9-NF6Y-Y093-8NKR-KAYD-XW0J-6HB7-N";
+        let parsed = RecoveryCode::parse(legacy.as_bytes()).expect("разбор");
+        assert_eq!(parsed.entropy().len(), RECOVERY_CODE_BYTES);
+        assert_eq!(shown(&parsed), legacy);
+        let compact: String = legacy.chars().filter(|c| *c != '-').collect();
+        assert_eq!(
+            RecoveryCode::parse(compact.as_bytes())
+                .expect("разбор")
+                .entropy(),
+            parsed.entropy()
+        );
     }
 }

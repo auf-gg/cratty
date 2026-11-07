@@ -1,14 +1,14 @@
-use gpui::{
-    App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, Render, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Window, canvas, div,
-    prelude::*, px, relative,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, Selectable, Sizable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     label::Label,
+};
+use gpui_kit::{
+    App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, Render, ScrollDelta, ScrollEvent, SharedString, Subscription, Window, canvas, div,
+    prelude::*, px, relative,
 };
 
 use crate::ssh::forward::ForwardState;
@@ -64,7 +64,7 @@ impl CellMetrics {
 }
 
 pub struct TerminalView {
-    _pump: gpui::Task<()>,
+    _pump: gpui_kit::Task<()>,
     terminal: Terminal,
     session: Option<SshSession>,
     can_save_secrets: bool,
@@ -101,7 +101,7 @@ pub enum TerminalEvent {
     StoredPasswordRejected,
 }
 
-impl gpui::EventEmitter<TerminalEvent> for TerminalView {}
+impl gpui_kit::EventEmitter<TerminalEvent> for TerminalView {}
 
 fn secret_purpose(kind: SecretKind) -> Option<proto::SecretPurpose> {
     match kind {
@@ -141,7 +141,7 @@ impl TerminalView {
         let mut session = session;
         let mut events = std::mem::replace(&mut session.events, crate::ssh::closed_events());
 
-        let pump = cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
+        let pump = cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             use futures::StreamExt;
 
             while let Some(event) = events.next().await {
@@ -180,7 +180,7 @@ impl TerminalView {
             focus: cx.focus_handle(),
             metrics,
             pending_focus: true,
-            grid_origin: gpui::point(px(0.), px(0.)),
+            grid_origin: gpui_kit::point(px(0.), px(0.)),
             selection: None,
             selecting: false,
             copied: false,
@@ -431,7 +431,7 @@ impl TerminalView {
         }
 
         let state = cx.new(|cx| InputState::new(window, cx).masked(true));
-        window.focus(&state.focus_handle(cx));
+        window.focus(&state.focus_handle(cx), cx);
 
         self.secret_input = Some(cx.subscribe(&state, |this, state, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -483,14 +483,14 @@ impl TerminalView {
 
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(bar) = &self.search {
-            window.focus(&bar.input.focus_handle(cx));
+            window.focus(&bar.input.focus_handle(cx), cx);
             return;
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Найти в истории"));
-        window.focus(&input.focus_handle(cx));
+        window.focus(&input.focus_handle(cx), cx);
 
         let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
-            if let InputEvent::PressEnter { secondary } = event {
+            if let InputEvent::PressEnter { secondary, .. } = event {
                 this.search_step(!secondary, cx);
             }
         });
@@ -542,7 +542,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn search_panel(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn search_panel(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         let bar = self.search.as_ref()?;
         let theme = cx.theme();
         Some(
@@ -560,7 +560,7 @@ impl TerminalView {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(div().flex_grow().child(Input::new(&bar.input).small()))
+                .child(div().flex_grow_1().child(Input::new(&bar.input).small()))
                 .children(bar.status.clone().map(|status| {
                     Label::new(status)
                         .text_xs()
@@ -734,7 +734,7 @@ impl TerminalView {
         button: mouse::Button,
         action: mouse::Action,
         position: Point<Pixels>,
-        modifiers: gpui::Modifiers,
+        modifiers: gpui_kit::Modifiers,
     ) -> bool {
         let cell = self.cell_at(position);
         let event = mouse::Event {
@@ -886,7 +886,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let lines = match event.delta {
             ScrollDelta::Lines(delta) => delta.y,
             ScrollDelta::Pixels(delta) => f32::from(delta.y) / f32::from(self.metrics.height),
@@ -937,7 +937,7 @@ impl TerminalView {
 }
 
 impl Focusable for TerminalView {
-    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _cx: &gpui_kit::App) -> FocusHandle {
         self.focus.clone()
     }
 }
@@ -959,8 +959,8 @@ fn protocol_button(button: MouseButton) -> Option<mouse::Button> {
     }
 }
 
-fn measure_cell(family: &SharedString, font_size: Pixels, cx: &gpui::App) -> CellMetrics {
-    let font = gpui::font(family.clone());
+fn measure_cell(family: &SharedString, font_size: Pixels, cx: &gpui_kit::App) -> CellMetrics {
+    let font = gpui_kit::font(family.clone());
     let font_id = cx.text_system().resolve_font(&font);
 
     let width = cx
@@ -1047,7 +1047,7 @@ fn translate(event: &KeyDownEvent) -> Option<(Key, Mods)> {
 }
 
 fn color(rgb: Rgb) -> Hsla {
-    gpui::rgb(rgb.to_hex()).into()
+    gpui_kit::rgb(rgb.to_hex()).into()
 }
 
 fn run_element(text: &str, style: Style, background: Rgb) -> impl IntoElement {
@@ -1095,7 +1095,7 @@ impl Render for TerminalView {
 
         let secret_open = matches!(self.prompt, Some(Prompt::Secret { .. }));
         if self.pending_focus && !secret_open {
-            window.focus(&self.focus);
+            window.focus(&self.focus, cx);
             self.pending_focus = false;
         }
 
@@ -1108,7 +1108,7 @@ impl Render for TerminalView {
         let grid = TerminalElement::new(
             snapshot.clone(),
             metrics,
-            gpui::font(self.font_family.clone()),
+            gpui_kit::font(self.font_family.clone()),
             self.font_size,
             focused,
         )
@@ -1146,7 +1146,7 @@ impl Render for TerminalView {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_other_mouse_up))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_other_mouse_up))
-            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            .on_scroll(cx.listener(Self::on_scroll))
             .size_full()
             .flex()
             .flex_col()
@@ -1159,7 +1159,7 @@ impl Render for TerminalView {
             .child(
                 div()
                     .relative()
-                    .flex_grow()
+                    .flex_grow_1()
                     .overflow_hidden()
                     .p(PADDING)
                     .child(measure)
@@ -1220,7 +1220,7 @@ impl TerminalView {
 }
 
 impl TerminalView {
-    fn prompt_panel(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn prompt_panel(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let Some(prompt) = self.prompt.as_ref() else {
             return div().into_any_element();
         };
@@ -1235,12 +1235,12 @@ impl TerminalView {
             .flex()
             .items_center()
             .justify_center()
-            .bg(gpui::black().opacity(0.55));
+            .bg(gpui_kit::black().opacity(0.55));
 
         let card = div()
             .w(px(600.))
-            .max_w(gpui::relative(0.94))
-            .max_h(gpui::relative(0.94))
+            .max_w(gpui_kit::relative(0.94))
+            .max_h(gpui_kit::relative(0.94))
             .id("prompt-card")
             .overflow_y_scroll()
             .p_5()
@@ -1388,7 +1388,7 @@ impl TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Keystroke, Modifiers};
+    use gpui_kit::{Keystroke, Modifiers};
 
     fn press(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Option<(Key, Mods)> {
         translate(&KeyDownEvent {
@@ -1398,6 +1398,7 @@ mod tests {
                 key_char: key_char.map(str::to_string),
             },
             is_held: false,
+            prefer_character_input: false,
         })
     }
 
@@ -1494,15 +1495,15 @@ mod tests {
             height: px(20.),
         };
         let bounds = Bounds {
-            origin: gpui::point(px(0.), px(0.)),
-            size: gpui::size(px(105.), px(203.)),
+            origin: gpui_kit::point(px(0.), px(0.)),
+            size: gpui_kit::size(px(105.), px(203.)),
         };
         let grid = metrics.grid_for(bounds);
         assert_eq!((grid.cols, grid.rows), (10, 10));
 
         let empty = Bounds {
-            origin: gpui::point(px(0.), px(0.)),
-            size: gpui::size(px(0.), px(0.)),
+            origin: gpui_kit::point(px(0.), px(0.)),
+            size: gpui_kit::size(px(0.), px(0.)),
         };
         let grid = metrics.grid_for(empty);
         assert_eq!((grid.cols, grid.rows), (1, 1));

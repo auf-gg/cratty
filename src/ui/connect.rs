@@ -91,10 +91,18 @@ pub struct HostSettings {
 }
 
 pub fn read_ssh_config(alias: &str) -> HostSettings {
-    let Ok(config) = russh_config::parse_home(alias) else {
-        return HostSettings::default();
-    };
+    russh_config::parse_home(alias)
+        .map(settings_from)
+        .unwrap_or_default()
+}
 
+pub fn read_ssh_config_text(text: &str, alias: &str) -> HostSettings {
+    russh_config::parse(text, alias)
+        .map(settings_from)
+        .unwrap_or_default()
+}
+
+fn settings_from(config: russh_config::Config) -> HostSettings {
     let host = config.host_config.hostname.clone();
     HostSettings {
         hostname: host.filter(|name| !name.is_empty()),
@@ -367,8 +375,12 @@ pub struct KnownHost {
     pub detail: String,
 }
 
+pub fn ssh_config_path() -> Option<PathBuf> {
+    auth::ssh_dir().map(|dir| dir.join("config"))
+}
+
 pub fn list_known_hosts() -> Vec<KnownHost> {
-    let Some(path) = auth::ssh_dir().map(|dir| dir.join("config")) else {
+    let Some(path) = ssh_config_path() else {
         return Vec::new();
     };
     let Ok(text) = std::fs::read_to_string(path) else {

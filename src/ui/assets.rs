@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use anyhow::Result;
-use gpui::{AssetSource, SharedString};
+use gpui_kit::{AssetSource, SharedString};
 
 macro_rules! icons {
     ($($name:literal),* $(,)?) => {
@@ -17,9 +17,11 @@ macro_rules! icons {
 static ICONS: &[(&str, &[u8])] = icons![
     "asterisk",
     "case-sensitive",
+    "check",
     "chevron-down",
     "chevron-left",
     "chevron-right",
+    "ellipsis",
     "circle-x",
     "close",
     "eye",
@@ -85,7 +87,7 @@ impl AssetSource for Assets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_component::{IconName, IconNamed};
+    use gpui_kit::component::{IconName, IconNamed};
 
     #[test]
     fn every_embedded_icon_is_valid_svg() {
@@ -103,6 +105,7 @@ mod tests {
     fn icons_we_render_are_all_present() {
         let used = [
             IconName::Asterisk,
+            IconName::Check,
             IconName::Close,
             IconName::Delete,
             IconName::Eye,

@@ -1,4 +1,5 @@
 pub mod migrate;
+pub mod registry;
 
 use std::fs;
 use std::io::Write;
@@ -29,6 +30,10 @@ impl VaultStore {
                 .or_else(|| home().map(|home| home.join(".local").join("share")))
         };
         Some(base.or_else(home)?.join("cratty").join("vault"))
+    }
+
+    pub fn default_base() -> Option<PathBuf> {
+        Self::default_root().and_then(|root| root.parent().map(Path::to_path_buf))
     }
 
     pub fn root(&self) -> &Path {

@@ -1,4 +1,4 @@
-use gpui::{App, Global, SharedString};
+use gpui_kit::{App, Global, SharedString};
 use std::collections::HashSet;
 
 #[cfg(target_os = "windows")]

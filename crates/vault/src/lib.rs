@@ -19,7 +19,8 @@ pub use kdf::{
 };
 pub use record::{RECORD_VERSION, RecordContext, open_record, seal_record};
 pub use recovery::{
-    RECOVERY_CODE_BITS, RECOVERY_CODE_BYTES, RECOVERY_CODE_SYMBOLS, RECOVERY_SALT_LEN, RecoveryCode,
+    RECOVERY_CODE_BITS, RECOVERY_CODE_BYTES, RECOVERY_CODE_SYMBOLS, RECOVERY_ENTROPY_BYTES,
+    RECOVERY_SALT_LEN, RecoveryCode,
 };
 pub use secret::{KEY_LEN, Key32};
 pub use slot::{SLOT_ID_LEN, SlotKind, SlotSet, WrapSlot};

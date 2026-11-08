@@ -134,10 +134,15 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme().clone();
+        // Заголовок с вкладками и блок содержимого — одной ширины, по центру.
+        const WIDTH: f32 = 720.;
         v_flex()
             .size_full()
+            .items_center()
             .child(
                 h_flex()
+                    .w_full()
+                    .max_w(px(WIDTH + 48.))
                     .px_6()
                     .pt_5()
                     .pb_3()
@@ -147,16 +152,20 @@ impl AppView {
                     .children(actions),
             )
             .child(
-                div()
+                v_flex()
                     .id(SharedString::from(format!("page-{title}")))
+                    .w_full()
                     .flex_grow_1()
                     .min_h(px(0.))
                     .overflow_y_scrollbar()
+                    .items_center()
                     .px_6()
                     .pb_6()
                     .child(
                         div()
-                            .max_w(px(720.))
+                            .w_full()
+                            .max_w(px(WIDTH))
+                            .flex_shrink_0()
                             .rounded_lg()
                             .border_1()
                             .border_color(theme.border)
@@ -212,6 +221,7 @@ impl AppView {
     }
 
     pub(super) fn new_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.key_notice = None;
         for input in [
             &self.form.label,
             &self.form.host,
@@ -374,6 +384,7 @@ impl AppView {
                     proxy_error,
                     forward_agent: entry.host.forward_agent,
                     forwards: entry.host.forwards.clone(),
+                    command: None,
                 }
             })
             .unwrap_or_default()

@@ -20,7 +20,7 @@ alacritty_terminal = "0.26.0"
 anyhow = "1.0.104"
 bytes = "1.12.1"
 futures = "0.3.34"
-gpui-kit = { version = "0.9", default-features = false, features = ["component"] }
+gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets"] }
 # Хранилище секретов операционной системы: Keychain на macOS, Credential
 # Manager на Windows, Secret Service на остальных unix. Фича `v1` (она же
 # default) сама выбирает нужную реализацию под целевую платформу, и лишние
@@ -32,6 +32,8 @@ proto = { path = "crates/proto" }
 # так что криптобэкенд берём его.
 russh = { version = "0.63.1", default-features = false, features = ["flate2", "rsa", "ring"] }
 russh-config = "0.58.0"
+# Случайные байты для новых ключей SSH (та же версия, что у proto и vault).
+getrandom = { version = "0.4.3", default-features = false }
 # SFTP поверх канала russh: работает с любым потоком, в том числе за прокси.
 russh-sftp = "3.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -79,7 +81,9 @@ codegen-units = 1
 embed-resource = "3.0.11"
 
 [dev-dependencies]
+# Генератор с интерфейсом rand_core — для теста зашифрованного ключа.
+getrandom = { version = "0.4.3", default-features = false, features = ["sys_rng"] }
 alacritty_terminal = "0.26.0"
-gpui-kit = { version = "0.9", default-features = false, features = ["component", "test-support"] }
+gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets", "test-support"] }
 rand = { version = "0.10.2", features = ["thread_rng"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "time", "net", "sync"] }

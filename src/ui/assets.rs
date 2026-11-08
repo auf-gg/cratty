@@ -68,13 +68,16 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        match ICONS.iter().chain(BRAND).find(|(name, _)| *name == path) {
-            Some((_, bytes)) => Ok(Some(Cow::Borrowed(bytes))),
-            None => {
-                eprintln!("нет ассета {path} — добавьте его в assets/icons");
-                Ok(None)
-            }
+        if let Some((_, bytes)) = ICONS.iter().chain(BRAND).find(|(name, _)| *name == path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
         }
+        // Иконки, которые рисуют сами компоненты (спиннер загрузки, стрелки
+        // меню и т.п.), — из набора gpui-kit: он ровно под них и собран.
+        if let Ok(Some(bytes)) = gpui_kit::assets::Assets.load(path) {
+            return Ok(Some(bytes));
+        }
+        eprintln!("нет ассета {path} — добавьте его в assets/icons");
+        Ok(None)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
@@ -101,6 +104,26 @@ mod tests {
                 "{name} не подхватит цвет темы: нет currentColor"
             );
         }
+    }
+
+    #[test]
+    fn ikonki_komponentov_berutsya_iz_nabora_gpui_kit() {
+        for path in [
+            "icons/loader.svg",
+            "icons/loader-circle.svg",
+            "icons/chevron-up.svg",
+            "icons/triangle-alert.svg",
+            "icons/copy.svg",
+        ] {
+            let bytes = Assets.load(path).expect("загрузка").expect(path);
+            assert!(bytes.starts_with(b"<svg"), "{path} не svg");
+        }
+        // Своя иконка не подменяется набором gpui-kit.
+        let ours = Assets
+            .load("icons/lock.svg")
+            .expect("загрузка")
+            .expect("lock");
+        assert_eq!(ours.as_ref(), include_bytes!("../../assets/icons/lock.svg"));
     }
 
     #[test]

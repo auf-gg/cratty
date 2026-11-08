@@ -26,10 +26,25 @@ pub struct Settings {
     pub sync_folder: String,
     #[serde(default = "default_prediction")]
     pub prediction: String,
-    #[serde(default = "default_theme")]
+    /// Старое поле «текущая тема»: читается один раз для переноса, не пишется.
+    #[serde(default, skip_serializing)]
     pub theme: String,
+    /// «system», «dark» или «light». Пусто — старый файл, переносится из `theme`.
+    #[serde(default)]
+    pub appearance: String,
     #[serde(default = "default_theme")]
     pub dark_theme: String,
+    #[serde(default = "default_light_theme")]
+    pub light_theme: String,
+    /// Шрифт терминала; пусто — подобрать самому.
+    #[serde(default)]
+    pub terminal_font: String,
+    /// Шрифт значков в терминале: пусто — сам, «none» — без него.
+    #[serde(default)]
+    pub terminal_icons: String,
+    /// Шрифт интерфейса; пусто — системный.
+    #[serde(default)]
+    pub ui_font: String,
     #[serde(default = "default_opacity")]
     pub terminal_opacity: u8,
     #[serde(default)]
@@ -82,6 +97,10 @@ fn default_opacity() -> u8 {
 
 pub const MIN_OPACITY: u8 = 40;
 
+fn default_light_theme() -> String {
+    crate::ui::theme::DEFAULT_LIGHT.into()
+}
+
 fn default_theme() -> String {
     "cratty".into()
 }
@@ -110,8 +129,13 @@ impl Default for Settings {
             autolock: true,
             sync_folder: String::new(),
             prediction: default_prediction(),
-            theme: default_theme(),
+            theme: String::new(),
+            appearance: "system".into(),
             dark_theme: default_theme(),
+            light_theme: default_light_theme(),
+            terminal_font: String::new(),
+            terminal_icons: String::new(),
+            ui_font: String::new(),
             terminal_opacity: default_opacity(),
             blur: false,
             rail_width: default_rail_width(),
@@ -129,6 +153,7 @@ impl Settings {
             self.font_size = DEFAULT_FONT_SIZE;
         }
         self.font_size = self.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        self.migrate_theme();
         self.autolock_minutes = self
             .autolock_minutes
             .clamp(MIN_AUTOLOCK_MINUTES, MAX_AUTOLOCK_MINUTES);
@@ -156,27 +181,38 @@ impl Settings {
         changed
     }
 
-    pub fn scheme(&self) -> crate::ui::theme::Scheme {
-        crate::ui::theme::Scheme::parse(&self.theme)
+    pub fn appearance(&self) -> crate::ui::theme::Appearance {
+        crate::ui::theme::Appearance::parse(&self.appearance)
     }
 
-    pub fn set_scheme(&mut self, scheme: crate::ui::theme::Scheme) {
-        self.theme = scheme.as_str().into();
-        if scheme.is_dark() {
-            self.dark_theme = scheme.as_str().into();
+    pub fn set_appearance(&mut self, appearance: crate::ui::theme::Appearance) {
+        self.appearance = appearance.as_str().into();
+    }
+
+    /// Палитра для тёмного или светлого режима.
+    pub fn set_palette(&mut self, id: &str, dark: bool) {
+        if dark {
+            self.dark_theme = id.into();
+        } else {
+            self.light_theme = id.into();
         }
     }
 
-    pub fn toggled_scheme(&self) -> crate::ui::theme::Scheme {
-        use crate::ui::theme::Scheme;
-        if self.scheme().is_dark() {
-            Scheme::Light
-        } else {
-            match Scheme::parse(&self.dark_theme) {
-                Scheme::Light => Scheme::Cratty,
-                dark => dark,
+    /// До режимов была одна тема: светлая «light» или одна из тёмных.
+    fn migrate_theme(&mut self) {
+        if !self.appearance.is_empty() {
+            return;
+        }
+        let legacy = std::mem::take(&mut self.theme);
+        self.appearance = match legacy.trim() {
+            "" => "system",
+            "light" => "light",
+            dark => {
+                self.dark_theme = dark.into();
+                "dark"
             }
         }
+        .into();
     }
 
     pub fn prediction(&self) -> Policy {
@@ -340,6 +376,26 @@ mod tests {
     }
 
     #[test]
+    fn staraya_tema_perenositsya_v_rezhim() {
+        let dark: Settings = serde_json::from_str(r#"{"theme":"synthwave"}"#).expect("разбор");
+        let dark = dark.clamped();
+        assert_eq!(dark.appearance, "dark");
+        assert_eq!(dark.dark_theme, "synthwave");
+
+        let light: Settings = serde_json::from_str(r#"{"theme":"light"}"#).expect("разбор");
+        assert_eq!(light.clamped().appearance, "light");
+
+        let fresh: Settings = serde_json::from_str("{}").expect("разбор");
+        assert_eq!(fresh.clamped().appearance, "system");
+
+        let text = serde_json::to_string(&dark).expect("запись");
+        assert!(
+            !text.contains("\"theme\""),
+            "старое поле не должно писаться"
+        );
+    }
+
+    #[test]
     fn the_file_round_trips() {
         let settings = Settings {
             font_size: 18.,
@@ -347,8 +403,13 @@ mod tests {
             autolock: false,
             sync_folder: String::new(),
             prediction: "never".into(),
-            theme: "graphite".into(),
+            theme: String::new(),
+            appearance: "dark".into(),
             dark_theme: "graphite".into(),
+            light_theme: "Ayu Light".into(),
+            terminal_font: "Hack Nerd Font Mono".into(),
+            terminal_icons: "none".into(),
+            ui_font: "Inter".into(),
             terminal_opacity: 85,
             blur: true,
             rail_width: 300.0,

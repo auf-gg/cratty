@@ -94,6 +94,8 @@ impl AppView {
 
         let report = unlocked.merge(&store, outcome.records);
         self.reconcile_vault_name(id);
+        // С другого устройства могли прийти ключи, которых здесь нет на диске.
+        self.sync_key_files(id);
 
         let mut troubles = outcome.errors;
         troubles.extend(outcome.broken);

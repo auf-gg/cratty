@@ -121,6 +121,15 @@ impl Default for Palette {
 }
 
 impl Palette {
+    pub const fn new(foreground: Rgb, background: Rgb, cursor: Rgb, ansi: [Rgb; 16]) -> Self {
+        Self {
+            foreground,
+            background,
+            cursor,
+            ansi,
+        }
+    }
+
     pub fn themed(self, background: Rgb, foreground: Rgb, cursor: Rgb) -> Self {
         Self {
             foreground,

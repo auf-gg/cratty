@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod forward;
+pub mod keygen;
 pub mod known_hosts;
 pub mod route;
 mod session;
@@ -99,6 +100,8 @@ pub struct SshConfig {
     pub via: Result<Vec<Hop>, String>,
     pub forward_agent: bool,
     pub forwards: Vec<proto::PortForward>,
+    /// Выполнить эту команду вместо интерактивной оболочки.
+    pub command: Option<String>,
 }
 
 impl SshConfig {
@@ -121,6 +124,7 @@ impl SshConfig {
             via: Ok(Vec::new()),
             forward_agent: false,
             forwards: Vec::new(),
+            command: None,
         }
     }
 }
@@ -513,7 +517,14 @@ unsafe fn open_pty_slave(master: libc::c_int) -> std::io::Result<libc::c_int> {
         if libc::ptsname_r(master, name.as_mut_ptr() as *mut libc::c_char, name.len()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let slave = libc::open(name.as_ptr() as *const libc::c_char, libc::O_RDWR);
+        // O_NOCTTY: иначе, если cratty — лидер сессии без терминала (так его
+        // запускают лаунчеры), PTY стал бы управляющим терминалом самого cratty,
+        // и оболочка не смогла бы забрать его себе: fish выходит, bash остаётся
+        // без управления заданиями.
+        let slave = libc::open(
+            name.as_ptr() as *const libc::c_char,
+            libc::O_RDWR | libc::O_NOCTTY,
+        );
         if slave < 0 {
             return Err(std::io::Error::last_os_error());
         }

@@ -534,6 +534,53 @@ impl Unlocked {
             .upsert(store, existing, None, RecordBody::Key(key))
     }
 
+    /// Ключи, скопированные с диска (с исходным файлом), включая зашифрованные,
+    /// которых нет в списке агента.
+    pub fn key_backups(&self) -> Vec<StoredKey> {
+        self.records
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| {
+                entry.body.as_key().map(|key| StoredKey {
+                    id: id.clone(),
+                    key: key.clone(),
+                    updated_ms: entry.updated_ms,
+                    device_only: entry.device_only,
+                })
+            })
+            .filter(|entry| entry.key.key_file().is_some_and(|file| !file.is_empty()))
+            .collect()
+    }
+
+    /// Сохраняет копию файла ключа. Запись ищется по исходному пути; если файл
+    /// не изменился, ничего не пишет и возвращает `None`.
+    pub fn backup_key_file(
+        &mut self,
+        store: &VaultStore,
+        key: KeyRecord,
+    ) -> Result<Option<RecordId>> {
+        let Some(file) = key.key_file().filter(|file| !file.is_empty()) else {
+            bail!("нет содержимого файла ключа");
+        };
+        let existing = self
+            .key_backups()
+            .into_iter()
+            .find(|entry| entry.key.source == key.source);
+        if let Some(entry) = &existing
+            && entry.key.key_file().map(|old| old.expose()) == Some(file.expose())
+        {
+            return Ok(None);
+        }
+        let existing = existing.map(|entry| entry.id).or_else(|| {
+            (!key.public.is_empty())
+                .then(|| self.find_key_by_public(&key.public).map(|entry| entry.id))
+                .flatten()
+        });
+        self.records
+            .upsert(store, existing, None, RecordBody::Key(key))
+            .map(Some)
+    }
+
     pub fn remove_key(&mut self, store: &VaultStore, id: &RecordId) -> Result<()> {
         self.records.remove(store, id)
     }
@@ -1596,6 +1643,56 @@ mod tests {
             .find_by_target("local.example.com")
             .expect("запись на месте");
         assert!(local.device_only, "привязка потерялась после перезапуска");
+
+        cleanup(&session);
+    }
+
+    #[test]
+    fn kopiya_fayla_klyucha_ne_dubliruetsya_i_perezhivaet_perezapusk() {
+        let mut session = session("key-backup");
+        session
+            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
+            .expect("создание");
+        let store = VaultStore::new(session.store().root().to_path_buf());
+        let backup = |bytes: &[u8]| {
+            KeyRecord::from_file(
+                "~/.ssh/id_test".into(),
+                proto::Secret::new(bytes.to_vec()),
+                Vec::new(),
+                None,
+            )
+        };
+
+        let unlocked = session.unlocked_mut().expect("открыто");
+        let first = unlocked
+            .backup_key_file(&store, backup(b"KEY-1"))
+            .expect("копия")
+            .expect("записано");
+        assert_eq!(
+            unlocked
+                .backup_key_file(&store, backup(b"KEY-1"))
+                .expect("повтор"),
+            None,
+            "неизменный файл переписан"
+        );
+        let second = unlocked
+            .backup_key_file(&store, backup(b"KEY-2"))
+            .expect("обновление")
+            .expect("записано");
+        assert_eq!(first, second, "изменённый файл создал вторую запись");
+        assert!(
+            unlocked.keys().is_empty(),
+            "зашифрованная копия не для агента"
+        );
+
+        session.lock(None);
+        session
+            .unlock_with_password("пароль".as_bytes())
+            .expect("разблокировка");
+        let backups = session.unlocked().expect("открыто").key_backups();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].key.key_file().expect("файл").expose(), b"KEY-2");
+        assert_eq!(backups[0].key.source, "~/.ssh/id_test");
 
         cleanup(&session);
     }

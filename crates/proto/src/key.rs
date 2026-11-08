@@ -45,6 +45,36 @@ impl KeyRecord {
         self.secrets.get(SecretPurpose::PrivateKey)
     }
 
+    /// Исходный файл ключа, если ключ скопирован с диска для восстановления.
+    pub fn key_file(&self) -> Option<&Secret> {
+        self.secrets.get(SecretPurpose::KeyFile)
+    }
+
+    /// Копия файла ключа: исходные байты и путь `source`, по которому его
+    /// восстанавливать. Расшифрованный ключ для агента — только если файл не
+    /// зашифрован (`private`).
+    pub fn from_file(
+        source: String,
+        file: Secret,
+        public: Vec<u8>,
+        private: Option<Secret>,
+    ) -> Self {
+        let mut secrets = Secrets::new();
+        secrets.set(SecretPurpose::KeyFile, file);
+        if let Some(private) = private {
+            secrets.set(SecretPurpose::PrivateKey, private);
+        }
+        Self {
+            label: String::new(),
+            comment: String::new(),
+            algorithm: String::new(),
+            fingerprint: String::new(),
+            public,
+            source,
+            secrets,
+        }
+    }
+
     pub fn is_usable(&self) -> bool {
         !self.public.is_empty() && self.private().is_some_and(|key| !key.is_empty())
     }

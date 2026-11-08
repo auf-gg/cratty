@@ -19,18 +19,6 @@ impl AppView {
         self.apply_appearance(cx);
     }
 
-    fn set_scheme(
-        &mut self,
-        scheme: crate::ui::theme::Scheme,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.settings.set_scheme(scheme);
-        self.error = settings::save(&self.settings).err().map(SharedString::from);
-        crate::ui::theme::apply(&self.settings, Some(window), cx);
-        self.apply_appearance(cx);
-    }
-
     pub(super) fn nudge_opacity(
         &mut self,
         steps: i32,
@@ -95,35 +83,6 @@ impl AppView {
                 })
                 .text_xs()
                 .text_color(muted),
-            )
-            .into_any_element()
-    }
-
-    pub(super) fn theme_block(&self, cx: &mut Context<Self>) -> AnyElement {
-        use crate::ui::theme::Scheme;
-        let current = self.settings.scheme();
-
-        Self::section("Оформление", cx)
-            .child(
-                h_flex().gap_1().children(
-                    [
-                        Scheme::Cratty,
-                        Scheme::Synthwave,
-                        Scheme::Graphite,
-                        Scheme::Light,
-                    ]
-                    .into_iter()
-                    .map(|scheme| {
-                        Button::new(SharedString::from(format!("theme-{}", scheme.as_str())))
-                            .ghost()
-                            .small()
-                            .selected(current == scheme)
-                            .label(scheme.title())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.set_scheme(scheme, window, cx)
-                            }))
-                    }),
-                ),
             )
             .into_any_element()
     }
@@ -293,6 +252,9 @@ impl AppView {
             })
             .when(tab == SettingsTab::General, |this| {
                 this.child(self.opacity_block(cx))
+            })
+            .when(tab == SettingsTab::General, |this| {
+                this.child(self.fonts_block(cx))
             })
             .when(tab == SettingsTab::General, |this| {
                 this.child(

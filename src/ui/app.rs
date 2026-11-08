@@ -13,6 +13,9 @@ use gpui_kit::{
     prelude::*, px, size,
 };
 
+mod fonts_ui;
+mod key_backup;
+mod key_tools;
 mod keys_ui;
 mod kit;
 mod panes_ui;
@@ -24,6 +27,7 @@ mod settings_ui;
 mod shell;
 mod snippets_ui;
 mod sync_ui;
+mod theme_ui;
 mod vault_edit;
 mod vault_flow;
 mod vaults;
@@ -185,6 +189,13 @@ pub struct AppView {
     /// Хост (хранилище, адрес), удаление которого ждёт подтверждения.
     confirm_forget: Option<(String, String)>,
     vault_editor: Option<vault_edit::VaultEditor>,
+    /// Тема под курсором в настройках: её показывает превью.
+    theme_preview: Option<String>,
+    /// Итог действий с ключом в форме хоста (создан, ошибка, вкладка установки).
+    key_notice: Option<SharedString>,
+    font_pickers: fonts_ui::FontPickers,
+    /// Следит за файлом цветов Dux Shell: обои сменились — палитра тоже.
+    _dux_watch: Option<gpui_kit::Task<()>>,
     import_notice: Option<SharedString>,
     stage: Option<Stage>,
     vault_form: VaultForm,
@@ -311,14 +322,20 @@ impl AppView {
             }),
         );
 
-        let mut subscriptions: Vec<Subscription> =
-            vec![
-                cx.subscribe(&line, |this, _, event: &InputEvent, cx| match event {
-                    InputEvent::PressEnter { .. } => this.quick_connect(cx),
-                    InputEvent::Change => cx.notify(),
-                    _ => {}
-                }),
-            ];
+        let mut subscriptions: Vec<Subscription> = vec![
+            cx.subscribe(&line, |this, _, event: &InputEvent, cx| match event {
+                InputEvent::PressEnter { .. } => this.quick_connect(cx),
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            }),
+            // Режим «Системная»: ОС сменила светлое/тёмное оформление.
+            cx.observe_window_appearance(window, |this, window, cx| {
+                if this.settings.appearance() == crate::ui::theme::Appearance::System {
+                    crate::ui::theme::apply(&this.settings, Some(window), cx);
+                    this.apply_appearance(cx);
+                }
+            }),
+        ];
 
         let vault_password = cx.new(|cx| {
             InputState::new(window, cx)
@@ -423,6 +440,10 @@ impl AppView {
             confirm_delete: None,
             confirm_forget: None,
             vault_editor: None,
+            theme_preview: None,
+            key_notice: None,
+            font_pickers: fonts_ui::FontPickers::new(&settings, window, cx),
+            _dux_watch: Self::watch_dux(window, cx),
             import_notice: None,
             stage: None,
             vault_form: VaultForm {
@@ -558,6 +579,7 @@ impl AppView {
                 proxy_error,
                 forward_agent: false,
                 forwards: self.form.forwards.clone(),
+                command: None,
             },
         ))
     }
@@ -627,6 +649,8 @@ impl AppView {
         });
         if self.error.is_none() {
             self.form.editing = Some(saved_target);
+            // Файл ключа хоста — сразу в хранилище.
+            self.sync_key_files(&vault_id);
         }
         if self.error.is_none() {
             self.editor_open = false;
@@ -653,6 +677,7 @@ impl AppView {
     ) {
         self.form.vault = vault.to_owned();
         self.form.editing = Some(host.target());
+        self.key_notice = None;
         self.form.auth = host.auth.clone();
         self.form.via = host.via.clone();
         self.form.forwards = host.forwards.clone();
@@ -937,6 +962,7 @@ impl AppView {
                     proxy_error,
                     forward_agent: entry.host.forward_agent,
                     forwards: entry.host.forwards.clone(),
+                    command: None,
                 }
             })
             .unwrap_or_default();
@@ -1410,6 +1436,35 @@ impl AppView {
         self.cycle(false, cx);
     }
 
+    fn watch_dux(window: &mut Window, cx: &mut Context<Self>) -> Option<gpui_kit::Task<()>> {
+        let path = crate::ui::dux::colors_file()?;
+        let mut seen = crate::ui::dux::modified(&path);
+        Some(
+            cx.spawn_in(window, async move |this: gpui_kit::WeakEntity<Self>, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(3))
+                        .await;
+                    let now = crate::ui::dux::modified(&path);
+                    if now == seen {
+                        continue;
+                    }
+                    seen = now;
+                    let alive = this.update_in(cx, |this, window, cx| {
+                        if crate::ui::theme::refresh_dux(cx, &this.settings) {
+                            crate::ui::theme::apply(&this.settings, Some(window), cx);
+                            this.apply_appearance(cx);
+                        }
+                        cx.notify();
+                    });
+                    if alive.is_err() {
+                        return;
+                    }
+                }
+            }),
+        )
+    }
+
     fn on_toggle_panel(&mut self, _: &TogglePanel, _window: &mut Window, cx: &mut Context<Self>) {
         self.toggle_pin(Edge::Rail, cx);
     }
@@ -1501,7 +1556,12 @@ impl AppView {
                 if !*hovered {
                     match edge {
                         Edge::Rail => this.rail_peek = false,
-                        _ => this.panel_peek = false,
+                        _ => {
+                            // Меню живут в панели: уехала панель — закрываем и их.
+                            this.panel_peek = false;
+                            this.snippets_open = false;
+                            this.split_menu = false;
+                        }
                     }
                     cx.notify();
                 }
@@ -1550,8 +1610,12 @@ impl AppView {
                         .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
                         .tooltip("Переключить тему оформления")
                         .on_click(cx.listener(|this, _, window, cx| {
-                            let next = this.settings.toggled_scheme();
-                            this.settings.set_scheme(next);
+                            let next = if crate::ui::theme::is_dark(cx) {
+                                crate::ui::theme::Appearance::Light
+                            } else {
+                                crate::ui::theme::Appearance::Dark
+                            };
+                            this.settings.set_appearance(next);
                             this.error =
                                 settings::save(&this.settings).err().map(SharedString::from);
                             crate::ui::theme::apply(&this.settings, Some(window), cx);
@@ -1701,17 +1765,7 @@ impl AppView {
                     .text_color(muted),
                 )
                 .into_any_element(),
-            HostAuth::Key { .. } => v_flex()
-                .gap_1()
-                .child(Input::new(&self.form.key_path))
-                .child(
-                    Label::new(
-                        "Укажите путь к закрытому ключу, например ~/.ssh/id_ed25519. Парольная фраза зашифрованного ключа будет запрошена при подключении.",
-                    )
-                    .text_xs()
-                    .text_color(muted),
-                )
-                .into_any_element(),
+            HostAuth::Key { .. } => self.key_fields(cx),
         }
     }
 
@@ -2097,8 +2151,10 @@ impl Render for AppView {
 pub fn open_main_window(cx: &mut App) -> Result<()> {
     crate::ui::font::MonoFont::init(cx);
     gpui_kit::init(cx);
+    crate::ui::theme::init(cx);
 
     let startup = settings::load();
+    crate::ui::font::MonoFont::apply(&startup, cx);
     crate::ui::theme::apply(&startup, None, cx);
 
     let bind = |keys: &str, action: Box<dyn gpui_kit::Action>| {

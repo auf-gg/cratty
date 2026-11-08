@@ -76,6 +76,8 @@ pub struct TerminalView {
     save_unsaved: bool,
     status: Status,
     font_family: SharedString,
+    /// Шрифт сетки: основной плюс шрифт значков в подстановке.
+    font: gpui_kit::Font,
     focus: FocusHandle,
     metrics: CellMetrics,
     pending_focus: bool,
@@ -142,6 +144,7 @@ impl TerminalView {
         let responder = Responder::new(session.commands.clone());
         let terminal = Terminal::new(size, responder);
         let font_family = MonoFont::get(cx).family.clone();
+        let font = MonoFont::get(cx).font();
         let metrics = measure_cell(&font_family, FONT_SIZE, cx);
 
         let mut session = session;
@@ -190,6 +193,7 @@ impl TerminalView {
             save_unsaved: false,
             status: Status::Connecting { target },
             font_family,
+            font,
             focus: cx.focus_handle(),
             metrics,
             pending_focus: true,
@@ -276,8 +280,12 @@ impl TerminalView {
         self.selection_color = selection;
         self.selection_foreground = selection_foreground;
 
-        if self.font_size != font_size {
+        let mono = MonoFont::get(cx);
+        let font = mono.font();
+        if self.font_size != font_size || self.font != font {
             self.font_size = font_size;
+            self.font_family = mono.family.clone();
+            self.font = font;
             self.metrics = measure_cell(&self.font_family, font_size, cx);
         }
         cx.notify();
@@ -1135,7 +1143,7 @@ impl Render for TerminalView {
         let grid = TerminalElement::new(
             snapshot.clone(),
             metrics,
-            gpui_kit::font(self.font_family.clone()),
+            self.font.clone(),
             self.font_size,
             focused,
         )
@@ -1144,7 +1152,8 @@ impl Render for TerminalView {
             self.selection_color,
             self.selection_foreground,
         )
-        .selection(self.selection);
+        .selection(self.selection)
+        .icons(MonoFont::get(cx).icons.clone().map(gpui_kit::font));
 
         let view = cx.entity().downgrade();
         let measure = canvas(

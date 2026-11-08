@@ -327,8 +327,6 @@ impl AppView {
             .flex()
             .flex_col()
             .children(rows)
-            .children(self.snippets_popover(index, cx))
-            .children(self.split_popover(index, cx))
             .into_any_element()
     }
 
@@ -424,7 +422,7 @@ impl AppView {
             .into_any_element()
     }
 
-    fn split_popover(&self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn split_popover(&self, index: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.split_menu {
             return None;
         }

@@ -14,6 +14,9 @@ pub enum SecretPurpose {
     PrivateKey,
     ServerToken,
     Sudo,
+    /// Файл ключа как он лежал на диске (зашифрованный — зашифрованным):
+    /// из него ключ восстанавливается в пользовательский каталог.
+    KeyFile,
 }
 
 impl SecretPurpose {
@@ -24,6 +27,7 @@ impl SecretPurpose {
             Self::Sudo => "sudo",
             Self::PrivateKey => "private-key",
             Self::ServerToken => "server-token",
+            Self::KeyFile => "key-file",
         }
     }
 
@@ -34,6 +38,7 @@ impl SecretPurpose {
             "sudo" => Some(Self::Sudo),
             "private-key" => Some(Self::PrivateKey),
             "server-token" => Some(Self::ServerToken),
+            "key-file" => Some(Self::KeyFile),
             _ => None,
         }
     }
@@ -45,6 +50,7 @@ impl SecretPurpose {
             Self::Sudo => "пароль для sudo",
             Self::PrivateKey => "приватный ключ",
             Self::ServerToken => "пропуск на сервер",
+            Self::KeyFile => "файл ключа",
         }
     }
 }

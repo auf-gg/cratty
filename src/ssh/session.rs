@@ -146,8 +146,19 @@ async fn serve(
             .context("запрос проброса агента")?;
     }
 
-    channel.request_shell(true).await.context("запрос shell")?;
-    await_reply(&mut channel, "запуск shell", &mut early).await?;
+    match &config.command {
+        Some(command) => {
+            channel
+                .exec(true, command.as_bytes())
+                .await
+                .context("запуск команды")?;
+            await_reply(&mut channel, "запуск команды", &mut early).await?;
+        }
+        None => {
+            channel.request_shell(true).await.context("запрос shell")?;
+            await_reply(&mut channel, "запуск shell", &mut early).await?;
+        }
+    }
 
     events
         .send(FromSsh::Connected {

@@ -335,6 +335,7 @@ impl AppView {
                 }
                 self.collect_vault_warnings(id);
                 self.reconcile_vault_name(id);
+                self.sync_key_files(id);
                 self.sync_can_save_secrets(cx);
                 self.start_sync_watch(id, cx);
                 self.sync_now(id, cx);

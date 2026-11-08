@@ -84,6 +84,19 @@ pub struct TerminalElement {
     selection_color: Rgb,
     selection_foreground: Rgb,
     cursor_color: Rgb,
+    /// Шрифт значков. Значки рисуются отдельно, вписанными в ячейку: у шрифтов
+    /// значков ширина глифа больше ячейки, и в строке они наезжали бы на соседей.
+    icons: Option<Font>,
+}
+
+/// Значок в ячейке сетки: рисуется поверх строки, на месте пробела.
+struct IconCell {
+    row: usize,
+    column: usize,
+    character: char,
+    color: Hsla,
+    /// За значком пробел: значок можно растянуть на две ячейки, как в kitty.
+    wide: bool,
 }
 
 impl TerminalElement {
@@ -104,7 +117,13 @@ impl TerminalElement {
             selection_color: Rgb::new(0x33, 0x46, 0x7c),
             selection_foreground: Rgb::new(0xff, 0xff, 0xff),
             cursor_color: Rgb::new(0xc0, 0xca, 0xf5),
+            icons: None,
         }
+    }
+
+    pub fn icons(mut self, icons: Option<Font>) -> Self {
+        self.icons = icons;
+        self
     }
 
     pub fn colors(mut self, cursor: Rgb, selection: Rgb, selection_foreground: Rgb) -> Self {
@@ -137,7 +156,7 @@ impl TerminalElement {
         }
     }
 
-    fn shape_row(&self, row: usize, window: &Window, _cx: &App) -> ShapedLine {
+    fn shape_row(&self, row: usize, window: &Window, icons: &mut Vec<IconCell>) -> ShapedLine {
         let line = &self.snapshot.lines[row];
 
         let mut text = String::new();
@@ -151,8 +170,25 @@ impl TerminalElement {
                     .is_some_and(|selection| selection.contains(row, column));
 
                 let start = text.len();
-                text.push(character);
                 let width = cell_width(character);
+                if self.icons.is_some() && is_icon(character) {
+                    // В строке — пробел с тем же фоном, сам значок дорисуем.
+                    text.push(' ');
+                    let fg = if selected {
+                        self.selection_foreground
+                    } else {
+                        run.style.fg
+                    };
+                    icons.push(IconCell {
+                        row,
+                        column,
+                        character,
+                        color: hsla(fg),
+                        wide: false,
+                    });
+                } else {
+                    text.push(character);
+                }
                 if width == 2 {
                     text.push(' ');
                 }
@@ -165,6 +201,12 @@ impl TerminalElement {
                 }
                 column += width;
             }
+        }
+
+        // Значок, за которым пробел, займёт и его ячейку.
+        let row_text: Vec<char> = text.chars().collect();
+        for icon in icons.iter_mut().filter(|icon| icon.row == row) {
+            icon.wide = row_text.get(icon.column + 1) == Some(&' ');
         }
 
         window.text_system().shape_line(
@@ -237,6 +279,149 @@ impl TerminalElement {
     }
 }
 
+impl TerminalElement {
+    /// Значок, уменьшенный до ширины ячейки и отцентрованный по высоте.
+    fn paint_icon(
+        &self,
+        icon: &IconCell,
+        font: &Font,
+        cell: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let text_system = window.text_system().clone();
+        let font_id = text_system.resolve_font(font);
+        let advance = text_system
+            .advance(font_id, self.font_size, icon.character)
+            .map(|advance| advance.width)
+            .unwrap_or(self.font_size);
+        let scale = if advance > px(0.) {
+            (cell.size.width / advance).min(1.)
+        } else {
+            1.
+        };
+        let size = self.font_size * scale;
+        let run = TextRun {
+            len: icon.character.len_utf8(),
+            font: font.clone(),
+            color: icon.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = text_system.shape_line(
+            SharedString::from(icon.character.to_string()),
+            size,
+            &[run],
+            None,
+        );
+        let width = shaped.width;
+        let origin = point(
+            cell.origin.x + (cell.size.width - width).max(px(0.)) / 2.,
+            cell.origin.y,
+        );
+        let _ = shaped.paint(
+            origin,
+            cell.size.height,
+            gpui_kit::TextAlign::default(),
+            None,
+            window,
+            cx,
+        );
+    }
+}
+
+/// Значки Nerd Font живут в областях частного использования Юникода.
+fn is_icon(character: char) -> bool {
+    matches!(
+        character as u32,
+        0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD
+    )
+}
+
+/// Разделители powerline рисуем фигурами на всю ячейку, как kitty: глифом
+/// их не вписать в ячейку без зазоров между цветными сегментами промпта.
+fn paint_powerline(
+    character: char,
+    cell: Bounds<Pixels>,
+    color: Hsla,
+    window: &mut Window,
+) -> bool {
+    use gpui_kit::PathBuilder;
+
+    // Чуть шире ячейки, чтобы на стыке с соседним фоном не было щели.
+    let overlap = px(0.5);
+    let (left, right) = (
+        cell.origin.x - overlap,
+        cell.origin.x + cell.size.width + overlap,
+    );
+    let (top, bottom) = (cell.origin.y, cell.origin.y + cell.size.height);
+    let middle = cell.origin.y + cell.size.height / 2.;
+    let width = cell.size.width;
+
+    let mut builder = match character {
+        '\u{e0b0}' | '\u{e0b2}' | '\u{e0b4}' | '\u{e0b6}' => PathBuilder::fill(),
+        '\u{e0b1}' | '\u{e0b3}' | '\u{e0b5}' | '\u{e0b7}' => PathBuilder::stroke(px(1.)),
+        _ => return false,
+    };
+    match character {
+        // ▶ и тонкая стрелка вправо
+        '\u{e0b0}' => {
+            builder.move_to(point(left, top));
+            builder.line_to(point(right, middle));
+            builder.line_to(point(left, bottom));
+            builder.close();
+        }
+        '\u{e0b1}' => {
+            builder.move_to(point(cell.origin.x, top));
+            builder.line_to(point(cell.origin.x + width, middle));
+            builder.line_to(point(cell.origin.x, bottom));
+        }
+        // ◀ и тонкая стрелка влево
+        '\u{e0b2}' => {
+            builder.move_to(point(right, top));
+            builder.line_to(point(left, middle));
+            builder.line_to(point(right, bottom));
+            builder.close();
+        }
+        '\u{e0b3}' => {
+            builder.move_to(point(cell.origin.x + width, top));
+            builder.line_to(point(cell.origin.x, middle));
+            builder.line_to(point(cell.origin.x + width, bottom));
+        }
+        // Полукруг выпуклостью вправо
+        '\u{e0b4}' => {
+            builder.move_to(point(left, top));
+            builder.curve_to(point(left, bottom), point(right + width, middle));
+            builder.close();
+        }
+        '\u{e0b5}' => {
+            builder.move_to(point(cell.origin.x, top));
+            builder.curve_to(
+                point(cell.origin.x, bottom),
+                point(cell.origin.x + width * 2., middle),
+            );
+        }
+        // Полукруг выпуклостью влево
+        '\u{e0b6}' => {
+            builder.move_to(point(right, top));
+            builder.curve_to(point(right, bottom), point(left - width, middle));
+            builder.close();
+        }
+        _ => {
+            builder.move_to(point(cell.origin.x + width, top));
+            builder.curve_to(
+                point(cell.origin.x + width, bottom),
+                point(cell.origin.x - width, middle),
+            );
+        }
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+    true
+}
+
 fn mergeable(last: &TextRun, next: &TextRun) -> bool {
     last.color == next.color
         && last.background_color == next.background_color
@@ -256,6 +441,7 @@ fn cell_width(character: char) -> usize {
 
 pub struct Prepainted {
     lines: Vec<ShapedLine>,
+    icons: Vec<IconCell>,
     cursor: Option<Bounds<Pixels>>,
     hitbox: Hitbox,
 }
@@ -308,12 +494,15 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Prepainted {
+        let _ = cx;
+        let mut icons = Vec::new();
         let lines = (0..self.snapshot.lines.len())
-            .map(|row| self.shape_row(row, window, cx))
+            .map(|row| self.shape_row(row, window, &mut icons))
             .collect();
 
         Prepainted {
             lines,
+            icons,
             cursor: self.cursor_bounds(bounds.origin),
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
         }
@@ -358,6 +547,25 @@ impl Element for TerminalElement {
                 window,
                 cx,
             );
+        }
+
+        if let Some(font) = &self.icons {
+            for icon in &prepaint.icons {
+                let cell = Bounds {
+                    origin: point(
+                        bounds.origin.x + self.metrics.width * icon.column as f32,
+                        bounds.origin.y + self.metrics.height * icon.row as f32,
+                    ),
+                    size: size(self.metrics.width, self.metrics.height),
+                };
+                if !paint_powerline(icon.character, cell, icon.color, window) {
+                    let mut area = cell;
+                    if icon.wide {
+                        area.size.width = self.metrics.width * 2.;
+                    }
+                    self.paint_icon(icon, font, area, window, cx);
+                }
+            }
         }
 
         if let Some(cursor) = prepaint.cursor {

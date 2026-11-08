@@ -64,6 +64,15 @@ impl AppView {
             },
         };
 
+        // Меню «Сниппеты» и «Разделить» раскрываются под своими кнопками в шапке.
+        let menus = div()
+            .absolute()
+            .top(px(40.))
+            .left_0()
+            .right_0()
+            .children(self.snippets_popover(index, cx))
+            .children(self.split_popover(index, cx));
+
         let tab_label = |id: &'static str, label: &'static str, value: InfoTab| {
             let current = self.info_tab == value;
             div()
@@ -92,6 +101,7 @@ impl AppView {
 
         Some(
             v_flex()
+                .relative()
                 .w(px(self.settings.panel_width))
                 .h_full()
                 .flex_shrink_0()
@@ -143,6 +153,7 @@ impl AppView {
                         ),
                 )
                 .child(div().flex_grow_1().min_h(px(0.)).child(body))
+                .child(menus)
                 .into_any_element(),
         )
     }

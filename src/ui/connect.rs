@@ -311,6 +311,8 @@ pub struct Credentials {
     pub proxy_error: Option<String>,
     pub forward_agent: bool,
     pub forwards: Vec<proto::PortForward>,
+    /// Команда вместо оболочки (например, установка ключа на сервер).
+    pub command: Option<String>,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -355,6 +357,7 @@ pub fn config_for(
     config.via = route_for(credentials, settings, &read_ssh_config);
     config.forward_agent = credentials.forward_agent;
     config.forwards = credentials.forwards.clone();
+    config.command = credentials.command.clone();
 
     config.host_key_policy = match std::env::var(FINGERPRINT_ENV) {
         Ok(fingerprint) if !fingerprint.is_empty() => {

@@ -230,6 +230,9 @@ pub fn spawn_ssh(config: SshConfig) -> std::io::Result<SshSession> {
                 }
             };
             runtime.block_on(session::run(config, command_rx, answer_rx, event_tx));
+            // Не ждать фоновых потоков рантайма: там может висеть DNS-запрос
+            // без сети, а этот поток при закрытии вкладки ждёт интерфейс.
+            runtime.shutdown_background();
         })?;
 
     Ok(SshSession {

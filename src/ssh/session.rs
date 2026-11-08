@@ -25,6 +25,7 @@ const PTY_MODES: &[(Pty, u32)] = &[
 ];
 
 const KEEPALIVE: Duration = Duration::from_secs(30);
+const GOODBYE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(super) async fn run(
     config: SshConfig,
@@ -54,14 +55,19 @@ pub(super) struct Connected {
 }
 
 impl Connected {
+    /// Прощается с сервером, но недолго: до мёртвого сервера прощание может не
+    /// дойти, а закрытие вкладки его ждёт.
     pub async fn disconnect(self) {
-        let _ = self
-            .session
-            .disconnect(Disconnect::ByApplication, "", "")
-            .await;
-        for jump in self.jumps.into_iter().rev() {
-            let _ = jump.disconnect(Disconnect::ByApplication, "", "").await;
-        }
+        let goodbye = async {
+            let _ = self
+                .session
+                .disconnect(Disconnect::ByApplication, "", "")
+                .await;
+            for jump in self.jumps.into_iter().rev() {
+                let _ = jump.disconnect(Disconnect::ByApplication, "", "").await;
+            }
+        };
+        let _ = tokio::time::timeout(GOODBYE_TIMEOUT, goodbye).await;
     }
 }
 
@@ -89,7 +95,7 @@ pub(super) async fn connect(config: &SshConfig, prompter: &Prompter) -> Result<C
 
     let (transport, jumps) = open_route(config, &hops, &client_config, prompter).await?;
 
-    let mut session = client::connect_stream(client_config, transport, verifier)
+    let mut session = client::connect_stream(client_config, route::answering(transport), verifier)
         .await
         .with_context(|| format!("подключение к {}", route::join(&config.host, config.port)))?;
 
@@ -109,56 +115,41 @@ pub(super) async fn connect(config: &SshConfig, prompter: &Prompter) -> Result<C
     })
 }
 
+/// Ждёт `work`, пока канал команд открыт. Закрыли — вкладку закрыли, и
+/// подключение бросается сразу, а не по таймауту: поток SSH ждут при
+/// закрытии, и иначе ждал бы и интерфейс. Команды, пришедшие тем временем,
+/// копятся в `queued` и выполняются после подключения.
+pub(super) async fn unless_closed<T, C>(
+    work: impl Future<Output = Result<T>>,
+    commands: &mut mpsc::UnboundedReceiver<C>,
+    queued: &mut Vec<C>,
+) -> Result<Option<T>> {
+    let mut work = std::pin::pin!(work);
+    loop {
+        tokio::select! {
+            result = &mut work => return result.map(Some),
+            command = commands.next() => match command {
+                Some(command) => queued.push(command),
+                None => return Ok(None),
+            },
+        }
+    }
+}
+
 async fn serve(
     config: SshConfig,
     mut commands: mpsc::UnboundedReceiver<ToSsh>,
     prompter: Prompter,
     events: &mut mpsc::Sender<FromSsh>,
 ) -> Result<CloseReason> {
-    let connected = connect(&config, &prompter).await?;
+    let mut queued = Vec::new();
+    let Some((connected, channel, mut early)) =
+        unless_closed(open_shell(&config, &prompter), &mut commands, &mut queued).await?
+    else {
+        return Ok(CloseReason::Local);
+    };
+    let mut commands = futures::stream::iter(queued).chain(commands);
     let session = &connected.session;
-
-    let mut channel = session
-        .channel_open_session()
-        .await
-        .context("сервер не открыл сессионный канал")?;
-
-    let mut early = Vec::new();
-
-    channel
-        .request_pty(
-            true,
-            &config.term,
-            config.pty.cols as u32,
-            config.pty.rows as u32,
-            config.pty.pixel_width as u32,
-            config.pty.pixel_height as u32,
-            PTY_MODES,
-        )
-        .await
-        .context("запрос PTY")?;
-    await_reply(&mut channel, "выделение PTY", &mut early).await?;
-
-    if config.forward_agent {
-        channel
-            .agent_forward(false)
-            .await
-            .context("запрос проброса агента")?;
-    }
-
-    match &config.command {
-        Some(command) => {
-            channel
-                .exec(true, command.as_bytes())
-                .await
-                .context("запуск команды")?;
-            await_reply(&mut channel, "запуск команды", &mut early).await?;
-        }
-        None => {
-            channel.request_shell(true).await.context("запрос shell")?;
-            await_reply(&mut channel, "запуск shell", &mut early).await?;
-        }
-    }
 
     events
         .send(FromSsh::Connected {
@@ -219,7 +210,7 @@ async fn serve(
                     }
                 },
                 Some(ToSsh::Disconnect) | None => {
-                    let _ = writer.eof().await;
+                    let _ = tokio::time::timeout(GOODBYE_TIMEOUT, writer.eof()).await;
                     break CloseReason::Local;
                 }
             },
@@ -230,6 +221,58 @@ async fn serve(
     connected.disconnect().await;
 
     Ok(reason)
+}
+
+/// Подключение и запуск shell (или команды) — всё, что идёт до первого вывода.
+async fn open_shell(
+    config: &SshConfig,
+    prompter: &Prompter,
+) -> Result<(Connected, Channel<client::Msg>, Vec<Bytes>)> {
+    let connected = connect(config, prompter).await?;
+    let mut channel = connected
+        .session
+        .channel_open_session()
+        .await
+        .context("сервер не открыл сессионный канал")?;
+
+    let mut early = Vec::new();
+
+    channel
+        .request_pty(
+            true,
+            &config.term,
+            config.pty.cols as u32,
+            config.pty.rows as u32,
+            config.pty.pixel_width as u32,
+            config.pty.pixel_height as u32,
+            PTY_MODES,
+        )
+        .await
+        .context("запрос PTY")?;
+    await_reply(&mut channel, "выделение PTY", &mut early).await?;
+
+    if config.forward_agent {
+        channel
+            .agent_forward(false)
+            .await
+            .context("запрос проброса агента")?;
+    }
+
+    match &config.command {
+        Some(command) => {
+            channel
+                .exec(true, command.as_bytes())
+                .await
+                .context("запуск команды")?;
+            await_reply(&mut channel, "запуск команды", &mut early).await?;
+        }
+        None => {
+            channel.request_shell(true).await.context("запрос shell")?;
+            await_reply(&mut channel, "запуск shell", &mut early).await?;
+        }
+    }
+
+    Ok((connected, channel, early))
 }
 
 async fn open_route(
@@ -307,9 +350,10 @@ async fn open_jump(
         remote_forwards: Default::default(),
     };
 
-    let mut session = client::connect_stream(client_config.clone(), stream, verifier)
-        .await
-        .context("SSH-рукопожатие")?;
+    let mut session =
+        client::connect_stream(client_config.clone(), route::answering(stream), verifier)
+            .await
+            .context("SSH-рукопожатие")?;
 
     let login = Login {
         user: &jump.user,
@@ -320,10 +364,14 @@ async fn open_jump(
     };
     authenticate(&mut session, &login, prompter).await?;
 
-    let channel = session
-        .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0)
-        .await
-        .with_context(|| format!("хост не открыл туннель до {}", route::join(host, port)))?;
+    let tunnel = format!("туннель до {}", route::join(host, port));
+    let channel = route::deadline(&tunnel, async {
+        session
+            .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0)
+            .await
+            .with_context(|| format!("хост не открыл {tunnel}"))
+    })
+    .await?;
 
     Ok((session, Box::new(channel.into_stream())))
 }

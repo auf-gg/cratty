@@ -43,10 +43,21 @@ fn is_crlf(text: &str) -> bool {
     crlf > 0 && crlf == text.matches('\n').count() && crlf == text.matches('\r').count()
 }
 
+/// Язык для подсветки: расширение файла, а у файлов без него и у дотфайлов —
+/// имя целиком (`Makefile`, `sshd_config`, `.bashrc`): подсветка знает и их.
 fn language_of(name: &str) -> String {
-    name.rsplit_once('.')
-        .map(|(_, ext)| ext.to_ascii_lowercase())
-        .unwrap_or_else(|| "text".into())
+    let language = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => ext,
+        _ => name,
+    }
+    .to_ascii_lowercase();
+    match language.as_str() {
+        // Юниты systemd — тот же INI.
+        "service" | "socket" | "timer" | "mount" | "path" | "target" | "network" | "netdev" => {
+            "ini".into()
+        }
+        _ => language,
+    }
 }
 
 impl EditorView {
@@ -397,6 +408,10 @@ mod tests {
     fn yazyk_po_rasshireniyu() {
         assert_eq!(language_of("nginx.CONF"), "conf");
         assert_eq!(language_of("config.json"), "json");
-        assert_eq!(language_of("Makefile"), "text");
+        assert_eq!(language_of("Makefile"), "makefile");
+        assert_eq!(language_of(".bashrc"), ".bashrc");
+        assert_eq!(language_of("sshd_config"), "sshd_config");
+        assert_eq!(language_of(".tmux.conf"), "conf");
+        assert_eq!(language_of("nginx.service"), "ini");
     }
 }

@@ -20,7 +20,9 @@ alacritty_terminal = "0.26.0"
 anyhow = "1.0.104"
 bytes = "1.12.1"
 futures = "0.3.34"
-gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets"] }
+# `syntect` — подсветка синтаксиса в редакторе файлов: ~200 языков за несколько
+# мегабайт (tree-sitter обошёлся бы в десятки), цвета берутся из темы.
+gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets", "syntect"] }
 # Хранилище секретов операционной системы: Keychain на macOS, Credential
 # Manager на Windows, Secret Service на остальных unix. Фича `v1` (она же
 # default) сама выбирает нужную реализацию под целевую платформу, и лишние
@@ -84,6 +86,6 @@ embed-resource = "3.0.11"
 # Генератор с интерфейсом rand_core — для теста зашифрованного ключа.
 getrandom = { version = "0.4.3", default-features = false, features = ["sys_rng"] }
 alacritty_terminal = "0.26.0"
-gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets", "test-support"] }
+gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets", "syntect", "test-support"] }
 rand = { version = "0.10.2", features = ["thread_rng"] }
-tokio = { version = "1.53.1", features = ["rt", "macros", "time", "net", "sync"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "time", "net", "sync", "test-util"] }

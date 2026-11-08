@@ -140,6 +140,9 @@ pub fn spawn_sftp(config: SshConfig) -> std::io::Result<SftpHandle> {
                 }
             };
             runtime.block_on(run(config, command_rx, answer_rx, event_tx));
+            // Не ждать фоновых потоков рантайма: там может висеть DNS-запрос
+            // без сети, а этот поток при закрытии вкладки ждёт интерфейс.
+            runtime.shutdown_background();
         })?;
 
     Ok(SftpHandle {
@@ -183,11 +186,21 @@ async fn run(
 
 async fn serve(
     config: &SshConfig,
-    commands: mpsc::UnboundedReceiver<ToSftp>,
+    mut commands: mpsc::UnboundedReceiver<ToSftp>,
     prompter: &Prompter,
     events: &mut mpsc::Sender<FromSftp>,
 ) -> Result<()> {
-    let connected = session::connect(config, prompter).await?;
+    let mut queued = Vec::new();
+    let Some(connected) = session::unless_closed(
+        session::connect(config, prompter),
+        &mut commands,
+        &mut queued,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    let commands = futures::stream::iter(queued).chain(commands);
     events
         .send(FromSftp::Ssh(FromSsh::Connected {
             fingerprint: connected.fingerprint.clone(),
@@ -206,7 +219,7 @@ async fn serve(
 
 async fn serve_channel(
     mut channel: Channel<client::Msg>,
-    mut commands: mpsc::UnboundedReceiver<ToSftp>,
+    mut commands: impl futures::Stream<Item = ToSftp> + Unpin,
     events: &mut mpsc::Sender<FromSftp>,
 ) -> Result<()> {
     channel

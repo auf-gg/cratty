@@ -566,6 +566,40 @@ impl Unlocked {
         self.records.snippets()
     }
 
+    /// Имя хранилища из его зашифрованной записи; `None`, если её ещё нет.
+    pub fn vault_name(&self) -> Option<String> {
+        let id = RecordId::parse(proto::VAULT_META_ID).ok()?;
+        self.records
+            .entries
+            .get(&id)?
+            .body
+            .as_vault()
+            .map(|meta| meta.name.clone())
+            .filter(|name| !name.trim().is_empty())
+    }
+
+    /// Записывает имя хранилища; оно уходит на другие устройства с синхронизацией.
+    pub fn set_vault_name(&mut self, store: &VaultStore, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("имя хранилища не может быть пустым");
+        }
+        if self.vault_name().as_deref() == Some(name) {
+            return Ok(());
+        }
+        let id = RecordId::parse(proto::VAULT_META_ID).map_err(|error| anyhow!("{error}"))?;
+        let body = RecordBody::Vault(proto::VaultMeta {
+            name: name.to_owned(),
+        });
+        if self.records.entries.contains_key(&id) {
+            self.records.upsert(store, Some(id), Some(false), body)?;
+        } else {
+            let record = Record::new(id, self.records.device_id.clone(), now_ms(), body);
+            self.records.write(store, record)?;
+        }
+        Ok(())
+    }
+
     pub fn upsert_snippet(
         &mut self,
         store: &VaultStore,
@@ -701,6 +735,25 @@ pub fn prepare_new_vault_with_params(password: &[u8], params: Argon2idParams) ->
         data_key,
         code,
     })
+}
+
+/// Тяжёлая часть смены пароля, для фонового потока: проверяет текущий пароль
+/// и заворачивает ключ данных под новый. Результат ставится
+/// [`VaultSession::replace_password_slot`].
+pub fn prepare_password_change(
+    account: &Account,
+    current: &[u8],
+    new: &[u8],
+    target: Duration,
+) -> Result<WrapSlot> {
+    let data_key =
+        derive_from_password(account, current).map_err(|_| anyhow!("текущий пароль неверный"))?;
+    let params = vault::calibrate(target, &vault::CalibrationLimits::default())
+        .map_err(|error| anyhow!("не подобрать параметры Argon2id: {error}"))?
+        .params;
+    let (slot, _) = WrapSlot::from_password(&data_key, new, params, PASSWORD_SLOT_LABEL)
+        .map_err(|error| anyhow!("не создать обёртку на новом пароле: {error}"))?;
+    Ok(slot)
 }
 
 pub fn derive_from_password(account: &Account, password: &[u8]) -> Result<DataKey> {
@@ -908,7 +961,16 @@ impl VaultSession {
             PASSWORD_SLOT_LABEL,
         )
         .map_err(|error| anyhow!("не создать обёртку на новом пароле: {error}"))?;
+        self.replace_password_slot(new_slot)
+    }
 
+    pub fn read_account(&self) -> Result<Account> {
+        self.store.read_account()
+    }
+
+    /// Ставит обёртку на новом пароле вместо прежних. Обёртки на коде
+    /// восстановления и на ключе ОС не трогает.
+    pub fn replace_password_slot(&mut self, new_slot: WrapSlot) -> Result<()> {
         let mut account = self.store.read_account()?;
         let old: Vec<_> = account
             .slots
@@ -924,6 +986,11 @@ impl VaultSession {
                 .map_err(|error| anyhow!("не убрать старую обёртку: {error}"))?;
         }
         self.store.write_account(&account)
+    }
+
+    /// Хранилище перенесли в другой каталог: дальше читаем и пишем там.
+    pub fn relocate(&mut self, root: std::path::PathBuf) {
+        self.store = VaultStore::new(root);
     }
 
     pub fn has_os_key(&self) -> bool {
@@ -1327,6 +1394,34 @@ mod tests {
     }
 
     #[test]
+    fn smena_parolya_v_dva_shaga_proveryaet_tekushchiy() {
+        let mut session = session("change-password-prepared");
+        session
+            .create_for_tests("старый".as_bytes(), params(), Vec::new())
+            .expect("создание");
+        let account = session.read_account().expect("аккаунт");
+        let fast = Duration::from_millis(1);
+
+        assert!(
+            prepare_password_change(&account, "чужой".as_bytes(), "новый".as_bytes(), fast)
+                .is_err(),
+            "сменили пароль, не зная текущего"
+        );
+
+        let slot = prepare_password_change(&account, "старый".as_bytes(), "новый".as_bytes(), fast)
+            .expect("подготовка");
+        session.replace_password_slot(slot).expect("замена");
+
+        session.lock(None);
+        assert!(session.unlock_with_password("старый".as_bytes()).is_err());
+        session
+            .unlock_with_password("новый".as_bytes())
+            .expect("новый пароль");
+
+        cleanup(&session);
+    }
+
+    #[test]
     fn import_iz_starogo_spiska_popadaet_v_hranilishche() {
         let mut session = session("import");
         let mut first = HostRecord::new("prod.example.com");
@@ -1501,6 +1596,45 @@ mod tests {
             .find_by_target("local.example.com")
             .expect("запись на месте");
         assert!(local.device_only, "привязка потерялась после перезапуска");
+
+        cleanup(&session);
+    }
+
+    #[test]
+    fn imya_hranilishcha_hranitsya_i_uhodit_v_sinhronizaciyu() {
+        let mut session = session("vault-name");
+        session
+            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
+            .expect("создание");
+        let store = VaultStore::new(session.store().root().to_path_buf());
+
+        let unlocked = session.unlocked_mut().expect("открыто");
+        assert_eq!(unlocked.vault_name(), None);
+        assert!(unlocked.set_vault_name(&store, "   ").is_err());
+        unlocked.set_vault_name(&store, "Работа").expect("имя");
+        unlocked
+            .set_vault_name(&store, " Работа 2 ")
+            .expect("переименование");
+        assert_eq!(unlocked.vault_name().as_deref(), Some("Работа 2"));
+
+        let meta = RecordId::parse(proto::VAULT_META_ID).expect("id");
+        assert!(
+            unlocked.syncable_ids().contains(&meta),
+            "имя должно уходить на другие устройства"
+        );
+        assert!(
+            unlocked.hosts().is_empty() && unlocked.snippets().is_empty(),
+            "запись имени не должна попадать в списки"
+        );
+
+        session.lock(None);
+        session
+            .unlock_with_password("пароль".as_bytes())
+            .expect("разблокировка");
+        assert_eq!(
+            session.unlocked().expect("открыто").vault_name().as_deref(),
+            Some("Работа 2")
+        );
 
         cleanup(&session);
     }

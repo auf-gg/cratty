@@ -386,6 +386,34 @@ impl AppView {
         }
     }
 
+    /// Сводит имя из реестра с зашифрованной записью имени. Запись главнее:
+    /// она приходит с других устройств. Нет записи — создаём из реестра,
+    /// чтобы имя ушло на другие устройства.
+    pub(super) fn reconcile_vault_name(&mut self, id: &str) {
+        let Some(ix) = self.vault_ix(id) else {
+            return;
+        };
+        let store = VaultStore::new(self.vaults[ix].root());
+        let local = self.vaults[ix].name.clone();
+        let Some(unlocked) = self.vaults[ix].session.unlocked_mut() else {
+            return;
+        };
+        match unlocked.vault_name() {
+            Some(name) if name != local => {
+                self.vaults[ix].name = name;
+                self.save_registry();
+            }
+            Some(_) => {}
+            None => {
+                if let Err(error) = unlocked.set_vault_name(&store, &local) {
+                    self.vault_error = Some(SharedString::from(format!(
+                        "Не удалось сохранить имя хранилища: {error:#}"
+                    )));
+                }
+            }
+        }
+    }
+
     pub(super) fn save_registry(&mut self) {
         let Some(file) = self.registry_file.clone() else {
             return;
@@ -708,6 +736,16 @@ impl AppView {
                                 });
                             })
                         };
+                        let edit = {
+                            let (view, id) = (view.clone(), menu_id.clone());
+                            PopupMenuItem::new("Настройки хранилища…").on_click(
+                                move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.open_vault_editor(&id, window, cx)
+                                    });
+                                },
+                            )
+                        };
                         let delete = {
                             let (view, id) = (view.clone(), menu_id.clone());
                             PopupMenuItem::new("Удалить хранилище…").on_click(
@@ -716,7 +754,8 @@ impl AppView {
                                 },
                             )
                         };
-                        menu.item(import)
+                        menu.item(edit)
+                            .item(import)
                             .item(toggle)
                             .item(PopupMenuItem::separator())
                             .item(delete)

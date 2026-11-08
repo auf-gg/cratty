@@ -193,6 +193,90 @@ pub fn remove_vault(root: &Path) -> Result<()> {
     fs::remove_dir_all(root).with_context(|| format!("не удалить {}", root.display()))
 }
 
+/// Переносит каталог хранилища в `target`. Пустой `target` занимается целиком,
+/// в непустом создаётся подкаталог с прежним именем. Возвращает новый путь.
+/// Между файловыми системами — копия, сверка и только потом удаление старого.
+pub fn move_vault(from: &Path, target: &Path) -> Result<PathBuf> {
+    if !from.join(ACCOUNT_FILE).is_file() {
+        bail!("{} не похож на каталог хранилища", from.display());
+    }
+    let empty = target.is_dir() && target.read_dir()?.next().is_none();
+    let dest = if empty || !target.exists() {
+        target.to_path_buf()
+    } else {
+        let name = from
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("у каталога {} нет имени", from.display()))?;
+        target.join(name)
+    };
+
+    let from_real = fs::canonicalize(from)?;
+    let dest_parent = dest.parent().unwrap_or(&dest);
+    fs::create_dir_all(dest_parent)
+        .with_context(|| format!("не создать {}", dest_parent.display()))?;
+    let dest_real = fs::canonicalize(dest_parent)?.join(dest.file_name().unwrap_or_default());
+    if dest_real == from_real {
+        bail!("хранилище уже лежит в {}", dest.display());
+    }
+    if dest_real.starts_with(&from_real) {
+        bail!("нельзя перенести хранилище внутрь него самого");
+    }
+    if dest.exists() && dest.read_dir()?.next().is_some() {
+        bail!("{} уже существует и не пуст", dest.display());
+    }
+    if dest.exists() {
+        fs::remove_dir(&dest).with_context(|| format!("не занять {}", dest.display()))?;
+    }
+
+    if fs::rename(from, &dest).is_ok() {
+        return Ok(dest);
+    }
+
+    // Другая файловая система: копируем, сверяем и только потом удаляем.
+    if let Err(error) = copy_dir(from, &dest).and_then(|()| same_tree(from, &dest)) {
+        let _ = fs::remove_dir_all(&dest);
+        return Err(error.context(format!("не перенести хранилище в {}", dest.display())));
+    }
+    fs::remove_dir_all(from).with_context(|| {
+        format!(
+            "хранилище скопировано в {}, но старый каталог {} удалить не вышло",
+            dest.display(),
+            from.display()
+        )
+    })?;
+    Ok(dest)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to).with_context(|| format!("не создать {}", to.display()))?;
+    restrict_to_owner(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let path = entry.path();
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&path, &dest)?;
+        } else {
+            fs::copy(&path, &dest).with_context(|| format!("не скопировать {}", path.display()))?;
+            restrict_to_owner(&dest)?;
+        }
+    }
+    Ok(())
+}
+
+fn same_tree(left: &Path, right: &Path) -> Result<()> {
+    for entry in fs::read_dir(left)? {
+        let entry = entry?;
+        let theirs = right.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            same_tree(&entry.path(), &theirs)?;
+        } else if fs::read(entry.path())? != fs::read(&theirs).unwrap_or_default() {
+            bail!("копия {} не совпала с оригиналом", theirs.display());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +288,70 @@ mod tests {
         let path = std::env::temp_dir().join(format!("cratty-test-{name}-{unique}"));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    fn fake_vault(name: &str) -> PathBuf {
+        let root = temp_root(name);
+        fs::create_dir_all(root.join(RECORDS_DIR)).expect("каталог");
+        fs::write(root.join(ACCOUNT_FILE), b"account").expect("аккаунт");
+        fs::write(root.join(RECORDS_DIR).join("r1"), b"record").expect("запись");
+        root
+    }
+
+    #[test]
+    fn perenos_v_pustoy_i_nepustoy_katalog() {
+        let vault = fake_vault("move-src");
+        let empty = temp_root("move-empty");
+        fs::create_dir_all(&empty).expect("каталог");
+
+        let moved = move_vault(&vault, &empty).expect("перенос в пустой");
+        assert_eq!(moved, empty);
+        assert!(!vault.exists(), "старый каталог остался");
+        assert_eq!(
+            fs::read(moved.join(RECORDS_DIR).join("r1")).expect("запись"),
+            b"record"
+        );
+
+        let busy = temp_root("move-busy");
+        fs::create_dir_all(&busy).expect("каталог");
+        fs::write(busy.join("other"), b"x").expect("файл");
+        let again = move_vault(&moved, &busy).expect("перенос в непустой");
+        assert_eq!(again, busy.join(moved.file_name().expect("имя")));
+        assert!(again.join(ACCOUNT_FILE).is_file());
+        assert!(busy.join("other").is_file(), "чужой файл тронули");
+
+        let _ = fs::remove_dir_all(&busy);
+        let _ = fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn perenos_otkazyvaet_v_opasnyh_sluchayah() {
+        let vault = fake_vault("move-guard");
+        assert!(
+            move_vault(&vault, &vault.join("inside")).is_err(),
+            "внутрь себя"
+        );
+        assert!(move_vault(&vault, &vault).is_err(), "на то же место");
+
+        let not_vault = temp_root("move-not-vault");
+        fs::create_dir_all(&not_vault).expect("каталог");
+        assert!(move_vault(&not_vault, &temp_root("move-dest")).is_err());
+
+        assert!(vault.join(ACCOUNT_FILE).is_file(), "хранилище пострадало");
+        let _ = fs::remove_dir_all(&vault);
+        let _ = fs::remove_dir_all(&not_vault);
+    }
+
+    #[test]
+    fn kopiya_mezhdu_fs_sveryaetsya() {
+        let vault = fake_vault("copy-src");
+        let dest = temp_root("copy-dest");
+        copy_dir(&vault, &dest).expect("копия");
+        same_tree(&vault, &dest).expect("сверка");
+        fs::write(dest.join(RECORDS_DIR).join("r1"), b"other").expect("порча");
+        assert!(same_tree(&vault, &dest).is_err(), "порча копии не замечена");
+        let _ = fs::remove_dir_all(&vault);
+        let _ = fs::remove_dir_all(&dest);
     }
 
     fn account() -> (Account, DataKey) {

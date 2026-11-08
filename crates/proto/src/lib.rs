@@ -17,7 +17,9 @@ pub use host::{HostAuth, HostRecord};
 pub use ids::{DeviceId, RecordId, VaultId};
 pub use key::KeyRecord;
 pub use proxy::{ProxyKind, ProxyRecord, SOCKS_PORT};
-pub use record::{BODY_VERSION, EncryptedRecord, RECORD_MAGIC, Record, RecordBody, wins};
+pub use record::{
+    BODY_VERSION, EncryptedRecord, RECORD_MAGIC, Record, RecordBody, VAULT_META_ID, VaultMeta, wins,
+};
 pub use secret::{Secret, SecretPurpose, Secrets};
 pub use snippet::SnippetRecord;
 

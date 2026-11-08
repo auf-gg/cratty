@@ -93,6 +93,7 @@ impl AppView {
         };
 
         let report = unlocked.merge(&store, outcome.records);
+        self.reconcile_vault_name(id);
 
         let mut troubles = outcome.errors;
         troubles.extend(outcome.broken);

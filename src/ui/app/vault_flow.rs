@@ -96,6 +96,8 @@ impl AppView {
                         slot.draft = false;
                         this.current = ix;
                         this.save_registry();
+                        let id = this.vaults[ix].id.clone();
+                        this.reconcile_vault_name(&id);
                         this.show_recovery_code(&code, imported, cx);
                     }
                     Err(error) => this.vault_error = Some(SharedString::from(format!("{error:#}"))),
@@ -332,6 +334,7 @@ impl AppView {
                     self.vault_error = None;
                 }
                 self.collect_vault_warnings(id);
+                self.reconcile_vault_name(id);
                 self.sync_can_save_secrets(cx);
                 self.start_sync_watch(id, cx);
                 self.sync_now(id, cx);

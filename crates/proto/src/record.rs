@@ -12,6 +12,16 @@ pub const RECORD_MAGIC: &[u8] = b"cratty/record\x01";
 
 pub const BODY_VERSION: u32 = 1;
 
+/// Id записи со свойствами хранилища. Фиксированный, чтобы все устройства
+/// писали в одну запись и сходились по обычному правилу «новее побеждает».
+pub const VAULT_META_ID: &str = "00000000000000000000000000000000";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultMeta {
+    #[serde(default)]
+    pub name: String,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum RecordBody {
@@ -19,6 +29,8 @@ pub enum RecordBody {
     Key(KeyRecord),
     Proxy(ProxyRecord),
     Snippet(crate::SnippetRecord),
+    /// Свойства самого хранилища (имя). Одна запись с [`VAULT_META_ID`].
+    Vault(VaultMeta),
     #[serde(other)]
     Tombstone,
 }
@@ -30,6 +42,7 @@ impl core::fmt::Debug for RecordBody {
             Self::Key(_) => f.write_str("Key(<скрыт>)"),
             Self::Proxy(_) => f.write_str("Proxy(<скрыт>)"),
             Self::Snippet(_) => f.write_str("Snippet(<скрыт>)"),
+            Self::Vault(_) => f.write_str("Vault(<скрыт>)"),
             Self::Tombstone => f.write_str("Tombstone"),
         }
     }
@@ -57,6 +70,13 @@ impl RecordBody {
     pub fn as_proxy(&self) -> Option<&ProxyRecord> {
         match self {
             Self::Proxy(proxy) => Some(proxy),
+            _ => None,
+        }
+    }
+
+    pub fn as_vault(&self) -> Option<&VaultMeta> {
+        match self {
+            Self::Vault(meta) => Some(meta),
             _ => None,
         }
     }

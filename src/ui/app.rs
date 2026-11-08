@@ -24,6 +24,7 @@ mod settings_ui;
 mod shell;
 mod snippets_ui;
 mod sync_ui;
+mod vault_edit;
 mod vault_flow;
 mod vaults;
 
@@ -183,6 +184,7 @@ pub struct AppView {
     confirm_delete: Option<String>,
     /// Хост (хранилище, адрес), удаление которого ждёт подтверждения.
     confirm_forget: Option<(String, String)>,
+    vault_editor: Option<vault_edit::VaultEditor>,
     import_notice: Option<SharedString>,
     stage: Option<Stage>,
     vault_form: VaultForm,
@@ -420,6 +422,7 @@ impl AppView {
             os_tasks: Vec::new(),
             confirm_delete: None,
             confirm_forget: None,
+            vault_editor: None,
             import_notice: None,
             stage: None,
             vault_form: VaultForm {
@@ -1998,6 +2001,7 @@ impl Render for AppView {
         let sign_dialog = self.sign_dialog(cx);
         let delete_dialog = self.delete_vault_dialog(cx);
         let forget_dialog = self.forget_host_dialog(cx);
+        let vault_editor = self.vault_editor_dialog(cx);
 
         div()
             .relative()
@@ -2086,6 +2090,7 @@ impl Render for AppView {
             .children(sign_dialog)
             .children(delete_dialog)
             .children(forget_dialog)
+            .children(vault_editor)
     }
 }
 

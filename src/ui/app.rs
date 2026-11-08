@@ -30,6 +30,7 @@ mod shell;
 mod snippets_ui;
 mod sync_ui;
 mod theme_ui;
+mod update_ui;
 mod vault_edit;
 mod vault_flow;
 mod vaults;
@@ -190,6 +191,8 @@ pub struct AppView {
     confirm_delete: Option<String>,
     /// Хост (хранилище, адрес), удаление которого ждёт подтверждения.
     confirm_forget: Option<(String, String)>,
+    /// Хост, который сейчас тащат в левой панели: хранилище и есть ли у него группа.
+    dragging_host: Option<(String, bool)>,
     vault_editor: Option<vault_edit::VaultEditor>,
     /// Окно «Изменить группу», открытое из меню группы в левой панели.
     group_editor: Option<groups_ui::GroupEditor>,
@@ -231,6 +234,7 @@ pub struct AppView {
     sync_watches: std::collections::HashMap<String, gpui_kit::Task<()>>,
     settings: Settings,
     error: Option<SharedString>,
+    updater: update_ui::UpdateState,
 }
 
 struct PendingSign {
@@ -455,6 +459,7 @@ impl AppView {
             os_tasks: Vec::new(),
             confirm_delete: None,
             confirm_forget: None,
+            dragging_host: None,
             vault_editor: None,
             group_editor: None,
             icon_picker: None,
@@ -499,6 +504,7 @@ impl AppView {
             sync_watches: std::collections::HashMap::new(),
             settings,
             error: None,
+            updater: update_ui::UpdateState::default(),
         };
 
         if vaults.is_empty() {
@@ -544,6 +550,8 @@ impl AppView {
         if let Some(raw) = std::env::args().nth(1) {
             this.open(&raw, &connect::Credentials::default(), None, cx);
         }
+
+        this.start_update_checks(cx);
 
         this
     }
@@ -654,7 +662,12 @@ impl AppView {
         if let Some(existing) = &existing {
             host.secrets = existing.host.secrets.clone();
             host.forward_agent = existing.host.forward_agent;
+            host.order = existing.host.order;
         }
+        let old_group = existing
+            .as_ref()
+            .map(|entry| entry.host.group.clone())
+            .unwrap_or_default();
         let renamed = existing
             .map(|entry| entry.id)
             .filter(|_| original != host.target());
@@ -666,6 +679,10 @@ impl AppView {
             .unlocked_of(&vault_id)
             .map(|unlocked| unlocked.group_name(&group))
             .unwrap_or(group);
+        // В другой группе прежнее место ничего не значит.
+        if proto::GroupRecord::key(&host.group) != proto::GroupRecord::key(&old_group) {
+            host.order = 0;
+        }
         host.auth = credentials.auth;
         host.via = self.form.via.clone();
         host.forwards = self.form.forwards.clone();
@@ -2080,6 +2097,9 @@ impl AppView {
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.track_pane_focus(window, cx);
+        if !cx.has_active_drag() {
+            self.dragging_host = None;
+        }
         let title_bar = self.title_bar(cx);
         let rail = self.rail(cx);
         let workspace = self.workspace(cx);
@@ -2112,6 +2132,7 @@ impl Render for AppView {
         let vault_editor = self.vault_editor_dialog(cx);
         let group_editor = self.group_editor_dialog(cx);
         let icon_picker = self.icon_picker_dialog(cx);
+        let update_dialog = self.update_dialog(cx);
 
         div()
             .relative()
@@ -2203,6 +2224,7 @@ impl Render for AppView {
             .children(vault_editor)
             .children(group_editor)
             .children(icon_picker)
+            .children(update_dialog)
     }
 }
 

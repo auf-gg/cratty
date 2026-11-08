@@ -1,7 +1,92 @@
 use super::*;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 
+/// Хост, который тащат по левой панели в другую группу.
+#[derive(Clone)]
+pub(super) struct HostDrag {
+    vault: String,
+    target: String,
+    group: String,
+    title: SharedString,
+}
+
+struct HostDragPreview(SharedString);
+
+impl Render for HostDragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .text_sm()
+            .child(self.0.clone())
+    }
+}
+
 impl AppView {
+    /// Делает элемент местом, куда можно бросить хост того же хранилища:
+    /// он переезжает в группу `group` (пустое имя — без группы). С `anchor`
+    /// хост встаёт на место этого хоста — так меняется порядок и внутри группы.
+    pub(super) fn host_drop_target<E: InteractiveElement>(
+        element: E,
+        vault: &str,
+        group: &str,
+        anchor: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> E {
+        let bg = cx.theme().drop_target;
+        let check_vault = vault.to_owned();
+        let check_group = proto::GroupRecord::key(group);
+        let check_anchor = anchor.clone();
+        let (drop_vault, drop_group) = (vault.to_owned(), group.trim().to_owned());
+        element
+            .can_drop(move |value, _window, _cx| {
+                value.downcast_ref::<HostDrag>().is_some_and(|drag| {
+                    drag.vault == check_vault
+                        && match &check_anchor {
+                            Some(anchor) => *anchor != drag.target,
+                            None => proto::GroupRecord::key(&drag.group) != check_group,
+                        }
+                })
+            })
+            .drag_over::<HostDrag>(move |style, _, _, _| style.bg(bg))
+            .on_drop(cx.listener(move |this, drag: &HostDrag, _window, cx| {
+                this.dragging_host = None;
+                let (target, group, anchor) =
+                    (drag.target.clone(), drop_group.clone(), anchor.clone());
+                this.persist(&drop_vault, cx, |unlocked, store| {
+                    unlocked.move_host(store, &target, &group, anchor.as_deref())
+                });
+            }))
+    }
+
+    /// Место «Без группы» в конце хранилища, пока тащат хост из группы.
+    fn ungroup_zone(&self, vault: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.dragging_host.as_ref() != Some(&(vault.to_owned(), true)) {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let zone = Self::rail_row(
+            SharedString::from(format!("rail-ungroup-{vault}")),
+            false,
+            cx,
+        )
+        .h(px(30.))
+        .mt_1()
+        .justify_center()
+        .border_1()
+        .border_color(theme.border)
+        .child(
+            Label::new("Без группы")
+                .text_xs()
+                .text_color(theme.muted_foreground),
+        );
+        Some(Self::host_drop_target(zone, vault, "", None, cx).into_any_element())
+    }
+
     pub(super) fn rail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = cx.theme().clone();
         let locked = !self.any_unlocked();
@@ -32,6 +117,17 @@ impl AppView {
                 .bg(theme.sidebar)
                 .border_r_1()
                 .border_color(theme.border)
+                // Брошенный туда, где его не принимают (например, на самого
+                // себя), хост gpui снимает без перерисовки — и подсказка
+                // перетаскивания застывает. Перерисовываем сами.
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _window, cx| {
+                        if this.dragging_host.take().is_some() {
+                            cx.notify();
+                        }
+                    }),
+                )
                 .child(
                     h_flex()
                         .px_3()
@@ -158,8 +254,15 @@ impl AppView {
 
         v_flex()
             .gap_px()
-            .child(self.vault_header(ix, cx))
+            .child(Self::host_drop_target(
+                div().rounded(px(7.)).child(self.vault_header(ix, cx)),
+                &id,
+                "",
+                None,
+                cx,
+            ))
             .children(rows)
+            .children(self.ungroup_zone(&id, cx))
             .into_any_element()
     }
 
@@ -286,71 +389,95 @@ impl AppView {
         let (vault, open_target) = (vault.to_owned(), target.clone());
         let menu_vault = vault.clone();
         let menu_target = target.clone();
+        let drag = HostDrag {
+            vault: vault.clone(),
+            target: target.clone(),
+            group: host.group.trim().to_owned(),
+            title: SharedString::from(title.clone()),
+        };
+        let drop_group = if in_group {
+            host.group.clone()
+        } else {
+            String::new()
+        };
 
-        Self::rail_row(
+        let row = Self::rail_row(
             SharedString::from(format!("rail-host-{vault}-{target}")),
             false,
             cx,
-        )
-        .h(px(42.))
-        .when(in_group, |this| this.pl(px(26.)))
-        .child(self.icon_view(&vault, &host.icon, "server", px(20.), cx))
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w(px(0.))
-                .overflow_hidden()
-                .child(
-                    Label::new(SharedString::from(shorten(&title, ROW_TITLE_CHARS + 6)))
-                        .text_sm()
-                        .line_clamp(1)
-                        .text_ellipsis(),
-                )
-                .child(
-                    Label::new(SharedString::from(target))
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .line_clamp(1)
-                        .text_ellipsis(),
-                ),
-        )
-        .on_click(
-            cx.listener(move |this, _, _window, cx| this.open_saved(&vault, &open_target, cx)),
-        )
-        .context_menu(move |menu, _window, _cx| {
-            let item = |label: &'static str, icon: &'static str| {
-                PopupMenuItem::new(label).icon(Icon::empty().path(icon))
-            };
-            let files = {
-                let (view, vault, target) = (view.clone(), menu_vault.clone(), menu_target.clone());
-                item("Файлы (SFTP)", "icons/folder.svg").on_click(move |_, _window, cx| {
-                    view.update(cx, |this, cx| {
-                        let credentials = this.saved_credentials(&vault, &target);
-                        this.open_files(&target, credentials, Some(vault.clone()), cx);
-                    });
-                })
-            };
-            let edit = {
-                let (view, vault, target) = (view.clone(), menu_vault.clone(), menu_target.clone());
-                item("Изменить", "icons/pencil.svg").on_click(move |_, window, cx| {
-                    view.update(cx, |this, cx| this.edit(&vault, &target, window, cx));
-                })
-            };
-            let delete = {
-                let (view, vault, target) = (view.clone(), menu_vault.clone(), menu_target.clone());
-                item("Удалить…", "icons/delete.svg").on_click(move |_, _window, cx| {
-                    view.update(cx, |this, cx| {
-                        this.confirm_forget = Some((vault.clone(), target.clone()));
-                        cx.notify();
-                    });
-                })
-            };
-            menu.item(files)
-                .item(edit)
-                .item(PopupMenuItem::separator())
-                .item(delete)
-        })
-        .into_any_element()
+        );
+        Self::host_drop_target(row, &vault, &drop_group, Some(target.clone()), cx)
+            .on_drag(drag, {
+                let view = view.clone();
+                move |drag: &HostDrag, _, _window, cx| {
+                    let grouped = !drag.group.is_empty();
+                    let vault = drag.vault.clone();
+                    view.update(cx, |this, _| this.dragging_host = Some((vault, grouped)));
+                    cx.new(|_| HostDragPreview(drag.title.clone()))
+                }
+            })
+            .h(px(42.))
+            .when(in_group, |this| this.pl(px(26.)))
+            .child(self.icon_view(&vault, &host.icon, "server", px(20.), cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .child(
+                        Label::new(SharedString::from(shorten(&title, ROW_TITLE_CHARS + 6)))
+                            .text_sm()
+                            .line_clamp(1)
+                            .text_ellipsis(),
+                    )
+                    .child(
+                        Label::new(SharedString::from(target))
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .line_clamp(1)
+                            .text_ellipsis(),
+                    ),
+            )
+            .on_click(
+                cx.listener(move |this, _, _window, cx| this.open_saved(&vault, &open_target, cx)),
+            )
+            .context_menu(move |menu, _window, _cx| {
+                let item = |label: &'static str, icon: &'static str| {
+                    PopupMenuItem::new(label).icon(Icon::empty().path(icon))
+                };
+                let files = {
+                    let (view, vault, target) =
+                        (view.clone(), menu_vault.clone(), menu_target.clone());
+                    item("Файлы (SFTP)", "icons/folder.svg").on_click(move |_, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            let credentials = this.saved_credentials(&vault, &target);
+                            this.open_files(&target, credentials, Some(vault.clone()), cx);
+                        });
+                    })
+                };
+                let edit = {
+                    let (view, vault, target) =
+                        (view.clone(), menu_vault.clone(), menu_target.clone());
+                    item("Изменить", "icons/pencil.svg").on_click(move |_, window, cx| {
+                        view.update(cx, |this, cx| this.edit(&vault, &target, window, cx));
+                    })
+                };
+                let delete = {
+                    let (view, vault, target) =
+                        (view.clone(), menu_vault.clone(), menu_target.clone());
+                    item("Удалить…", "icons/delete.svg").on_click(move |_, _window, cx| {
+                        view.update(cx, |this, cx| {
+                            this.confirm_forget = Some((vault.clone(), target.clone()));
+                            cx.notify();
+                        });
+                    })
+                };
+                menu.item(files)
+                    .item(edit)
+                    .item(PopupMenuItem::separator())
+                    .item(delete)
+            })
+            .into_any_element()
     }
 
     /// Подтверждение удаления хоста из контекстного меню.

@@ -6,4 +6,5 @@ pub mod ssh;
 pub mod store;
 pub mod term;
 pub mod ui;
+pub mod update;
 pub mod vault_session;

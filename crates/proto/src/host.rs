@@ -60,6 +60,14 @@ pub struct HostRecord {
     /// Значок в списке: имя встроенного или `selfhst:<имя>`; пусто — по умолчанию.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// Место в списке своей группы, начиная с 1; 0 — не задано (такие идут
+    /// после расставленных, свежие выше).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub order: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 fn is_false(value: &bool) -> bool {
@@ -90,6 +98,7 @@ impl HostRecord {
             forwards: Vec::new(),
             group: String::new(),
             icon: String::new(),
+            order: 0,
         }
     }
 

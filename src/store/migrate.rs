@@ -94,6 +94,7 @@ impl LegacyHost {
             forwards: Vec::new(),
             group: String::new(),
             icon: String::new(),
+            order: 0,
         };
 
         record.is_usable().then_some(record)

@@ -233,10 +233,13 @@ impl RecordSet {
             .filter(|entry| entry.host.is_usable())
             .collect();
 
+        // Сначала расставленные вручную по месту, за ними остальные — свежие выше.
         hosts.sort_by(|left, right| {
-            right
-                .updated_ms
-                .cmp(&left.updated_ms)
+            let (a, b) = (left.host.order, right.host.order);
+            (a == 0)
+                .cmp(&(b == 0))
+                .then(a.cmp(&b))
+                .then(right.updated_ms.cmp(&left.updated_ms))
                 .then(left.id.cmp(&right.id))
         });
         hosts
@@ -745,6 +748,73 @@ impl Unlocked {
             .find(|group| proto::GroupRecord::key(&group.name) == proto::GroupRecord::key(typed))
             .map(|group| group.name)
             .unwrap_or_else(|| typed.to_owned())
+    }
+
+    /// Переносит хост в группу `group`; пустое имя выносит его из группы.
+    ///
+    /// Без `anchor` хост встаёт в конец группы (своя группа — ничего не
+    /// меняется). С `anchor` он занимает место этого хоста: ниже него, если
+    /// тащили сверху вниз внутри группы, иначе выше. Места всей группы
+    /// при этом нумеруются заново.
+    pub fn move_host(
+        &mut self,
+        store: &VaultStore,
+        target: &str,
+        group: &str,
+        anchor: Option<&str>,
+    ) -> Result<()> {
+        let entry = self
+            .find_by_target(target)
+            .ok_or_else(|| anyhow!("хост {target} не найден"))?;
+        let group = group.trim();
+        let key = proto::GroupRecord::key(group);
+        let same_group = proto::GroupRecord::key(&entry.host.group) == key;
+
+        let Some(anchor) = anchor.filter(|anchor| *anchor != target) else {
+            if same_group {
+                return Ok(());
+            }
+            let mut host = entry.host;
+            host.group = group.to_owned();
+            host.order = 0;
+            return self
+                .records
+                .upsert(store, Some(entry.id), None, RecordBody::Host(host))
+                .map(drop);
+        };
+
+        let mut members: Vec<HostEntry> = self
+            .hosts()
+            .into_iter()
+            .filter(|member| proto::GroupRecord::key(&member.host.group) == key)
+            .collect();
+        let to = members
+            .iter()
+            .position(|member| member.host.target() == anchor)
+            .ok_or_else(|| anyhow!("хост {anchor} не в группе «{group}»"))?;
+        // Сверху вниз: после удаления хоста якорь сдвигается на один вверх, и
+        // `to` указывает место сразу под ним. Снизу или из другой группы `to` —
+        // место над якорем.
+        if let Some(from) = members.iter().position(|member| member.id == entry.id) {
+            members.remove(from);
+        }
+        let moved_id = entry.id.clone();
+        let mut moved = entry;
+        moved.host.group = group.to_owned();
+        members.insert(to, moved);
+
+        for (index, member) in members.into_iter().enumerate() {
+            let order = index as u64 + 1;
+            let regrouped = member.id == moved_id && !same_group;
+            if member.host.order == order && !regrouped {
+                continue;
+            }
+            let mut host = member.host;
+            host.order = order;
+            self.records
+                .upsert(store, Some(member.id), None, RecordBody::Host(host))?;
+        }
+        Ok(())
     }
 
     /// Переименовывает группу `old` и задаёт ей значок. Новое имя уже занято
@@ -2400,6 +2470,127 @@ mod tests {
             .filter(|entry| entry.host.group == "боевые")
             .count();
         assert_eq!(grouped, 3);
+
+        cleanup(&session);
+    }
+
+    #[test]
+    fn host_perenositsya_v_gruppu_i_iz_neyo() {
+        let mut session = session("move-host");
+        session
+            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
+            .expect("создание");
+        let store = VaultStore::new(session.store().root().to_path_buf());
+        let unlocked = session.unlocked_mut().expect("открыто");
+
+        let mut host = HostRecord::new("a.example");
+        host.group = "Prod".into();
+        unlocked.upsert_host_with(&store, host, true).expect("a");
+        let group_of = |unlocked: &Unlocked| unlocked.find_by_target("a.example").expect("есть");
+
+        unlocked
+            .move_host(&store, "a.example", " Stage ", None)
+            .expect("в другую группу");
+        let entry = group_of(unlocked);
+        assert_eq!(entry.host.group, "Stage");
+        assert!(entry.device_only, "привязка к устройству сохраняется");
+
+        unlocked
+            .move_host(&store, "a.example", "", None)
+            .expect("из группы");
+        assert_eq!(group_of(unlocked).host.group, "");
+        assert!(unlocked.groups().is_empty());
+        assert!(
+            unlocked
+                .move_host(&store, "нет.example", "Prod", None)
+                .is_err()
+        );
+
+        cleanup(&session);
+    }
+
+    #[test]
+    fn hosty_pereuporyadochivayutsya_vnutri_gruppy() {
+        let mut session = session("reorder-hosts");
+        session
+            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
+            .expect("создание");
+        let store = VaultStore::new(session.store().root().to_path_buf());
+        let unlocked = session.unlocked_mut().expect("открыто");
+
+        for address in ["d.example", "c.example", "b.example", "a.example"] {
+            let mut host = HostRecord::new(address);
+            host.group = "Prod".into();
+            unlocked.upsert_host(&store, host).expect("хост");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let mut other = HostRecord::new("x.example");
+        other.group = "Stage".into();
+        unlocked.upsert_host(&store, other).expect("x");
+
+        let order = |unlocked: &Unlocked, group: &str| -> Vec<String> {
+            unlocked
+                .hosts()
+                .into_iter()
+                .filter(|entry| entry.host.group == group)
+                .map(|entry| entry.host.host)
+                .collect()
+        };
+        // Пока мест нет — свежие выше.
+        assert_eq!(
+            order(unlocked, "Prod"),
+            ["a.example", "b.example", "c.example", "d.example"]
+        );
+
+        // Сверху вниз — под якорь.
+        unlocked
+            .move_host(&store, "a.example", "Prod", Some("c.example"))
+            .expect("вниз");
+        assert_eq!(
+            order(unlocked, "Prod"),
+            ["b.example", "c.example", "a.example", "d.example"]
+        );
+
+        // Снизу вверх — над якорем.
+        unlocked
+            .move_host(&store, "d.example", "Prod", Some("b.example"))
+            .expect("вверх");
+        assert_eq!(
+            order(unlocked, "Prod"),
+            ["d.example", "b.example", "c.example", "a.example"]
+        );
+
+        // Из другой группы — над якорем.
+        unlocked
+            .move_host(&store, "x.example", "Prod", Some("c.example"))
+            .expect("из другой группы");
+        assert_eq!(
+            order(unlocked, "Prod"),
+            [
+                "d.example",
+                "b.example",
+                "x.example",
+                "c.example",
+                "a.example"
+            ]
+        );
+
+        // Порядок переживает перезапуск.
+        session.lock(None);
+        session
+            .unlock_with_password("пароль".as_bytes())
+            .expect("открытие");
+        let unlocked = session.unlocked_mut().expect("открыто");
+        assert_eq!(
+            order(unlocked, "Prod"),
+            [
+                "d.example",
+                "b.example",
+                "x.example",
+                "c.example",
+                "a.example"
+            ]
+        );
 
         cleanup(&session);
     }

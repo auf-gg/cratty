@@ -57,57 +57,58 @@ impl AppView {
         let (toggle_vault, toggle_name) = (vault.to_owned(), group.name.clone());
         let (menu_vault, menu_name) = (vault.to_owned(), group.name.clone());
 
-        Self::rail_row(
+        let row = Self::rail_row(
             SharedString::from(format!(
                 "rail-group-{vault}-{}",
                 GroupRecord::key(&group.name)
             )),
             false,
             cx,
-        )
-        .h(px(30.))
-        .gap_1p5()
-        .child(
-            Icon::empty()
-                .path(if collapsed {
-                    "icons/chevron-right.svg"
-                } else {
-                    "icons/chevron-down.svg"
-                })
-                .xsmall()
-                .text_color(theme.muted_foreground),
-        )
-        .child(self.icon_view(vault, &group.icon, DEFAULT_GROUP_ICON, px(18.), cx))
-        .child(
-            div().flex_1().min_w(px(0.)).overflow_hidden().child(
-                Label::new(SharedString::from(group.name.clone()))
-                    .text_sm()
-                    .font_medium()
-                    .line_clamp(1)
-                    .text_ellipsis(),
-            ),
-        )
-        .child(
-            Label::new(SharedString::from(count.to_string()))
-                .text_xs()
-                .text_color(theme.muted_foreground),
-        )
-        .on_click(cx.listener(move |this, _, _window, cx| {
-            this.toggle_group(&toggle_vault, &toggle_name, cx)
-        }))
-        .context_menu(move |menu, _window, _cx| {
-            let (view, vault, name) = (view.clone(), menu_vault.clone(), menu_name.clone());
-            menu.item(
-                PopupMenuItem::new("Изменить…")
-                    .icon(Icon::empty().path("icons/pencil.svg"))
-                    .on_click(move |_, window, cx| {
-                        view.update(cx, |this, cx| {
-                            this.open_group_editor(&vault, &name, window, cx)
-                        });
-                    }),
+        );
+        Self::host_drop_target(row, vault, &group.name, None, cx)
+            .h(px(30.))
+            .gap_1p5()
+            .child(
+                Icon::empty()
+                    .path(if collapsed {
+                        "icons/chevron-right.svg"
+                    } else {
+                        "icons/chevron-down.svg"
+                    })
+                    .xsmall()
+                    .text_color(theme.muted_foreground),
             )
-        })
-        .into_any_element()
+            .child(self.icon_view(vault, &group.icon, DEFAULT_GROUP_ICON, px(18.), cx))
+            .child(
+                div().flex_1().min_w(px(0.)).overflow_hidden().child(
+                    Label::new(SharedString::from(group.name.clone()))
+                        .text_sm()
+                        .font_medium()
+                        .line_clamp(1)
+                        .text_ellipsis(),
+                ),
+            )
+            .child(
+                Label::new(SharedString::from(count.to_string()))
+                    .text_xs()
+                    .text_color(theme.muted_foreground),
+            )
+            .on_click(cx.listener(move |this, _, _window, cx| {
+                this.toggle_group(&toggle_vault, &toggle_name, cx)
+            }))
+            .context_menu(move |menu, _window, _cx| {
+                let (view, vault, name) = (view.clone(), menu_vault.clone(), menu_name.clone());
+                menu.item(
+                    PopupMenuItem::new("Изменить…")
+                        .icon(Icon::empty().path("icons/pencil.svg"))
+                        .on_click(move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.open_group_editor(&vault, &name, window, cx)
+                            });
+                        }),
+                )
+            })
+            .into_any_element()
     }
 
     fn open_group_editor(

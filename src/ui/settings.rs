@@ -19,6 +19,9 @@ pub struct Settings {
     pub font_size: f32,
     #[serde(default = "default_autolock_minutes")]
     pub autolock_minutes: u32,
+    /// Блокировать ли хранилища самим: по бездействию и после сна.
+    #[serde(default = "default_autolock")]
+    pub autolock: bool,
     #[serde(default)]
     pub sync_folder: String,
     #[serde(default = "default_prediction")]
@@ -37,6 +40,16 @@ pub struct Settings {
     pub panel_width: f32,
     #[serde(default = "default_editor_width")]
     pub editor_width: f32,
+    /// Закреплена ли левая панель. Откреплённая выезжает при наведении на край окна.
+    #[serde(default = "default_pinned")]
+    pub rail_pinned: bool,
+    /// То же для правой панели сеанса.
+    #[serde(default = "default_pinned")]
+    pub panel_pinned: bool,
+}
+
+fn default_pinned() -> bool {
+    true
 }
 
 pub const RAIL_WIDTH: std::ops::RangeInclusive<f32> = 200.0..=480.0;
@@ -81,6 +94,10 @@ fn default_font_size() -> f32 {
     DEFAULT_FONT_SIZE
 }
 
+fn default_autolock() -> bool {
+    true
+}
+
 fn default_autolock_minutes() -> u32 {
     DEFAULT_AUTOLOCK_MINUTES
 }
@@ -90,6 +107,7 @@ impl Default for Settings {
         Self {
             font_size: DEFAULT_FONT_SIZE,
             autolock_minutes: DEFAULT_AUTOLOCK_MINUTES,
+            autolock: true,
             sync_folder: String::new(),
             prediction: default_prediction(),
             theme: default_theme(),
@@ -99,6 +117,8 @@ impl Default for Settings {
             rail_width: default_rail_width(),
             panel_width: default_panel_width(),
             editor_width: default_editor_width(),
+            rail_pinned: true,
+            panel_pinned: true,
         }
     }
 }
@@ -324,6 +344,7 @@ mod tests {
         let settings = Settings {
             font_size: 18.,
             autolock_minutes: 30,
+            autolock: false,
             sync_folder: String::new(),
             prediction: "never".into(),
             theme: "graphite".into(),
@@ -333,6 +354,8 @@ mod tests {
             rail_width: 300.0,
             panel_width: 400.0,
             editor_width: 600.0,
+            rail_pinned: false,
+            panel_pinned: true,
         };
         let text = serde_json::to_string(&settings).expect("не сериализуется");
         let parsed: Settings = serde_json::from_str(&text).expect("не разбирается");

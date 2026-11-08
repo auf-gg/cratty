@@ -198,6 +198,18 @@ impl AppView {
             .into_any_element()
     }
 
+    fn set_autolock(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.settings.autolock = on;
+        if on {
+            let (now, wall) = (std::time::Instant::now(), crate::store::now_ms());
+            for slot in &mut self.vaults {
+                slot.session.rearm(now, wall);
+            }
+        }
+        self.error = settings::save(&self.settings).err().map(SharedString::from);
+        cx.notify();
+    }
+
     pub(super) fn nudge_autolock(&mut self, steps: i32, cx: &mut Context<Self>) {
         let current = self.settings.autolock_minutes;
         let step = match current {
@@ -261,6 +273,7 @@ impl AppView {
         let danger = cx.theme().danger;
         let size = self.settings.font_size;
         let minutes = self.settings.autolock_minutes;
+        let autolock = self.settings.autolock;
         let has_os_key = self.vault().has_os_key();
         let vault_unlocked = self.vault().state().is_unlocked();
         let success = cx.theme().success;
@@ -304,20 +317,34 @@ impl AppView {
             })
             .when(tab == SettingsTab::Security, |this| {
                 this.child(
-                    Self::section("Блокировать хранилище после бездействия", cx)
-                        .child(Self::stepper(
-                            "autolock",
-                            format!("{minutes} мин"),
-                            minutes > settings::MIN_AUTOLOCK_MINUTES,
-                            minutes < settings::MAX_AUTOLOCK_MINUTES,
-                            Box::new(|this, _window, cx| this.nudge_autolock(-1, cx)),
-                            Box::new(|this, _window, cx| this.nudge_autolock(1, cx)),
-                            cx,
-                        ))
+                    Self::section("Автоматическая блокировка", cx)
                         .child(
-                            Label::new(
-                                "Хранилище также блокируется после перехода компьютера в спящий режим. Открытые сеансы при этом продолжают работать.",
-                            )
+                            gpui_kit::component::checkbox::Checkbox::new("autolock-on")
+                                .small()
+                                .label("Блокировать хранилища автоматически")
+                                .checked(autolock)
+                                .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                    this.set_autolock(*checked, cx)
+                                })),
+                        )
+                        .when(autolock, |this| {
+                            this.child(Self::hint("Через сколько минут бездействия", cx))
+                                .child(Self::stepper(
+                                    "autolock",
+                                    format!("{minutes} мин"),
+                                    minutes > settings::MIN_AUTOLOCK_MINUTES,
+                                    minutes < settings::MAX_AUTOLOCK_MINUTES,
+                                    Box::new(|this, _window, cx| this.nudge_autolock(-1, cx)),
+                                    Box::new(|this, _window, cx| this.nudge_autolock(1, cx)),
+                                    cx,
+                                ))
+                        })
+                        .child(
+                            Label::new(if autolock {
+                                "Хранилище также блокируется после перехода компьютера в спящий режим. Открытые сеансы при этом продолжают работать."
+                            } else {
+                                "Хранилища остаются открытыми, пока вы не заблокируете их сами или не закроете приложение. Удобно, если пароль запомнен в системе: он всё равно разблокирует хранилище без вопросов."
+                            })
                             .text_xs()
                             .text_color(muted),
                         ),

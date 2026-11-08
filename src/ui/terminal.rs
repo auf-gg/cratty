@@ -1,6 +1,7 @@
 use gpui_kit::component::{
-    ActiveTheme, Selectable, Sizable,
+    ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
     label::Label,
 };
@@ -69,6 +70,10 @@ pub struct TerminalView {
     session: Option<SshSession>,
     can_save_secrets: bool,
     pending_stored_rejected: bool,
+    /// Секреты с галочкой «Сохранить»: ждут успешного входа, чтобы неверный
+    /// пароль не попал в хранилище. Повторный ввод заменяет прежний.
+    unsaved: Vec<(proto::SecretPurpose, proto::Secret)>,
+    save_unsaved: bool,
     status: Status,
     font_family: SharedString,
     focus: FocusHandle,
@@ -117,6 +122,7 @@ pub enum Prompt {
         kind: SecretKind,
         input: Option<Entity<InputState>>,
         remember: bool,
+        error: Option<SharedString>,
     },
     HostKey {
         message: SharedString,
@@ -157,6 +163,11 @@ impl TerminalView {
                     if std::mem::take(&mut this.pending_stored_rejected) {
                         cx.emit(TerminalEvent::StoredPasswordRejected);
                     }
+                    if std::mem::take(&mut this.save_unsaved) {
+                        for (purpose, secret) in std::mem::take(&mut this.unsaved) {
+                            cx.emit(TerminalEvent::SaveSecret { purpose, secret });
+                        }
+                    }
                     if let Some(text) = this.terminal.responder().take_clipboard() {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
                     }
@@ -175,6 +186,8 @@ impl TerminalView {
             session: Some(session),
             can_save_secrets: false,
             pending_stored_rejected: false,
+            unsaved: Vec::new(),
+            save_unsaved: false,
             status: Status::Connecting { target },
             font_family,
             focus: cx.focus_handle(),
@@ -283,18 +296,27 @@ impl TerminalView {
                     target,
                     fingerprint: fingerprint.into(),
                 };
+                self.save_unsaved = true;
             }
             FromSsh::Output(data) => {
                 self.terminal.advance(&data);
                 self.predictor
                     .observe(&self.terminal, std::time::Instant::now());
             }
-            FromSsh::NeedSecret { prompt, kind } => {
+            FromSsh::NeedSecret {
+                prompt,
+                kind,
+                error,
+            } => {
+                // При повторном запросе галочка остаётся, как её оставили.
+                let remember = secret_purpose(kind)
+                    .is_some_and(|purpose| self.unsaved.iter().any(|(p, _)| *p == purpose));
                 self.prompt = Some(Prompt::Secret {
                     label: prompt.into(),
                     kind,
                     input: None,
-                    remember: false,
+                    remember,
+                    error: error.map(Into::into),
                 });
             }
             FromSsh::NeedHostKey {
@@ -317,6 +339,7 @@ impl TerminalView {
             }
             FromSsh::Closed(reason) => {
                 self.session = None;
+                self.unsaved.clear();
                 for (_, state) in &mut self.forwards {
                     if *state == ForwardState::Active {
                         *state = ForwardState::Off;
@@ -433,39 +456,43 @@ impl TerminalView {
         let state = cx.new(|cx| InputState::new(window, cx).masked(true));
         window.focus(&state.focus_handle(cx), cx);
 
-        self.secret_input = Some(cx.subscribe(&state, |this, state, event: &InputEvent, cx| {
+        self.secret_input = Some(cx.subscribe(&state, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
-                let secret = state.read(cx).value().to_string();
-
-                let remember = match &this.prompt {
-                    Some(Prompt::Secret { remember, kind, .. }) => {
-                        *remember && secret_purpose(*kind).is_some()
-                    }
-                    _ => false,
-                };
-                let purpose = match &this.prompt {
-                    Some(Prompt::Secret { kind, .. }) => secret_purpose(*kind),
-                    _ => None,
-                };
-
-                this.prompt = None;
-                this.secret_input = None;
-                this.pending_focus = true;
-                this.answer(Answer::Secret(Some(secret.clone())));
-
-                if let (true, Some(purpose)) = (remember, purpose) {
-                    cx.emit(TerminalEvent::SaveSecret {
-                        purpose,
-                        secret: proto::Secret::new(secret.into_bytes()),
-                    });
-                }
-                cx.notify();
+                this.submit_secret(cx);
             }
         }));
 
         if let Some(Prompt::Secret { input, .. }) = &mut self.prompt {
             *input = Some(state);
         }
+    }
+
+    fn submit_secret(&mut self, cx: &mut Context<Self>) {
+        let Some(Prompt::Secret {
+            input: Some(input),
+            remember,
+            kind,
+            ..
+        }) = &self.prompt
+        else {
+            return;
+        };
+        let secret = input.read(cx).value().to_string();
+        let (purpose, remember) = (secret_purpose(*kind), *remember);
+
+        self.prompt = None;
+        self.secret_input = None;
+        self.pending_focus = true;
+        self.answer(Answer::Secret(Some(secret.clone())));
+
+        if let Some(purpose) = purpose {
+            self.unsaved.retain(|(p, _)| *p != purpose);
+            if remember {
+                self.unsaved
+                    .push((purpose, proto::Secret::new(secret.into_bytes())));
+            }
+        }
+        cx.notify();
     }
 
     pub fn set_can_save_secrets(&mut self, can: bool, cx: &mut Context<Self>) {
@@ -1260,6 +1287,7 @@ impl TerminalView {
                 kind,
                 input,
                 remember,
+                error,
             } => {
                 let remember = *remember;
                 let can_remember = self.can_save_secrets && secret_purpose(*kind).is_some();
@@ -1268,33 +1296,45 @@ impl TerminalView {
                     card.border_color(theme.border)
                         .child(Label::new(label.clone()))
                         .children(input.as_ref().map(Input::new))
-                        .when(can_remember, |this| {
-                            this.child(
-                                Button::new("remember-secret")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(remember)
-                                    .label("Сохранить в хранилище")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        if let Some(Prompt::Secret { remember, .. }) =
-                                            &mut this.prompt
-                                        {
-                                            *remember = !*remember;
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                        })
+                        .children(
+                            error
+                                .clone()
+                                .map(|error| Label::new(error).text_sm().text_color(theme.danger)),
+                        )
                         .child(
-                            Label::new(match kind {
-                                SecretKind::Password => "Enter — подтвердить, Esc — отменить",
-                                SecretKind::Passphrase => {
-                                    "Enter — расшифровать ключ, Esc — пропустить ключ"
-                                }
-                                SecretKind::Challenge => "Enter — ответить, Esc — отменить",
-                            })
-                            .text_sm()
-                            .text_color(theme.muted_foreground),
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .when(can_remember, |this| {
+                                    this.child(
+                                        Checkbox::new("remember-secret")
+                                            .small()
+                                            .label("Сохранить в хранилище")
+                                            .checked(remember)
+                                            .on_click(cx.listener(
+                                                |this, checked: &bool, _window, cx| {
+                                                    if let Some(Prompt::Secret {
+                                                        remember, ..
+                                                    }) = &mut this.prompt
+                                                    {
+                                                        *remember = *checked;
+                                                    }
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                })
+                                .child(div().flex_grow_1())
+                                .child(
+                                    Button::new("submit-secret")
+                                        .primary()
+                                        .small()
+                                        .label("Подтвердить")
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.submit_secret(cx)
+                                        })),
+                                ),
                         ),
                 )
             }

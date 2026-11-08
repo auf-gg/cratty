@@ -223,7 +223,7 @@ async fn parol_promezhutochnogo_hosta_sprashivaetsya_s_adresom() {
     let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("поток");
 
     match next_event(&mut session).await {
-        Some(FromSsh::NeedSecret { prompt, kind }) => {
+        Some(FromSsh::NeedSecret { prompt, kind, .. }) => {
             assert_eq!(kind, SecretKind::Password);
             let address = format!("127.0.0.1:{}", bastion.addr().port());
             assert!(prompt.contains(&address), "в вопросе нет адреса: {prompt}");

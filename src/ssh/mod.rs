@@ -143,6 +143,8 @@ pub enum FromSsh {
     NeedSecret {
         prompt: String,
         kind: SecretKind,
+        /// Почему спрашиваем снова, например «неверный пароль».
+        error: Option<String>,
     },
     NeedHostKey {
         host: String,
@@ -276,12 +278,7 @@ pub fn spawn_local(size: PtySize, term: &str) -> std::io::Result<SshSession> {
             };
             // File владеет дескриптором: закроется вместе с задачей.
             let file = unsafe { std::fs::File::from_raw_fd(master) };
-            runtime.block_on(local_pty_loop(
-                file,
-                child,
-                command_rx,
-                event_tx,
-            ));
+            runtime.block_on(local_pty_loop(file, child, command_rx, event_tx));
         })?;
 
     Ok(SshSession {
@@ -325,10 +322,7 @@ async fn local_pty_loop(
         })
         .await;
 
-    async fn closed(
-        event_tx: &mut mpsc::Sender<FromSsh>,
-        child: libc::pid_t,
-    ) {
+    async fn closed(event_tx: &mut mpsc::Sender<FromSsh>, child: libc::pid_t) {
         // Собрать зомби: EOF на master означает, что дочерний процесс вышел.
         unsafe { libc::waitpid(child, std::ptr::null_mut(), 0) };
         let _ = event_tx
@@ -516,12 +510,7 @@ unsafe fn spawn_pty_child(
 unsafe fn open_pty_slave(master: libc::c_int) -> std::io::Result<libc::c_int> {
     unsafe {
         let mut name = [0u8; 64];
-        if libc::ptsname_r(
-            master,
-            name.as_mut_ptr() as *mut libc::c_char,
-            name.len(),
-        ) != 0
-        {
+        if libc::ptsname_r(master, name.as_mut_ptr() as *mut libc::c_char, name.len()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
         let slave = libc::open(name.as_ptr() as *const libc::c_char, libc::O_RDWR);

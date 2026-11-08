@@ -123,7 +123,7 @@ async fn encrypted_key_asks_for_the_passphrase_and_then_works() {
 
     let mut asked = false;
     let result = connect_answering(&mut session, |event| match event {
-        FromSsh::NeedSecret { kind, prompt } => {
+        FromSsh::NeedSecret { kind, prompt, .. } => {
             assert_eq!(*kind, SecretKind::Passphrase, "спросили не passphrase");
             assert!(
                 prompt.contains("encrypted-key"),
@@ -208,6 +208,40 @@ async fn password_is_asked_only_after_the_other_methods_fail() {
     );
 
     let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn a_wrong_password_is_asked_again_with_an_error() {
+    let Some(sshd) = DockerSshd::start() else {
+        eprintln!("docker недоступен — проверка повторного пароля пропущена");
+        return;
+    };
+
+    let mut session = spawn_ssh(base_config(
+        &sshd,
+        AuthMethod::Plan(AuthPlan::password_only()),
+    ))
+    .expect("не поднялся поток сессии");
+
+    let mut errors = Vec::new();
+    let result = connect_answering(&mut session, |event| match event {
+        FromSsh::NeedSecret { error, .. } => {
+            errors.push(error.clone());
+            let answer = if errors.len() == 1 {
+                "неправильный"
+            } else {
+                PASSWORD
+            };
+            Some(Answer::Secret(Some(answer.into())))
+        }
+        _ => None,
+    })
+    .await;
+
+    assert!(result.is_ok(), "со второй попытки не вошли: {result:?}");
+    assert_eq!(errors.len(), 2, "пароль спросили не дважды: {errors:?}");
+    assert!(errors[0].is_none(), "первый запрос уже с ошибкой");
+    assert!(errors[1].is_some(), "повторный запрос без объяснения");
 }
 
 #[tokio::test]

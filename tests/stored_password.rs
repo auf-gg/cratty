@@ -46,7 +46,7 @@ async fn outcome(
 
         match event {
             Some(FromSsh::Connected { .. }) => return Ok(asked),
-            Some(FromSsh::NeedSecret { prompt, kind }) => {
+            Some(FromSsh::NeedSecret { prompt, kind, .. }) => {
                 asked.push((prompt.clone(), kind));
                 let _ = answers.unbounded_send(Answer::Secret(answer(&prompt, kind)));
             }

@@ -1,12 +1,8 @@
 use super::*;
-
-type OnEdit = Box<dyn Fn(&mut AppView, &mut Window, &mut Context<AppView>)>;
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 
 impl AppView {
     pub(super) fn rail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.panel_open {
-            return None;
-        }
         let theme = cx.theme().clone();
         let locked = !self.any_unlocked();
         let query = self.form.line.read(cx).value().trim().to_string();
@@ -55,9 +51,9 @@ impl AppView {
                                     "Локальный терминал поддерживается только на Unix"
                                 })
                                 .disabled(!cfg!(unix))
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.spawn_local_tab(cx)
-                                })),
+                                .on_click(
+                                    cx.listener(|this, _, _window, cx| this.spawn_local_tab(cx)),
+                                ),
                         )
                         .child(
                             Button::new("rail-new-host")
@@ -73,7 +69,8 @@ impl AppView {
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.new_host(window, cx)),
                                 ),
-                        ),
+                        )
+                        .child(self.pin_button(Edge::Rail, cx)),
                 )
                 .child(
                     v_flex()
@@ -249,92 +246,147 @@ impl AppView {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn host_row(
-        &self,
-        id: SharedString,
-        title: String,
-        detail: String,
-        on_open: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-        on_files: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-        on_edit: Option<OnEdit>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn saved_row(&self, vault: &str, host: HostRecord, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let files_id = SharedString::from(format!("{id}-files"));
-        let edit_id = SharedString::from(format!("{id}-edit"));
-        Self::rail_row(id, false, cx)
-            .h(px(42.))
-            .child(
-                Icon::empty()
-                    .path("icons/server.svg")
-                    .small()
-                    .text_color(theme.muted_foreground),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .overflow_hidden()
-                    .child(
-                        Label::new(SharedString::from(title))
-                            .text_sm()
-                            .line_clamp(1)
-                            .text_ellipsis(),
-                    )
-                    .child(
-                        Label::new(SharedString::from(detail))
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .line_clamp(1)
-                            .text_ellipsis(),
-                    ),
-            )
-            .child(
-                Button::new(files_id)
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::empty().path("icons/folder.svg"))
-                    .tooltip("Файлы (SFTP)")
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        cx.stop_propagation();
-                        on_files(this, cx)
-                    })),
-            )
-            .children(on_edit.map(|on_edit| {
-                Button::new(edit_id)
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::empty().path("icons/pencil.svg"))
-                    .tooltip("Изменить")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        on_edit(this, window, cx)
-                    }))
-            }))
-            .on_click(cx.listener(move |this, _, _window, cx| on_open(this, cx)))
-            .into_any_element()
+        let target = host.target();
+        let title = host.title();
+        let view = cx.entity();
+        let (vault, open_target) = (vault.to_owned(), target.clone());
+        let menu_vault = vault.clone();
+        let menu_target = target.clone();
+
+        Self::rail_row(
+            SharedString::from(format!("rail-host-{vault}-{target}")),
+            false,
+            cx,
+        )
+        .h(px(42.))
+        .child(
+            Icon::empty()
+                .path("icons/server.svg")
+                .small()
+                .text_color(theme.muted_foreground),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .child(
+                    Label::new(SharedString::from(shorten(&title, ROW_TITLE_CHARS + 6)))
+                        .text_sm()
+                        .line_clamp(1)
+                        .text_ellipsis(),
+                )
+                .child(
+                    Label::new(SharedString::from(target))
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .line_clamp(1)
+                        .text_ellipsis(),
+                ),
+        )
+        .on_click(
+            cx.listener(move |this, _, _window, cx| this.open_saved(&vault, &open_target, cx)),
+        )
+        .context_menu(move |menu, _window, _cx| {
+            let item = |label: &'static str, icon: &'static str| {
+                PopupMenuItem::new(label).icon(Icon::empty().path(icon))
+            };
+            let files = {
+                let (view, vault, target) = (view.clone(), menu_vault.clone(), menu_target.clone());
+                item("Файлы (SFTP)", "icons/folder.svg").on_click(move |_, _window, cx| {
+                    view.update(cx, |this, cx| {
+                        let credentials = this.saved_credentials(&vault, &target);
+                        this.open_files(&target, credentials, Some(vault.clone()), cx);
+                    });
+                })
+            };
+            let edit = {
+                let (view, vault, target) = (view.clone(), menu_vault.clone(), menu_target.clone());
+                item("Изменить", "icons/pencil.svg").on_click(move |_, window, cx| {
+                    view.update(cx, |this, cx| this.edit(&vault, &target, window, cx));
+                })
+            };
+            let delete = {
+                let (view, vault, target) = (view.clone(), menu_vault.clone(), menu_target.clone());
+                item("Удалить…", "icons/delete.svg").on_click(move |_, _window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.confirm_forget = Some((vault.clone(), target.clone()));
+                        cx.notify();
+                    });
+                })
+            };
+            menu.item(files)
+                .item(edit)
+                .item(PopupMenuItem::separator())
+                .item(delete)
+        })
+        .into_any_element()
     }
 
-    fn saved_row(&self, vault: &str, host: HostRecord, cx: &mut Context<Self>) -> AnyElement {
-        let target = host.target();
-        let (open_vault, files_vault, edit_vault) =
-            (vault.to_owned(), vault.to_owned(), vault.to_owned());
-        let (open_target, files_target, edit_target) =
-            (target.clone(), target.clone(), target.clone());
-        self.host_row(
-            SharedString::from(format!("rail-host-{vault}-{target}")),
-            shorten(&host.title(), ROW_TITLE_CHARS + 6),
-            target.clone(),
-            move |this, cx| this.open_saved(&open_vault, &open_target, cx),
-            move |this, cx| {
-                let credentials = this.saved_credentials(&files_vault, &files_target);
-                this.open_files(&files_target, credentials, Some(files_vault.clone()), cx);
-            },
-            Some(Box::new(move |this, window, cx| {
-                this.edit(&edit_vault, &edit_target, window, cx)
-            })),
-            cx,
+    /// Подтверждение удаления хоста из контекстного меню.
+    pub(super) fn forget_host_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (vault, target) = self.confirm_forget.clone()?;
+        let theme = cx.theme().clone();
+
+        Some(
+            div()
+                .absolute()
+                .occlude()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui_kit::hsla(0., 0., 0., 0.5))
+                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                .child(
+                    v_flex()
+                        .w(px(420.))
+                        .p_4()
+                        .gap_3()
+                        .rounded_lg()
+                        .bg(theme.background)
+                        .border_1()
+                        .border_color(theme.danger)
+                        .child(
+                            Label::new(SharedString::from(format!("Удалить хост «{target}»?")))
+                                .font_semibold(),
+                        )
+                        .child(
+                            Label::new(
+                                "Запись и сохранённые для неё пароли будут удалены из хранилища. Открытые сеансы останутся подключёнными.",
+                            )
+                            .text_sm()
+                            .text_color(theme.muted_foreground),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("host-delete-confirm")
+                                        .danger()
+                                        .label("Удалить")
+                                        .on_click(cx.listener(move |this, _, _window, cx| {
+                                            this.confirm_forget = None;
+                                            this.forget(&vault, &target, cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("host-delete-cancel")
+                                        .outline()
+                                        .label("Отмена")
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.confirm_forget = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
         )
     }
 

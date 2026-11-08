@@ -28,7 +28,7 @@ impl AppView {
                         v_flex()
                             .size_full()
                             .children(reconnect)
-                            .child(
+                            .when(!split.panes.is_empty(), |this| this.child(
                                 h_flex()
                                     .h(px(36.))
                                     .flex_shrink_0()
@@ -38,49 +38,20 @@ impl AppView {
                                     .border_b_1()
                                     .border_color(theme.border)
                                     .child(div().flex_1())
-                                    .when(!split.panes.is_empty(), |this| {
+                                    .child({
                                         let on = split.broadcast;
-                                        this.child(
-                                            Button::new("toggle-broadcast")
-                                                .small()
-                                                .when(on, |button| button.danger())
-                                                .when(!on, |button| button.ghost())
-                                                .icon(Icon::empty().path("icons/monitor.svg"))
-                                                .label(if on { "Ввод во все панели: вкл." } else { "Ввод во все панели" })
-                                                .tooltip("Ввод с клавиатуры передаётся во все панели вкладки")
-                                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                                    this.toggle_broadcast(index, cx)
-                                                })),
-                                        )
-                                    })
-                                    .child(
-                                        Button::new("toggle-snippets")
-                                            .ghost()
+                                        Button::new("toggle-broadcast")
                                             .small()
-                                            .selected(self.snippets_open)
-                                            .icon(Icon::empty().path("icons/square-terminal.svg"))
-                                            .label("Сниппеты")
-                                            .disabled(closed)
-                                            .on_click(cx.listener(|this, _, _window, cx| {
-                                                this.snippets_open = !this.snippets_open;
-                                                this.split_menu = false;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("toggle-split")
-                                            .ghost()
-                                            .small()
-                                            .selected(self.split_menu)
-                                            .icon(Icon::empty().path("icons/panel-left-open.svg"))
-                                            .label("Разделить")
-                                            .on_click(cx.listener(|this, _, _window, cx| {
-                                                this.split_menu = !this.split_menu;
-                                                this.snippets_open = false;
-                                                cx.notify();
-                                            })),
-                                    ),
-                            )
+                                            .when(on, |button| button.danger())
+                                            .when(!on, |button| button.ghost())
+                                            .icon(Icon::empty().path("icons/monitor.svg"))
+                                            .label(if on { "Ввод во все панели: вкл." } else { "Ввод во все панели" })
+                                            .tooltip("Ввод с клавиатуры передаётся во все панели вкладки")
+                                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                                this.toggle_broadcast(index, cx)
+                                            }))
+                                    }),
+                            ))
                             .child(
                                 div()
                                     .flex()

@@ -157,8 +157,11 @@ pub struct AppView {
     active: Option<usize>,
 
     section: Section,
-    panel_open: bool,
-    info_open: bool,
+    /// Откреплённая панель выдвинута, потому что мышь у края окна.
+    rail_peek: bool,
+    panel_peek: bool,
+    /// Тайловый WM: свою верхнюю панель не рисуем.
+    tiling: bool,
     info_tab: session_panel::InfoTab,
     showing_page: bool,
     editor_open: bool,
@@ -178,6 +181,8 @@ pub struct AppView {
     os_unlocking: Vec<String>,
     os_tasks: Vec<gpui_kit::Task<()>>,
     confirm_delete: Option<String>,
+    /// Хост (хранилище, адрес), удаление которого ждёт подтверждения.
+    confirm_forget: Option<(String, String)>,
     import_notice: Option<SharedString>,
     stage: Option<Stage>,
     vault_form: VaultForm,
@@ -380,8 +385,9 @@ impl AppView {
             tabs: Vec::new(),
             active: None,
             section: Section::Hosts,
-            panel_open: true,
-            info_open: true,
+            rail_peek: false,
+            panel_peek: false,
+            tiling: crate::platform::tiling_wm(),
             info_tab: session_panel::InfoTab::Info,
             showing_page: true,
             editor_open: false,
@@ -413,6 +419,7 @@ impl AppView {
             os_unlocking: Vec::new(),
             os_tasks: Vec::new(),
             confirm_delete: None,
+            confirm_forget: None,
             import_notice: None,
             stage: None,
             vault_form: VaultForm {
@@ -649,7 +656,7 @@ impl AppView {
         self.section = Section::Hosts;
         self.showing_page = true;
         self.editor_open = true;
-        self.panel_open = true;
+        self.rail_peek = !self.settings.rail_pinned;
 
         let port = host.port.to_string();
         let key = match &host.auth {
@@ -871,6 +878,9 @@ impl AppView {
     }
 
     fn check_autolock(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.autolock {
+            return;
+        }
         let now = std::time::Instant::now();
         let wall = crate::store::now_ms();
         let mut locked = false;
@@ -1377,7 +1387,7 @@ impl AppView {
     }
 
     fn on_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.panel_open = true;
+        self.rail_peek = !self.settings.rail_pinned;
         self.section = Section::Hosts;
         self.form.line.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -1398,20 +1408,115 @@ impl AppView {
     }
 
     fn on_toggle_panel(&mut self, _: &TogglePanel, _window: &mut Window, cx: &mut Context<Self>) {
-        self.panel_open = !self.panel_open;
+        self.toggle_pin(Edge::Rail, cx);
+    }
+
+    /// Закрепить или открепить боковую панель. Выбор запоминается в настройках.
+    fn toggle_pin(&mut self, edge: Edge, cx: &mut Context<Self>) {
+        let pinned = match edge {
+            Edge::Rail => &mut self.settings.rail_pinned,
+            Edge::Panel => &mut self.settings.panel_pinned,
+            Edge::Editor => return,
+        };
+        *pinned = !*pinned;
+        self.rail_peek = false;
+        self.panel_peek = false;
+        self.error = settings::save(&self.settings).err().map(SharedString::from);
         cx.notify();
     }
 
-    fn title_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn pin_button(&self, edge: Edge, cx: &mut Context<Self>) -> AnyElement {
+        let pinned = match edge {
+            Edge::Rail => self.settings.rail_pinned,
+            _ => self.settings.panel_pinned,
+        };
+        Button::new(match edge {
+            Edge::Rail => "pin-rail",
+            _ => "pin-panel",
+        })
+        .ghost()
+        .small()
+        .icon(Icon::empty().path(if pinned {
+            "icons/pin.svg"
+        } else {
+            "icons/pin-off.svg"
+        }))
+        .tooltip(if pinned {
+            "Открепить: панель будет выезжать при наведении на край окна"
+        } else {
+            "Закрепить панель"
+        })
+        .on_click(cx.listener(move |this, _, _window, cx| this.toggle_pin(edge, cx)))
+        .into_any_element()
+    }
+
+    /// Узкая полоса у края окна: наведение выдвигает откреплённую панель.
+    fn peek_zone(&self, edge: Edge, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id(match edge {
+                Edge::Rail => "peek-rail",
+                _ => "peek-panel",
+            })
+            .absolute()
+            .top_0()
+            .h_full()
+            .w(px(6.))
+            .map(|this| match edge {
+                Edge::Rail => this.left_0(),
+                _ => this.right_0(),
+            })
+            .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                if *hovered {
+                    match edge {
+                        Edge::Rail => this.rail_peek = true,
+                        _ => this.panel_peek = true,
+                    }
+                    cx.notify();
+                }
+            }))
+            .into_any_element()
+    }
+
+    /// Выдвинутая поверх содержимого панель; прячется, когда мышь уходит.
+    fn peek_overlay(&self, edge: Edge, panel: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id(match edge {
+                Edge::Rail => "overlay-rail",
+                _ => "overlay-panel",
+            })
+            .absolute()
+            .top_0()
+            .h_full()
+            .flex()
+            .occlude()
+            .shadow_lg()
+            .map(|this| match edge {
+                Edge::Rail => this.left_0(),
+                _ => this.right_0(),
+            })
+            .on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+                if !*hovered {
+                    match edge {
+                        Edge::Rail => this.rail_peek = false,
+                        _ => this.panel_peek = false,
+                    }
+                    cx.notify();
+                }
+            }))
+            .child(panel)
+            .into_any_element()
+    }
+
+    fn title_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.tiling {
+            return None;
+        }
         let dark = cx.theme().mode.is_dark();
         let muted = cx.theme().muted_foreground;
-        let panel_open = self.panel_open;
-        let info_open = self.info_open;
         let active_tab = self
             .active
             .filter(|_| !self.showing_page)
             .and_then(|index| self.tabs.get(index));
-        let has_terminal = active_tab.is_some_and(|tab| tab.terminal().is_some());
         let current_title = active_tab.map(|tab| tab.title.clone());
 
         TitleBar::new()
@@ -1420,22 +1525,7 @@ impl AppView {
                     .gap_2()
                     .items_center()
                     .child(img("brand/cratty.svg").size_4())
-                    .child(Label::new("cratty").font_semibold())
-                    .child(
-                        Button::new("toggle-panel")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(if panel_open {
-                                IconName::PanelLeftClose
-                            } else {
-                                IconName::PanelLeftOpen
-                            }))
-                            .tooltip("Показать или скрыть боковую панель")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.panel_open = !this.panel_open;
-                                cx.notify();
-                            })),
-                    ),
+                    .child(Label::new("cratty").font_semibold()),
             )
             .child(
                 div()
@@ -1450,41 +1540,24 @@ impl AppView {
                     })),
             )
             .child(
-                h_flex()
-                    .justify_end()
-                    .pr_2()
-                    .gap_1()
-                    .when(has_terminal, |this| {
-                        this.child(
-                            Button::new("toggle-info")
-                                .ghost()
-                                .xsmall()
-                                .selected(info_open)
-                                .icon(Icon::empty().path("icons/panel-left-open.svg"))
-                                .tooltip("Показать или скрыть панель сеанса")
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.info_open = !this.info_open;
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .child(
-                        Button::new("theme")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
-                            .tooltip("Переключить тему оформления")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let next = this.settings.toggled_scheme();
-                                this.settings.set_scheme(next);
-                                this.error =
-                                    settings::save(&this.settings).err().map(SharedString::from);
-                                crate::ui::theme::apply(&this.settings, Some(window), cx);
-                                this.apply_appearance(cx);
-                            })),
-                    ),
+                h_flex().justify_end().pr_2().gap_1().child(
+                    Button::new("theme")
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
+                        .tooltip("Переключить тему оформления")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let next = this.settings.toggled_scheme();
+                            this.settings.set_scheme(next);
+                            this.error =
+                                settings::save(&this.settings).err().map(SharedString::from);
+                            crate::ui::theme::apply(&this.settings, Some(window), cx);
+                            this.apply_appearance(cx);
+                        })),
+                ),
             )
             .into_any_element()
+            .into()
     }
 
     fn edge_handle(&self, id: &'static str, edge: Edge, cx: &mut Context<Self>) -> AnyElement {
@@ -1902,8 +1975,29 @@ impl Render for AppView {
         let session_panel = self.session_panel(cx);
         let foreground = cx.theme().foreground;
 
+        // Откреплённая панель: у края окна полоса-ловушка, при наведении —
+        // панель поверх содержимого.
+        let rail_pinned = self.settings.rail_pinned;
+        let panel_pinned = self.settings.panel_pinned;
+        let (rail, rail_overlay) = match (rail_pinned, rail) {
+            (true, rail) => (rail, None),
+            (false, Some(rail)) if self.rail_peek => {
+                (None, Some(self.peek_overlay(Edge::Rail, rail, cx)))
+            }
+            (false, _) => (None, Some(self.peek_zone(Edge::Rail, cx))),
+        };
+        let (session_panel, panel_overlay) = match (panel_pinned, session_panel) {
+            (true, panel) => (panel, None),
+            (false, Some(panel)) if self.panel_peek => {
+                (None, Some(self.peek_overlay(Edge::Panel, panel, cx)))
+            }
+            (false, Some(_)) => (None, Some(self.peek_zone(Edge::Panel, cx))),
+            (false, None) => (None, None),
+        };
+
         let sign_dialog = self.sign_dialog(cx);
         let delete_dialog = self.delete_vault_dialog(cx);
+        let forget_dialog = self.forget_host_dialog(cx);
 
         div()
             .relative()
@@ -1918,14 +2012,15 @@ impl Render for AppView {
                     .on_action(cx.listener(Self::on_prev_tab))
                     .on_action(cx.listener(Self::on_toggle_panel))
                     .on_action(|_: &Quit, window, _| window.remove_window())
-                    .child(title_bar)
+                    .children(title_bar)
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .flex_row()
                             .flex_grow_1()
                             .overflow_hidden()
-                            .when(rail.is_some(), |this| {
+                            .when(rail_pinned, |this| {
                                 this.children(rail).child(self.edge_handle(
                                     "edge-rail",
                                     Edge::Rail,
@@ -1933,10 +2028,12 @@ impl Render for AppView {
                                 ))
                             })
                             .child(div().flex_grow_1().overflow_hidden().child(workspace))
-                            .when(session_panel.is_some(), |this| {
+                            .when(panel_pinned && session_panel.is_some(), |this| {
                                 this.child(self.edge_handle("edge-panel", Edge::Panel, cx))
                                     .children(session_panel)
                             })
+                            .children(rail_overlay)
+                            .children(panel_overlay)
                             .on_drag_move(cx.listener(
                                 |this, event: &gpui_kit::DragMoveEvent<Edge>, window, cx| {
                                     let x = f32::from(event.event.position.x);
@@ -1958,10 +2055,10 @@ impl Render for AppView {
                                         }
                                         Edge::Editor => {
                                             let mut right = f32::from(window.viewport_size().width);
-                                            if this.info_open && !this.showing_page {
+                                            if this.settings.panel_pinned && !this.showing_page {
                                                 right -= this.settings.panel_width + 4.0;
                                             }
-                                            let left = if this.panel_open {
+                                            let left = if this.settings.rail_pinned {
                                                 this.settings.rail_width + 4.0
                                             } else {
                                                 0.0
@@ -1988,6 +2085,7 @@ impl Render for AppView {
             )
             .children(sign_dialog)
             .children(delete_dialog)
+            .children(forget_dialog)
     }
 }
 

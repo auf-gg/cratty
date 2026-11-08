@@ -48,6 +48,8 @@ static ICONS: &[(&str, &[u8])] = icons![
     "key-round",
     "monitor",
     "pencil",
+    "pin",
+    "pin-off",
     "refresh-cw",
     "server",
     "upload",
@@ -133,7 +135,12 @@ mod tests {
 
     #[test]
     fn our_own_icons_are_present() {
-        for path in ["icons/lock.svg", "icons/lock-open.svg"] {
+        for path in [
+            "icons/lock.svg",
+            "icons/lock-open.svg",
+            "icons/pin.svg",
+            "icons/pin-off.svg",
+        ] {
             assert!(
                 ICONS.iter().any(|(name, _)| *name == path),
                 "иконка {path} используется в UI, но не вшита"

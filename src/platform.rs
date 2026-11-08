@@ -19,6 +19,45 @@ pub fn awake_clock() -> std::time::Duration {
     START.get_or_init(std::time::Instant::now).elapsed()
 }
 
+/// Тайловый оконный менеджер (Hyprland, sway, i3…): окна в нём без заголовков,
+/// таскать их мышью не нужно, поэтому свою верхнюю панель не рисуем.
+pub fn tiling_wm() -> bool {
+    if !cfg!(all(unix, not(target_os = "macos"))) {
+        return false;
+    }
+    [
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_DESKTOP",
+        "DESKTOP_SESSION",
+    ]
+    .iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .any(|value| is_tiling_desktop(&value))
+}
+
+fn is_tiling_desktop(value: &str) -> bool {
+    const TILING: &[&str] = &[
+        "hyprland",
+        "sway",
+        "i3",
+        "niri",
+        "river",
+        "bspwm",
+        "dwm",
+        "qtile",
+        "awesome",
+        "xmonad",
+        "herbstluftwm",
+        "leftwm",
+        "spectrwm",
+        "dwl",
+        "mango",
+    ];
+    value
+        .split(':')
+        .any(|part| TILING.contains(&part.trim().to_ascii_lowercase().as_str()))
+}
+
 pub fn blur_supported() -> bool {
     #[cfg(windows)]
     {
@@ -230,6 +269,16 @@ mod tests {
         let locked = LockedPages::lock(&huge[0], &mut warnings);
         drop(locked);
         assert_eq!(huge[0], 0);
+    }
+
+    #[test]
+    fn tailovye_wm_uznayutsya() {
+        assert!(is_tiling_desktop("Hyprland"));
+        assert!(is_tiling_desktop("sway"));
+        assert!(is_tiling_desktop("ubuntu:GNOME:i3"));
+        assert!(!is_tiling_desktop("GNOME"));
+        assert!(!is_tiling_desktop("KDE"));
+        assert!(!is_tiling_desktop(""));
     }
 
     #[test]

@@ -58,6 +58,14 @@ impl AutoLock {
         self.last_activity = now;
     }
 
+    /// Начать отсчёт заново, забыв прошедшее время и сон. Нужен, когда
+    /// автоблокировку снова включают: иначе она сработала бы сразу.
+    pub fn rearm(&mut self, now: Instant, wall_ms: u64, awake: Duration) {
+        self.last_activity = now;
+        self.checked_wall_ms = wall_ms;
+        self.checked_awake = awake;
+    }
+
     pub fn remaining(&self, now: Instant) -> Duration {
         self.timeout
             .checked_sub(now.saturating_duration_since(self.last_activity))
@@ -99,6 +107,27 @@ mod tests {
 
     fn awake(start: Instant, now: Instant) -> Duration {
         now.saturating_duration_since(start)
+    }
+
+    #[test]
+    fn rearm_zabyvaet_bezdeystvie_i_son() {
+        let (mut lock, now, wall) = start();
+
+        // Час прошёл, из него 50 минут компьютер спал: автоблокировка была выключена.
+        let later = now + Duration::from_secs(3_600);
+        let wall_later = wall + 3_600_000;
+        let awake_later = Duration::from_secs(600);
+        lock.rearm(later, wall_later, awake_later);
+
+        assert_eq!(
+            lock.check(
+                later + Duration::from_secs(1),
+                wall_later + 1_000,
+                awake_later + Duration::from_secs(1)
+            ),
+            Verdict::Keep,
+            "после включения отсчёт должен начаться заново"
+        );
     }
 
     #[test]

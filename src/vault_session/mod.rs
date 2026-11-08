@@ -1079,6 +1079,14 @@ impl VaultSession {
         }
     }
 
+    pub fn rearm(&mut self, now: Instant, wall_ms: u64) {
+        if let VaultState::Unlocked(unlocked) = &mut self.state {
+            unlocked
+                .autolock
+                .rearm(now, wall_ms, crate::platform::awake_clock());
+        }
+    }
+
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
         if let VaultState::Unlocked(unlocked) = &mut self.state {

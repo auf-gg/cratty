@@ -570,6 +570,7 @@ async fn try_key(
                 .ask_secret(
                     format!("Passphrase к ключу {label}"),
                     SecretKind::Passphrase,
+                    None,
                 )
                 .await?
             else {
@@ -668,7 +669,10 @@ async fn try_keyboard_interactive(
                     SecretKind::Challenge
                 };
 
-                let Some(answer) = prompter.ask_secret(prompt.prompt.clone(), kind).await? else {
+                let Some(answer) = prompter
+                    .ask_secret(prompt.prompt.clone(), kind, None)
+                    .await?
+                else {
                     return Ok(Attempt::Cancelled);
                 };
                 answers.push(answer);
@@ -687,29 +691,45 @@ async fn try_keyboard_interactive(
     ))
 }
 
+/// Столько раз даём ввести пароль заново. Больше не стоит: каждая попытка
+/// тратит до двух из MaxAuthTries сервера (по умолчанию 6) — пароль и
+/// keyboard-interactive с тем же паролем.
+const PASSWORD_ATTEMPTS: usize = 3;
+
 async fn try_password(
     session: &mut client::Handle<Verifier>,
     user: &str,
     whom: &str,
     prompter: &Prompter,
 ) -> Result<Attempt> {
-    let Some(password) = prompter
-        .ask_secret(format!("Пароль для {whom}"), SecretKind::Password)
-        .await?
-    else {
-        return Ok(Attempt::Cancelled);
-    };
+    let mut error = None;
+    let mut last = Attempt::Rejected("пароль не подошёл".into());
 
-    let result = session
-        .authenticate_password(user, password.clone())
-        .await
-        .context("аутентификация по паролю")?;
+    for _ in 0..PASSWORD_ATTEMPTS {
+        let Some(password) = prompter
+            .ask_secret(format!("Пароль для {whom}"), SecretKind::Password, error)
+            .await?
+        else {
+            return Ok(Attempt::Cancelled);
+        };
 
-    if result.success() {
-        return Ok(Attempt::Succeeded);
+        let result = session
+            .authenticate_password(user, password.clone())
+            .await
+            .context("аутентификация по паролю")?;
+
+        if result.success() {
+            return Ok(Attempt::Succeeded);
+        }
+
+        last = try_keyboard_interactive(session, user, Some(&password), prompter).await?;
+        if !matches!(last, Attempt::Rejected(_)) {
+            return Ok(last);
+        }
+        error = Some("Неверный пароль. Попробуйте ещё раз.".to_string());
     }
 
-    try_keyboard_interactive(session, user, Some(&password), prompter).await
+    Ok(last)
 }
 
 fn auth_failure_message(user: &str, result: &russh::client::AuthResult) -> Option<String> {
@@ -756,8 +776,20 @@ impl Prompter {
         }
     }
 
-    async fn ask_secret(&self, prompt: String, kind: SecretKind) -> Result<Option<String>> {
-        match self.ask(FromSsh::NeedSecret { prompt, kind }).await? {
+    async fn ask_secret(
+        &self,
+        prompt: String,
+        kind: SecretKind,
+        error: Option<String>,
+    ) -> Result<Option<String>> {
+        match self
+            .ask(FromSsh::NeedSecret {
+                prompt,
+                kind,
+                error,
+            })
+            .await?
+        {
             Some(Answer::Secret(secret)) => Ok(secret),
             Some(_) | None => Ok(None),
         }

@@ -25,7 +25,7 @@ pub(super) fn address(request: &connect::Request) -> String {
 
 impl AppView {
     pub(super) fn session_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.info_open || self.showing_page {
+        if self.showing_page {
             return None;
         }
         let index = self.active?;
@@ -102,22 +102,44 @@ impl AppView {
                     h_flex()
                         .h(px(40.))
                         .flex_shrink_0()
-                        .px_4()
+                        .pl_4()
+                        .pr_2()
                         .gap_4()
                         .items_center()
                         .child(tab_label("panel-tab-info", "Сведения", InfoTab::Info))
                         .child(tab_label("panel-tab-files", "Файлы", InfoTab::Files))
                         .child(div().flex_grow_1())
                         .child(
-                            Button::new("panel-close")
-                                .ghost()
-                                .xsmall()
-                                .icon(Icon::new(IconName::Close))
-                                .tooltip("Скрыть панель")
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.info_open = false;
-                                    cx.notify();
-                                })),
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Button::new("toggle-snippets")
+                                        .ghost()
+                                        .small()
+                                        .selected(self.snippets_open)
+                                        .icon(Icon::empty().path("icons/square-terminal.svg"))
+                                        .tooltip("Сниппеты")
+                                        .disabled(tab.is_closed(cx))
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.snippets_open = !this.snippets_open;
+                                            this.split_menu = false;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new("toggle-split")
+                                        .ghost()
+                                        .small()
+                                        .selected(self.split_menu)
+                                        .icon(Icon::empty().path("icons/panel-left-open.svg"))
+                                        .tooltip("Разделить")
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.split_menu = !this.split_menu;
+                                            this.snippets_open = false;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(self.pin_button(Edge::Panel, cx)),
                         ),
                 )
                 .child(div().flex_grow_1().min_h(px(0.)).child(body))

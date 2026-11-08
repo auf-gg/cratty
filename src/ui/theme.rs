@@ -360,7 +360,7 @@ mod tests {
     // `colors.background`: без синхронизации окно остаётся непрозрачным.
     #[test]
     fn prozrachnost_dohodit_do_tokenov_kornya() {
-        let mut cx = gpui_kit::TestAppContext::single();
+        let cx = gpui_kit::TestAppContext::single();
         cx.update(|cx| {
             gpui_kit::init(cx);
             let settings: crate::ui::settings::Settings =
@@ -368,7 +368,12 @@ mod tests {
             apply(&settings, None, cx);
 
             let theme = Theme::global(cx);
-            let token = theme.tokens.background.background.as_solid().expect("сплошной фон");
+            let token = theme
+                .tokens
+                .background
+                .background
+                .as_solid()
+                .expect("сплошной фон");
             assert!((token.a - 0.6).abs() < 0.01, "альфа токена: {}", token.a);
             assert_eq!(token, theme.colors.background);
         });

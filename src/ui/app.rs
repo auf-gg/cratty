@@ -14,6 +14,8 @@ use gpui_kit::{
 };
 
 mod fonts_ui;
+mod groups_ui;
+mod icons_ui;
 mod key_backup;
 mod key_tools;
 mod keys_ui;
@@ -189,6 +191,14 @@ pub struct AppView {
     /// Хост (хранилище, адрес), удаление которого ждёт подтверждения.
     confirm_forget: Option<(String, String)>,
     vault_editor: Option<vault_edit::VaultEditor>,
+    /// Окно «Изменить группу», открытое из меню группы в левой панели.
+    group_editor: Option<groups_ui::GroupEditor>,
+    /// Окно выбора значка хоста или группы.
+    icon_picker: Option<icons_ui::IconPicker>,
+    /// Каталог selfh.st: из кеша и с сервера.
+    selfhst: icons_ui::SelfhstState,
+    icon_images: icons_ui::IconImages,
+    pending_icons: icons_ui::PendingIcons,
     /// Тема под курсором в настройках: её показывает превью.
     theme_preview: Option<String>,
     /// Итог действий с ключом в форме хоста (создан, ошибка, вкладка установки).
@@ -280,6 +290,9 @@ struct Form {
     editing: Option<String>,
     line: Entity<InputState>,
     label: Entity<InputState>,
+    group: Entity<InputState>,
+    /// Значок хоста: встроенный или `selfhst:<имя>`; пусто — по умолчанию.
+    icon: String,
     host: Entity<InputState>,
     port: Entity<InputState>,
     user: Entity<InputState>,
@@ -299,6 +312,7 @@ impl AppView {
 
         let line = field("Поиск или user@host:port", cx, window);
         let label = field("Например, Production", cx, window);
+        let group = field("Без группы", cx, window);
         let host = field("Доменное имя или IP-адрес", cx, window);
         let port = field("22", cx, window);
         let user = field("Имя пользователя", cx, window);
@@ -416,6 +430,8 @@ impl AppView {
                 editing: None,
                 line,
                 label,
+                group,
+                icon: String::new(),
                 host,
                 port,
                 user,
@@ -440,6 +456,11 @@ impl AppView {
             confirm_delete: None,
             confirm_forget: None,
             vault_editor: None,
+            group_editor: None,
+            icon_picker: None,
+            selfhst: Default::default(),
+            icon_images: Default::default(),
+            pending_icons: Default::default(),
             theme_preview: None,
             key_notice: None,
             font_pickers: fonts_ui::FontPickers::new(&settings, window, cx),
@@ -626,6 +647,10 @@ impl AppView {
             .unlocked_of(&vault_id)
             .and_then(|unlocked| unlocked.find_by_target(&original));
         let device_only = existing.as_ref().is_some_and(|entry| entry.device_only);
+        let old_icon = existing
+            .as_ref()
+            .map(|entry| entry.host.icon.clone())
+            .unwrap_or_default();
         if let Some(existing) = &existing {
             host.secrets = existing.host.secrets.clone();
             host.forward_agent = existing.host.forward_agent;
@@ -635,17 +660,27 @@ impl AppView {
             .filter(|_| original != host.target());
 
         host.label = self.form.label.read(cx).value().trim().to_string();
+        host.icon = self.form.icon.clone();
+        let group = self.form.group.read(cx).value().trim().to_string();
+        host.group = self
+            .unlocked_of(&vault_id)
+            .map(|unlocked| unlocked.group_name(&group))
+            .unwrap_or(group);
         host.auth = credentials.auth;
         host.via = self.form.via.clone();
         host.forwards = self.form.forwards.clone();
         let saved_target = host.target();
+        let new_icon = self.icon_to_store(&vault_id, &host.icon);
 
         self.persist(&vault_id, cx, |unlocked, store| {
+            if let Some(icon) = new_icon {
+                unlocked.store_icon(store, icon)?;
+            }
             unlocked.upsert_host_with(store, host, device_only)?;
             if let Some(old) = renamed {
                 unlocked.remove_host(store, &old)?;
             }
-            Ok(())
+            unlocked.release_icon(store, &old_icon)
         });
         if self.error.is_none() {
             self.form.editing = Some(saved_target);
@@ -681,6 +716,7 @@ impl AppView {
         self.form.auth = host.auth.clone();
         self.form.via = host.via.clone();
         self.form.forwards = host.forwards.clone();
+        self.form.icon = host.icon.clone();
         self.section = Section::Hosts;
         self.showing_page = true;
         self.editor_open = true;
@@ -694,6 +730,9 @@ impl AppView {
         self.form
             .label
             .update(cx, |state, cx| state.set_value(host.label, window, cx));
+        self.form
+            .group
+            .update(cx, |state, cx| state.set_value(host.group, window, cx));
         self.form
             .host
             .update(cx, |state, cx| state.set_value(host.host, window, cx));
@@ -712,15 +751,16 @@ impl AppView {
     }
 
     fn forget(&mut self, vault: &str, target: &str, cx: &mut Context<Self>) {
-        let Some(id) = self
+        let Some((id, icon)) = self
             .unlocked_of(vault)
             .and_then(|unlocked| unlocked.find_by_target(target))
-            .map(|entry| entry.id)
+            .map(|entry| (entry.id, entry.host.icon))
         else {
             return;
         };
         self.persist(vault, cx, move |unlocked, store| {
-            unlocked.remove_host(store, &id)
+            unlocked.remove_host(store, &id)?;
+            unlocked.release_icon(store, &icon)
         });
     }
 
@@ -1713,9 +1753,23 @@ impl AppView {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(Self::field_label("Название", muted))
-                    .child(Input::new(&self.form.label)),
+                    .child(Self::field_label("Значок и название", muted))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(self.icon_button(
+                                "host-icon",
+                                icons_ui::IconTarget::Host,
+                                &self.form.vault,
+                                &self.form.icon,
+                                "server",
+                                cx,
+                            ))
+                            .child(div().flex_1().child(Input::new(&self.form.label))),
+                    ),
             )
+            .child(self.group_field(cx))
             .child(
                 h_flex()
                     .gap_2()
@@ -2056,6 +2110,8 @@ impl Render for AppView {
         let delete_dialog = self.delete_vault_dialog(cx);
         let forget_dialog = self.forget_host_dialog(cx);
         let vault_editor = self.vault_editor_dialog(cx);
+        let group_editor = self.group_editor_dialog(cx);
+        let icon_picker = self.icon_picker_dialog(cx);
 
         div()
             .relative()
@@ -2145,6 +2201,8 @@ impl Render for AppView {
             .children(delete_dialog)
             .children(forget_dialog)
             .children(vault_editor)
+            .children(group_editor)
+            .children(icon_picker)
     }
 }
 

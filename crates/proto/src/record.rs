@@ -29,6 +29,10 @@ pub enum RecordBody {
     Key(KeyRecord),
     Proxy(ProxyRecord),
     Snippet(crate::SnippetRecord),
+    /// Оформление группы хостов: имя и значок.
+    Group(crate::GroupRecord),
+    /// Скачанный значок (например, из каталога selfh.st), чтобы он был и без сети.
+    Icon(crate::IconRecord),
     /// Свойства самого хранилища (имя). Одна запись с [`VAULT_META_ID`].
     Vault(VaultMeta),
     #[serde(other)]
@@ -42,6 +46,8 @@ impl core::fmt::Debug for RecordBody {
             Self::Key(_) => f.write_str("Key(<скрыт>)"),
             Self::Proxy(_) => f.write_str("Proxy(<скрыт>)"),
             Self::Snippet(_) => f.write_str("Snippet(<скрыт>)"),
+            Self::Group(_) => f.write_str("Group(<скрыт>)"),
+            Self::Icon(_) => f.write_str("Icon(<скрыт>)"),
             Self::Vault(_) => f.write_str("Vault(<скрыт>)"),
             Self::Tombstone => f.write_str("Tombstone"),
         }
@@ -77,6 +83,20 @@ impl RecordBody {
     pub fn as_vault(&self) -> Option<&VaultMeta> {
         match self {
             Self::Vault(meta) => Some(meta),
+            _ => None,
+        }
+    }
+
+    pub fn as_group(&self) -> Option<&crate::GroupRecord> {
+        match self {
+            Self::Group(group) => Some(group),
+            _ => None,
+        }
+    }
+
+    pub fn as_icon(&self) -> Option<&crate::IconRecord> {
+        match self {
+            Self::Icon(icon) => Some(icon),
             _ => None,
         }
     }

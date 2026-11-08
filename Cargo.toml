@@ -44,6 +44,13 @@ sync = { path = "crates/sync" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time", "fs"] }
 # SOCKS5-звено цепочки прокси. Уже приходит транзитивно через reqwest.
 tokio-socks = "0.5.3"
+# HTTP для каталога значков selfh.st: простой блокирующий клиент на rustls
+# с ring (он уже есть) и встроенными корневыми сертификатами.
+ureq = "3.5"
+# Уменьшение PNG-значков под размер на экране (уже приходит с gpui).
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Распаковка встроенных значков Font Awesome (уже приходит с russh).
+flate2 = "1"
 unicode-width = "0.2"
 vault = { path = "crates/vault" }
 zeroize = "1.9.0"

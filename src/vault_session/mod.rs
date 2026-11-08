@@ -100,6 +100,14 @@ pub struct SnippetEntry {
     pub snippet: proto::SnippetRecord,
 }
 
+/// Группа хостов, как её показывать: имя и значок.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostGroup {
+    pub name: String,
+    /// Пусто — значок по умолчанию.
+    pub icon: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ViaItem {
     Proxy(ProxyRecord),
@@ -611,6 +619,181 @@ impl Unlocked {
 
     pub fn snippets(&self) -> Vec<SnippetEntry> {
         self.records.snippets()
+    }
+
+    /// Скачанный значок по ключу (`selfhst:github`) и ревизия его записи:
+    /// по ревизии интерфейс понимает, что картинку пора пересобрать.
+    pub fn icon(&self, key: &str) -> Option<(u64, &proto::IconRecord)> {
+        self.records.entries.values().find_map(|entry| {
+            entry
+                .body
+                .as_icon()
+                .filter(|icon| icon.key() == key)
+                .map(|icon| (entry.rev, icon))
+        })
+    }
+
+    /// Кладёт значок в хранилище (заменяя прежний с тем же ключом), чтобы он
+    /// был виден без сети и приехал на другие устройства.
+    pub fn store_icon(&mut self, store: &VaultStore, icon: proto::IconRecord) -> Result<()> {
+        if !icon.is_complete() {
+            bail!("у значка нет картинки для одной из тем");
+        }
+        let key = icon.key();
+        let existing = self.records.entries.iter().find_map(|(id, entry)| {
+            entry
+                .body
+                .as_icon()
+                .filter(|stored| stored.key() == key)
+                .map(|stored| (id.clone(), *stored == icon))
+        });
+        match existing {
+            Some((_, true)) => Ok(()),
+            Some((id, false)) => self
+                .records
+                .upsert(store, Some(id), None, RecordBody::Icon(icon))
+                .map(|_| ()),
+            None => self
+                .records
+                .upsert(store, None, Some(false), RecordBody::Icon(icon))
+                .map(|_| ()),
+        }
+    }
+
+    /// Ссылается ли на значок хоть один хост или группа.
+    pub fn icon_in_use(&self, key: &str) -> bool {
+        self.records
+            .entries
+            .values()
+            .any(|entry| match &entry.body {
+                RecordBody::Host(host) => host.icon == key,
+                RecordBody::Group(group) => group.icon == key,
+                _ => false,
+            })
+    }
+
+    /// Удаляет скачанный значок, если на него больше никто не ссылается:
+    /// в хранилище лежат только используемые значки.
+    pub fn release_icon(&mut self, store: &VaultStore, key: &str) -> Result<()> {
+        if key.is_empty() || self.icon_in_use(key) {
+            return Ok(());
+        }
+        let ids: Vec<RecordId> = self
+            .records
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.body.as_icon().is_some_and(|icon| icon.key() == key))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.records.remove(store, &id)?;
+        }
+        Ok(())
+    }
+
+    /// Записи оформления групп: id и содержимое.
+    fn group_records(&self) -> Vec<(RecordId, proto::GroupRecord)> {
+        self.records
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| {
+                entry
+                    .body
+                    .as_group()
+                    .map(|group| (id.clone(), group.clone()))
+            })
+            .collect()
+    }
+
+    /// Группы, в которых есть хосты, по алфавиту. Имя пишется так, как в записи
+    /// оформления, а без неё — как у первого хоста группы.
+    pub fn groups(&self) -> Vec<HostGroup> {
+        let records = self.group_records();
+        let mut groups: BTreeMap<String, HostGroup> = BTreeMap::new();
+        for entry in self.hosts() {
+            let name = entry.host.group.trim();
+            if name.is_empty() {
+                continue;
+            }
+            groups
+                .entry(proto::GroupRecord::key(name))
+                .or_insert_with(|| {
+                    let record = records.iter().find(|(_, group)| group.is_named(name));
+                    HostGroup {
+                        name: record
+                            .map(|(_, group)| group.name.trim().to_owned())
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| name.to_owned()),
+                        icon: record
+                            .map(|(_, group)| group.icon.clone())
+                            .unwrap_or_default(),
+                    }
+                });
+        }
+        groups.into_values().collect()
+    }
+
+    /// Имя группы для сохранения хоста: введённое с клавиатуры совпадает с уже
+    /// существующей группой без учёта регистра — берётся её написание.
+    pub fn group_name(&self, typed: &str) -> String {
+        let typed = typed.trim();
+        if typed.is_empty() {
+            return String::new();
+        }
+        self.groups()
+            .into_iter()
+            .find(|group| proto::GroupRecord::key(&group.name) == proto::GroupRecord::key(typed))
+            .map(|group| group.name)
+            .unwrap_or_else(|| typed.to_owned())
+    }
+
+    /// Переименовывает группу `old` и задаёт ей значок. Новое имя уже занято
+    /// другой группой — группы сливаются.
+    pub fn edit_group(
+        &mut self,
+        store: &VaultStore,
+        old: &str,
+        name: &str,
+        icon: &str,
+    ) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("у группы должно быть имя");
+        }
+        if old.trim().is_empty() {
+            bail!("хосты без группы переименовать нельзя");
+        }
+        let keys = [proto::GroupRecord::key(old), proto::GroupRecord::key(name)];
+
+        // Хосты обеих групп — и переименованной, и той, с которой она слилась, —
+        // получают одно написание.
+        for entry in self.hosts() {
+            if !keys.contains(&proto::GroupRecord::key(&entry.host.group))
+                || entry.host.group == name
+            {
+                continue;
+            }
+            let mut host = entry.host;
+            host.group = name.to_owned();
+            self.records
+                .upsert(store, Some(entry.id), None, RecordBody::Host(host))?;
+        }
+
+        let body = RecordBody::Group(proto::GroupRecord {
+            name: name.to_owned(),
+            icon: icon.to_owned(),
+        });
+        let mut records = self
+            .group_records()
+            .into_iter()
+            .filter(|(_, group)| group.is_named(old) || group.is_named(name))
+            .map(|(id, _)| id);
+        self.records
+            .upsert(store, records.next(), Some(false), body)?;
+        for duplicate in records {
+            self.records.remove(store, &duplicate)?;
+        }
+        Ok(())
     }
 
     /// Имя хранилища из его зашифрованной записи; `None`, если её ещё нет.
@@ -2074,6 +2257,149 @@ mod tests {
             .remove_host(&store, &bastion_id)
             .expect_err("используется");
         assert!(error.to_string().contains("db.internal"), "{error}");
+
+        cleanup(&session);
+    }
+
+    #[test]
+    fn znachok_hranitsya_i_zamenyaetsya() {
+        let mut session = session("icons");
+        session
+            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
+            .expect("создание");
+        let store = VaultStore::new(session.store().root().to_path_buf());
+        let unlocked = session.unlocked_mut().expect("открыто");
+
+        let mut icon = proto::IconRecord {
+            source: "selfhst".into(),
+            name: "github".into(),
+            format: "svg".into(),
+            colored: false,
+            color: b"<svg/>".to_vec(),
+            light: Vec::new(),
+            dark: Vec::new(),
+        };
+        assert!(
+            unlocked
+                .store_icon(&store, proto::IconRecord::default())
+                .is_err()
+        );
+        unlocked.store_icon(&store, icon.clone()).expect("значок");
+        let (first_rev, _) = unlocked.icon("selfhst:github").expect("есть");
+        unlocked.store_icon(&store, icon.clone()).expect("тот же");
+        assert_eq!(unlocked.icon("selfhst:github").expect("есть").0, first_rev);
+
+        icon.light = b"<svg light/>".to_vec();
+        unlocked.store_icon(&store, icon.clone()).expect("замена");
+
+        session.lock(None);
+        session
+            .unlock_with_password("пароль".as_bytes())
+            .expect("открытие");
+        let unlocked = session.unlocked_mut().expect("открыто");
+        let (rev, stored) = unlocked.icon("selfhst:github").expect("есть");
+        assert!(rev > first_rev);
+        assert_eq!(stored, &icon);
+        assert!(unlocked.icon("selfhst:gitlab").is_none());
+
+        // Значок держится, пока на него ссылается хост, и уходит вместе с ним.
+        let mut host = HostRecord::new("git.example");
+        host.icon = "selfhst:github".into();
+        unlocked.upsert_host(&store, host.clone()).expect("хост");
+        unlocked
+            .release_icon(&store, "selfhst:github")
+            .expect("используется");
+        assert!(unlocked.icon("selfhst:github").is_some());
+        host.icon.clear();
+        unlocked.upsert_host(&store, host).expect("без значка");
+        unlocked
+            .release_icon(&store, "selfhst:github")
+            .expect("освобождение");
+        assert!(unlocked.icon("selfhst:github").is_none());
+
+        cleanup(&session);
+    }
+
+    #[test]
+    fn gruppy_pereimenovyvayutsya_i_slivayutsya() {
+        let mut session = session("groups");
+        session
+            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
+            .expect("создание");
+        let store = VaultStore::new(session.store().root().to_path_buf());
+        let unlocked = session.unlocked_mut().expect("открыто");
+
+        let host = |address: &str, group: &str| {
+            let mut host = HostRecord::new(address);
+            host.group = group.into();
+            host
+        };
+        unlocked
+            .upsert_host(&store, host("a.example", "Prod"))
+            .expect("a");
+        unlocked
+            .upsert_host(&store, host("b.example", "prod"))
+            .expect("b");
+        unlocked
+            .upsert_host(&store, host("c.example", "Stage"))
+            .expect("c");
+        unlocked
+            .upsert_host(&store, host("d.example", ""))
+            .expect("d");
+
+        let names = |unlocked: &Unlocked| -> Vec<String> {
+            unlocked
+                .groups()
+                .into_iter()
+                .map(|group| group.name)
+                .collect()
+        };
+        assert_eq!(names(unlocked).len(), 2, "Prod и prod — одна группа");
+        assert_eq!(unlocked.group_name("  STAGE "), "Stage");
+        assert_eq!(unlocked.group_name("Новая"), "Новая");
+        assert_eq!(unlocked.group_name("  "), "");
+
+        unlocked
+            .edit_group(&store, "prod", "Боевые", "database")
+            .expect("переименование");
+        assert!(unlocked.edit_group(&store, "Stage", " ", "").is_err());
+        assert_eq!(
+            unlocked.groups(),
+            vec![
+                HostGroup {
+                    name: "Stage".into(),
+                    icon: String::new(),
+                },
+                HostGroup {
+                    name: "Боевые".into(),
+                    icon: "database".into(),
+                },
+            ]
+        );
+
+        // Переименование в занятое имя сливает группы.
+        unlocked
+            .edit_group(&store, "Stage", "боевые", "rocket")
+            .expect("слияние");
+
+        session.lock(None);
+        session
+            .unlock_with_password("пароль".as_bytes())
+            .expect("открытие");
+        let unlocked = session.unlocked_mut().expect("открыто");
+        assert_eq!(
+            unlocked.groups(),
+            vec![HostGroup {
+                name: "боевые".into(),
+                icon: "rocket".into(),
+            }]
+        );
+        let grouped = unlocked
+            .hosts()
+            .into_iter()
+            .filter(|entry| entry.host.group == "боевые")
+            .count();
+        assert_eq!(grouped, 3);
 
         cleanup(&session);
     }

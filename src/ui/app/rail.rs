@@ -122,10 +122,36 @@ impl AppView {
                         cx,
                     )]
                 } else {
-                    saved
-                        .into_iter()
-                        .map(|host| self.saved_row(&id, host, cx))
-                        .collect()
+                    let mut rows = Vec::new();
+                    // Сначала группы по алфавиту, за ними хосты без группы.
+                    for group in unlocked.groups() {
+                        let key = proto::GroupRecord::key(&group.name);
+                        let members: Vec<&HostRecord> = saved
+                            .iter()
+                            .filter(|host| proto::GroupRecord::key(&host.group) == key)
+                            .collect();
+                        if members.is_empty() {
+                            continue;
+                        }
+                        // При поиске группы раскрыты: иначе найденное не видно.
+                        let collapsed =
+                            query.is_empty() && self.is_group_collapsed(&id, &group.name);
+                        rows.push(self.group_row(&id, &group, members.len(), collapsed, cx));
+                        if !collapsed {
+                            rows.extend(
+                                members
+                                    .into_iter()
+                                    .map(|host| self.saved_row(&id, host.clone(), true, cx)),
+                            );
+                        }
+                    }
+                    rows.extend(
+                        saved
+                            .iter()
+                            .filter(|host| host.group.trim().is_empty())
+                            .map(|host| self.saved_row(&id, host.clone(), false, cx)),
+                    );
+                    rows
                 }
             }
         };
@@ -246,7 +272,13 @@ impl AppView {
             .into_any_element()
     }
 
-    fn saved_row(&self, vault: &str, host: HostRecord, cx: &mut Context<Self>) -> AnyElement {
+    fn saved_row(
+        &self,
+        vault: &str,
+        host: HostRecord,
+        in_group: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme().clone();
         let target = host.target();
         let title = host.title();
@@ -261,12 +293,8 @@ impl AppView {
             cx,
         )
         .h(px(42.))
-        .child(
-            Icon::empty()
-                .path("icons/server.svg")
-                .small()
-                .text_color(theme.muted_foreground),
-        )
+        .when(in_group, |this| this.pl(px(26.)))
+        .child(self.icon_view(&vault, &host.icon, "server", px(20.), cx))
         .child(
             v_flex()
                 .flex_1()

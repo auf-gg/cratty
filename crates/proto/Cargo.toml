@@ -17,3 +17,5 @@ getrandom = { version = "0.4.3", default-features = false }
 # записи после шифрования.
 subtle = "2.6.1"
 zeroize = "1.9.0"
+# Байты значков в теле записи (JSON) — base64, а не массив чисел.
+base64 = "0.22"

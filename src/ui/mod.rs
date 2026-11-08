@@ -6,6 +6,7 @@ pub mod editor;
 pub mod element;
 pub mod files;
 pub mod font;
+pub mod fontawesome;
 pub mod route;
 pub mod settings;
 pub mod ssh_import;

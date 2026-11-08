@@ -224,6 +224,7 @@ impl AppView {
         self.key_notice = None;
         for input in [
             &self.form.label,
+            &self.form.group,
             &self.form.host,
             &self.form.port,
             &self.form.user,
@@ -244,6 +245,7 @@ impl AppView {
         self.form.auth = HostAuth::Auto;
         self.form.via.clear();
         self.form.forwards.clear();
+        self.form.icon.clear();
         self.section = Section::Hosts;
         self.showing_page = true;
         self.editor_open = true;

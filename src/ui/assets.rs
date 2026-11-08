@@ -71,6 +71,10 @@ impl AssetSource for Assets {
         if let Some((_, bytes)) = ICONS.iter().chain(BRAND).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
+        // Значки Font Awesome собираются из встроенных контуров по запросу.
+        if let Some(icon) = crate::ui::fontawesome::from_asset_path(path) {
+            return Ok(Some(Cow::Owned(icon.svg())));
+        }
         // Иконки, которые рисуют сами компоненты (спиннер загрузки, стрелки
         // меню и т.п.), — из набора gpui-kit: он ровно под них и собран.
         if let Ok(Some(bytes)) = gpui_kit::assets::Assets.load(path) {

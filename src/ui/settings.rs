@@ -61,6 +61,9 @@ pub struct Settings {
     /// То же для правой панели сеанса.
     #[serde(default = "default_pinned")]
     pub panel_pinned: bool,
+    /// Свёрнутые группы хостов в левой панели: «хранилище/группа».
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collapsed_groups: Vec<String>,
 }
 
 fn default_pinned() -> bool {
@@ -143,6 +146,7 @@ impl Default for Settings {
             editor_width: default_editor_width(),
             rail_pinned: true,
             panel_pinned: true,
+            collapsed_groups: Vec::new(),
         }
     }
 }
@@ -417,6 +421,7 @@ mod tests {
             editor_width: 600.0,
             rail_pinned: false,
             panel_pinned: true,
+            collapsed_groups: vec!["vault/prod".into()],
         };
         let text = serde_json::to_string(&settings).expect("не сериализуется");
         let parsed: Settings = serde_json::from_str(&text).expect("не разбирается");

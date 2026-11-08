@@ -54,6 +54,12 @@ pub struct HostRecord {
     pub forward_agent: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forwards: Vec<crate::PortForward>,
+    /// Имя группы в списке хостов; пусто — без группы.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    /// Значок в списке: имя встроенного или `selfhst:<имя>`; пусто — по умолчанию.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -82,6 +88,8 @@ impl HostRecord {
             via: Vec::new(),
             forward_agent: false,
             forwards: Vec::new(),
+            group: String::new(),
+            icon: String::new(),
         }
     }
 
@@ -132,6 +140,7 @@ impl HostRecord {
         query.is_empty()
             || self.label.to_lowercase().contains(&query)
             || self.target().to_lowercase().contains(&query)
+            || self.group.to_lowercase().contains(&query)
     }
 }
 

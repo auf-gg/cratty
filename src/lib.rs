@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod keychain;
 pub mod platform;
+pub mod selfhst;
 pub mod ssh;
 pub mod store;
 pub mod term;

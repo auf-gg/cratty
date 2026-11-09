@@ -24,16 +24,16 @@ impl DockerSshd {
         if !docker_available() {
             assert!(
                 std::env::var_os("CRATTY_REQUIRE_DOCKER").is_none(),
-                "CRATTY_REQUIRE_DOCKER задан, а docker недоступен"
+                "CRATTY_REQUIRE_DOCKER is set, but docker is unavailable"
             );
             return None;
         }
 
-        run(&["build", "-q", "-t", IMAGE, CONTEXT], "сборка образа sshd");
+        run(&["build", "-q", "-t", IMAGE, CONTEXT], "building the sshd image");
 
         let container = run(
             &["run", "-d", "--rm", "-p", "127.0.0.1:0:22", IMAGE],
-            "запуск контейнера sshd",
+            "starting the sshd container",
         )
         .trim()
         .to_string();
@@ -57,19 +57,19 @@ impl DockerSshd {
 
     fn wait_until_ready(&self) {
         let deadline = Instant::now() + READY_TIMEOUT;
-        let mut last = String::from("ни одной попытки");
+        let mut last = String::from("no attempts");
 
         while Instant::now() < deadline {
             match self.read_banner() {
                 Ok(banner) if banner.starts_with("SSH-2.0") => return,
-                Ok(banner) => last = format!("вместо баннера пришло {banner:?}"),
+                Ok(banner) => last = format!("got {banner:?} instead of a banner"),
                 Err(err) => last = err,
             }
             std::thread::sleep(Duration::from_millis(200));
         }
 
         panic!(
-            "sshd в контейнере {} не поздоровался за {:?}: {last}\nлог контейнера:\n{}",
+            "sshd in container {} did not greet within {:?}: {last}\ncontainer log:\n{}",
             self.container,
             READY_TIMEOUT,
             self.logs()
@@ -78,15 +78,15 @@ impl DockerSshd {
 
     fn read_banner(&self) -> Result<String, String> {
         let mut stream = TcpStream::connect_timeout(&self.addr, Duration::from_secs(2))
-            .map_err(|err| format!("не подключиться: {err}"))?;
+            .map_err(|err| format!("could not connect: {err}"))?;
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
-            .map_err(|err| format!("не выставить таймаут чтения: {err}"))?;
+            .map_err(|err| format!("could not set the read timeout: {err}"))?;
 
         let mut buf = [0u8; 16];
         let read = stream
             .read(&mut buf)
-            .map_err(|err| format!("не прочитать баннер: {err}"))?;
+            .map_err(|err| format!("could not read the banner: {err}"))?;
         Ok(String::from_utf8_lossy(&buf[..read]).to_string())
     }
 
@@ -101,7 +101,7 @@ impl DockerSshd {
         );
         run(
             &["exec", &self.container, "sh", "-c", &script],
-            "запись authorized_keys",
+            "writing authorized_keys",
         );
     }
 
@@ -115,7 +115,7 @@ impl DockerSshd {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             ),
-            Err(err) => format!("<не удалось прочитать лог: {err}>"),
+            Err(err) => format!("<could not read the log: {err}>"),
         }
     }
 }
@@ -141,11 +141,11 @@ fn docker_available() -> bool {
 }
 
 fn published_port(container: &str) -> SocketAddr {
-    let output = run(&["port", container, "22"], "чтение проброшенного порта");
+    let output = run(&["port", container, "22"], "reading the forwarded port");
     output
         .lines()
         .find_map(|line| line.trim().parse::<SocketAddr>().ok())
-        .unwrap_or_else(|| panic!("не разобрать адрес из `docker port`: {output:?}"))
+        .unwrap_or_else(|| panic!("could not parse the address from `docker port`: {output:?}"))
 }
 
 fn host_key_fingerprint(container: &str) -> String {
@@ -157,12 +157,12 @@ fn host_key_fingerprint(container: &str) -> String {
             "-lf",
             "/etc/ssh/ssh_host_ed25519_key.pub",
         ],
-        "чтение отпечатка ключа хоста",
+        "reading the host key fingerprint",
     );
     output
         .split_whitespace()
         .find(|word| word.starts_with("SHA256:"))
-        .unwrap_or_else(|| panic!("не найти отпечаток в выводе ssh-keygen: {output:?}"))
+        .unwrap_or_else(|| panic!("could not find the fingerprint in ssh-keygen output: {output:?}"))
         .to_string()
 }
 
@@ -174,14 +174,14 @@ fn run(args: &[&str], what: &str) -> String {
         let output = Command::new("docker")
             .args(args)
             .output()
-            .unwrap_or_else(|err| panic!("{what}: не запустить docker: {err}"));
+            .unwrap_or_else(|err| panic!("{what}: could not run docker: {err}"));
 
         if output.status.success() {
             return String::from_utf8_lossy(&output.stdout).to_string();
         }
 
         last = format!(
-            "{what}: docker {args:?} завершился с {}\n{}",
+            "{what}: docker {args:?} exited with {}\n{}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
         );
@@ -191,7 +191,7 @@ fn run(args: &[&str], what: &str) -> String {
         std::thread::sleep(std::time::Duration::from_millis(300 * attempt as u64));
     }
 
-    panic!("{last}\n(повторено {ATTEMPTS} раз: файл контекста docker занят другим процессом)");
+    panic!("{last}\n(repeated {ATTEMPTS} times: docker context file is busy with another process)");
 }
 
 fn is_context_race(message: &str) -> bool {

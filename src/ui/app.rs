@@ -35,6 +35,7 @@ mod vault_edit;
 mod vault_flow;
 mod vaults;
 
+use rust_i18n::t;
 use crate::agent as ssh_agent;
 use crate::keychain::OsKeychain;
 use crate::ssh::{PtySize, spawn_local, spawn_ssh};
@@ -97,8 +98,8 @@ struct SessionTab {
     kind: TabKind,
     request: connect::Request,
     credentials: connect::Credentials,
-    /// Локальная вкладка без хранилища: переподключается в новый PTY,
-    /// а не по SSH-адресу из `request`.
+    /// Local tab without a vault: reconnects into a new PTY,
+    /// rather than to the SSH address from `request`.
     local: bool,
 }
 
@@ -165,10 +166,10 @@ pub struct AppView {
     active: Option<usize>,
 
     section: Section,
-    /// Откреплённая панель выдвинута, потому что мышь у края окна.
+    /// The unpinned panel is slid out because the mouse is at the window edge.
     rail_peek: bool,
     panel_peek: bool,
-    /// Тайловый WM: свою верхнюю панель не рисуем.
+    /// Tiling WM: we don't draw our own top bar.
     tiling: bool,
     info_tab: session_panel::InfoTab,
     showing_page: bool,
@@ -189,25 +190,25 @@ pub struct AppView {
     os_unlocking: Vec<String>,
     os_tasks: Vec<gpui_kit::Task<()>>,
     confirm_delete: Option<String>,
-    /// Хост (хранилище, адрес), удаление которого ждёт подтверждения.
+    /// Host (vault, address) whose deletion is awaiting confirmation.
     confirm_forget: Option<(String, String)>,
-    /// Хост, который сейчас тащат в левой панели: хранилище и есть ли у него группа.
+    /// Host currently being dragged in the left panel: its vault and whether it has a group.
     dragging_host: Option<(String, bool)>,
     vault_editor: Option<vault_edit::VaultEditor>,
-    /// Окно «Изменить группу», открытое из меню группы в левой панели.
+    /// "Edit group" dialog opened from the group menu in the left panel.
     group_editor: Option<groups_ui::GroupEditor>,
-    /// Окно выбора значка хоста или группы.
+    /// Host or group icon picker dialog.
     icon_picker: Option<icons_ui::IconPicker>,
-    /// Каталог selfh.st: из кеша и с сервера.
+    /// selfh.st catalog: from cache and from the server.
     selfhst: icons_ui::SelfhstState,
     icon_images: icons_ui::IconImages,
     pending_icons: icons_ui::PendingIcons,
-    /// Тема под курсором в настройках: её показывает превью.
+    /// Theme under the cursor in settings: shown in the preview.
     theme_preview: Option<String>,
-    /// Итог действий с ключом в форме хоста (создан, ошибка, вкладка установки).
+    /// Outcome of key actions in the host form (created, error, install tab).
     key_notice: Option<SharedString>,
     font_pickers: fonts_ui::FontPickers,
-    /// Следит за файлом цветов Dux Shell: обои сменились — палитра тоже.
+    /// Watches the Dux Shell colors file: when the wallpaper changes, so does the palette.
     _dux_watch: Option<gpui_kit::Task<()>>,
     import_notice: Option<SharedString>,
     stage: Option<Stage>,
@@ -295,7 +296,7 @@ struct Form {
     line: Entity<InputState>,
     label: Entity<InputState>,
     group: Entity<InputState>,
-    /// Значок хоста: встроенный или `selfhst:<имя>`; пусто — по умолчанию.
+    /// Host icon: built-in or `selfhst:<name>`; empty means default.
     icon: String,
     host: Entity<InputState>,
     port: Entity<InputState>,
@@ -310,32 +311,32 @@ struct Form {
 
 impl AppView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let field = |placeholder: &'static str, cx: &mut Context<Self>, window: &mut Window| {
+        let field = |placeholder: SharedString, cx: &mut Context<Self>, window: &mut Window| {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
         };
 
-        let line = field("Поиск или user@host:port", cx, window);
-        let label = field("Например, Production", cx, window);
-        let group = field("Без группы", cx, window);
-        let host = field("Доменное имя или IP-адрес", cx, window);
-        let port = field("22", cx, window);
-        let user = field("Имя пользователя", cx, window);
+        let line = field(t!("app.search_or_address").into(), cx, window);
+        let label = field(t!("app.label_example").into(), cx, window);
+        let group = field(t!("app.no_group").into(), cx, window);
+        let host = field(t!("app.host_placeholder").into(), cx, window);
+        let port = field("22".into(), cx, window);
+        let user = field(t!("app.username").into(), cx, window);
         let password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Пароль")
+                .placeholder(t!("app.password"))
                 .masked(true)
         });
-        let key_path = field("Путь к файлу ключа", cx, window);
+        let key_path = field(t!("app.key_path").into(), cx, window);
         let forward_draft = ports_ui::ForwardDraft::new(window, cx);
         let snippet_form = snippets_ui::SnippetForm::new(window, cx);
         let proxy_form = proxy_ui::ProxyForm::new(
-            field("Например, Офис", cx, window),
-            field("Доменное имя или IP-адрес", cx, window),
-            field("1080", cx, window),
-            field("Необязательно", cx, window),
+            field(t!("app.proxy_label_example").into(), cx, window),
+            field(t!("app.host_placeholder").into(), cx, window),
+            field("1080".into(), cx, window),
+            field(t!("app.optional").into(), cx, window),
             cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("Пароль")
+                    .placeholder(t!("app.password"))
                     .masked(true)
             }),
         );
@@ -346,7 +347,7 @@ impl AppView {
                 InputEvent::Change => cx.notify(),
                 _ => {}
             }),
-            // Режим «Системная»: ОС сменила светлое/тёмное оформление.
+            // "System" mode: the OS switched between light and dark appearance.
             cx.observe_window_appearance(window, |this, window, cx| {
                 if this.settings.appearance() == crate::ui::theme::Appearance::System {
                     crate::ui::theme::apply(&this.settings, Some(window), cx);
@@ -357,20 +358,20 @@ impl AppView {
 
         let vault_password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Мастер-пароль")
+                .placeholder(t!("app.master_password"))
                 .masked(true)
         });
         let vault_repeat = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Повторите мастер-пароль")
+                .placeholder(t!("app.repeat_master_password"))
                 .masked(true)
         });
-        let vault_code = field("12 или 24 слова через пробел", cx, window);
-        let vault_name = field("Например, Работа", cx, window);
-        let sync_input = field("Путь к общей папке", cx, window);
+        let vault_code = field(t!("app.vault_code").into(), cx, window);
+        let vault_name = field(t!("app.vault_name_example").into(), cx, window);
+        let sync_input = field(t!("app.shared_folder").into(), cx, window);
         let key_passphrase = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Парольная фраза ключа")
+                .placeholder(t!("app.key_passphrase"))
                 .masked(true)
         });
 
@@ -508,7 +509,7 @@ impl AppView {
         };
 
         if vaults.is_empty() {
-            vaults.push(this.make_draft(registry::FIRST_VAULT_NAME));
+            vaults.push(this.make_draft(&registry::first_vault_name()));
         }
         this.vaults = vaults;
         this.form.vault = this.vaults[0].id.clone();
@@ -564,7 +565,7 @@ impl AppView {
             HostAuth::Key { .. } => {
                 let path = self.form.key_path.read(cx).value().trim().to_string();
                 if path.is_empty() {
-                    return Err("Укажите путь к файлу ключа.".into());
+                    return Err(t!("app.enter_key_path").into());
                 }
                 HostAuth::Key { path }
             }
@@ -581,7 +582,7 @@ impl AppView {
 
         let host = self.form.host.read(cx).value().trim().to_string();
         if host.is_empty() {
-            return Err("Укажите адрес сервера.".into());
+            return Err(t!("app.enter_server_address").into());
         }
         let user = self.form.user.read(cx).value().trim().to_string();
         let port = self.form.port.read(cx).value().trim().to_string();
@@ -679,7 +680,7 @@ impl AppView {
             .unlocked_of(&vault_id)
             .map(|unlocked| unlocked.group_name(&group))
             .unwrap_or(group);
-        // В другой группе прежнее место ничего не значит.
+        // In a different group the previous position means nothing.
         if proto::GroupRecord::key(&host.group) != proto::GroupRecord::key(&old_group) {
             host.order = 0;
         }
@@ -701,7 +702,7 @@ impl AppView {
         });
         if self.error.is_none() {
             self.form.editing = Some(saved_target);
-            // Файл ключа хоста — сразу в хранилище.
+            // The host's key file goes straight into the vault.
             self.sync_key_files(&vault_id);
         }
         if self.error.is_none() {
@@ -812,12 +813,12 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         let Some(vault_id) = self.vault_for_write(vault, target) else {
-            self.error = Some("Хранилище заблокировано. Пароль не сохранён.".into());
+            self.error = Some(t!("app.vault_locked_not_saved").into());
             cx.notify();
             return;
         };
         let Some(unlocked) = self.unlocked_of(&vault_id) else {
-            self.error = Some("Хранилище заблокировано. Пароль не сохранён.".into());
+            self.error = Some(t!("app.vault_locked_not_saved").into());
             cx.notify();
             return;
         };
@@ -832,9 +833,9 @@ impl AppView {
                     host
                 }
                 Err(error) => {
-                    self.error = Some(SharedString::from(format!(
-                        "Не удалось сохранить пароль: {error}"
-                    )));
+                    self.error = Some(
+                        t!("app.save_password_failed", error = error.to_string()).into(),
+                    );
                     cx.notify();
                     return;
                 }
@@ -915,16 +916,14 @@ impl AppView {
             .and_then(|entry| entry.host.password().cloned())
         else {
             self.reveal = None;
-            self.error = Some("Сохранённый пароль отсутствует.".into());
+            self.error = Some(t!("app.no_saved_password").into());
             cx.notify();
             return;
         };
 
         let Ok(text) = std::str::from_utf8(secret.expose()) else {
             self.reveal = None;
-            self.error = Some(
-                "Сохранённый пароль содержит недопустимые символы и не может быть показан.".into(),
-            );
+            self.error = Some(t!("app.password_invalid_chars").into());
             cx.notify();
             return;
         };
@@ -932,7 +931,7 @@ impl AppView {
         if copy {
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.to_owned()));
             self.reveal = None;
-            self.error = Some("Пароль скопирован в буфер обмена.".into());
+            self.error = Some(t!("app.password_copied").into());
         } else {
             self.reveal = Some(Reveal::Showing {
                 vault,
@@ -1039,7 +1038,7 @@ impl AppView {
 
         let agent = self.agent_address();
         let Some(view) = Self::start_session(&target, &settings, &credentials, agent, cx) else {
-            self.error = Some("Не удалось запустить сеанс.".into());
+            self.error = Some(t!("app.session_start_failed").into());
             cx.notify();
             return;
         };
@@ -1103,7 +1102,7 @@ impl AppView {
             .map(|(_, entry)| entry.host.title())
             .unwrap_or_else(|| target.to_string());
         let vault = vault.or_else(|| found.map(|(id, _)| id));
-        let title = format!("Файлы: {name}");
+        let title = t!("app.files_title", name = name).to_string();
         let view_title = title.clone();
         let view = cx.new(|cx| crate::ui::files::FilesView::new(view_title, config, cx));
         let events = cx.subscribe(
@@ -1147,23 +1146,23 @@ impl AppView {
 
     fn start_local_session(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
         let session = spawn_local(DEFAULT_PTY, "xterm-256color").map_err(|err| {
-            self.error = Some(format!("Локальный терминал: {err}").into());
+            self.error = Some(t!("app.local_terminal_error", error = err.to_string()).into());
         });
         let session = session.ok()?;
-        Some(cx.new(|cx| TerminalView::new("Локальный", DEFAULT_PTY, session, cx)))
+        Some(cx.new(|cx| TerminalView::new(t!("app.local_tab").to_string(), DEFAULT_PTY, session, cx)))
     }
 
-    /// Вкладка локальной оболочки: без SSH и без хранилища, доступна даже
-    /// на экране блокировки.
+    /// Local shell tab: no SSH and no vault, available even
+    /// on the lock screen.
     fn spawn_local_tab(&mut self, cx: &mut Context<Self>) {
         let Some(view) = self.start_local_session(cx) else {
             cx.notify();
             return;
         };
-        let events = self.subscribe_terminal(&view, None, "Локальный".into(), cx);
+        let events = self.subscribe_terminal(&view, None, t!("app.local_tab").to_string(), cx);
 
         self.tabs.push(SessionTab {
-            title: "Локальный".into(),
+            title: t!("app.local_tab").into(),
             vault: None,
             kind: TabKind::Terminal {
                 view,
@@ -1200,7 +1199,7 @@ impl AppView {
 
         let agent = self.agent_address();
         let (target_text, started) = if local {
-            ("Локальный".to_string(), self.start_local_session(cx))
+            (t!("app.local_tab").to_string(), self.start_local_session(cx))
         } else {
             let settings = connect::read_ssh_config(&request.alias);
             let target = connect::resolve(&request, &settings);
@@ -1526,7 +1525,7 @@ impl AppView {
         self.toggle_pin(Edge::Rail, cx);
     }
 
-    /// Закрепить или открепить боковую панель. Выбор запоминается в настройках.
+    /// Pin or unpin the side panel. The choice is remembered in settings.
     fn toggle_pin(&mut self, edge: Edge, cx: &mut Context<Self>) {
         let pinned = match edge {
             Edge::Rail => &mut self.settings.rail_pinned,
@@ -1557,15 +1556,15 @@ impl AppView {
             "icons/pin-off.svg"
         }))
         .tooltip(if pinned {
-            "Открепить: панель будет выезжать при наведении на край окна"
+            t!("app.pin_unpin_tip")
         } else {
-            "Закрепить панель"
+            t!("app.pin_tip")
         })
         .on_click(cx.listener(move |this, _, _window, cx| this.toggle_pin(edge, cx)))
         .into_any_element()
     }
 
-    /// Узкая полоса у края окна: наведение выдвигает откреплённую панель.
+    /// Narrow strip at the window edge: hovering slides out the unpinned panel.
     fn peek_zone(&self, edge: Edge, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id(match edge {
@@ -1592,7 +1591,7 @@ impl AppView {
             .into_any_element()
     }
 
-    /// Выдвинутая поверх содержимого панель; прячется, когда мышь уходит.
+    /// Panel slid out over the content; hides when the mouse leaves.
     fn peek_overlay(&self, edge: Edge, panel: AnyElement, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id(match edge {
@@ -1614,7 +1613,7 @@ impl AppView {
                     match edge {
                         Edge::Rail => this.rail_peek = false,
                         _ => {
-                            // Меню живут в панели: уехала панель — закрываем и их.
+                            // Menus live in the panel: when the panel goes away, close them too.
                             this.panel_peek = false;
                             this.snippets_open = false;
                             this.split_menu = false;
@@ -1665,7 +1664,7 @@ impl AppView {
                         .ghost()
                         .xsmall()
                         .icon(Icon::new(if dark { IconName::Sun } else { IconName::Moon }))
-                        .tooltip("Переключить тему оформления")
+                        .tooltip(t!("app.switch_theme"))
                         .on_click(cx.listener(|this, _, window, cx| {
                             let next = if crate::ui::theme::is_dark(cx) {
                                 crate::ui::theme::Appearance::Light
@@ -1697,17 +1696,17 @@ impl AppView {
             .into_any_element()
     }
 
-    fn panel_title(text: &'static str, muted: gpui_kit::Hsla) -> AnyElement {
+    fn panel_title(text: impl Into<SharedString>, muted: gpui_kit::Hsla) -> AnyElement {
         div()
             .px_3()
             .pt_3()
             .pb_2()
-            .child(Label::new(text).text_sm().font_semibold().text_color(muted))
+            .child(Label::new(text.into()).text_sm().font_semibold().text_color(muted))
             .into_any_element()
     }
 
-    fn field_label(text: &'static str, muted: gpui_kit::Hsla) -> AnyElement {
-        Label::new(text)
+    fn field_label(text: impl Into<SharedString>, muted: gpui_kit::Hsla) -> AnyElement {
+        Label::new(text.into())
             .text_xs()
             .text_color(muted)
             .into_any_element()
@@ -1724,8 +1723,8 @@ impl AppView {
                     .ghost()
                     .small()
                     .selected(is(&HostAuth::Auto))
-                    .label("Автоматически")
-                    .tooltip("Ключи SSH-агента, затем ключи из ~/.ssh")
+                    .label(t!("app.auth_auto"))
+                    .tooltip(t!("app.auth_auto_tip"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.form.auth = HostAuth::Auto;
                         cx.notify();
@@ -1736,8 +1735,8 @@ impl AppView {
                     .ghost()
                     .small()
                     .selected(is(&HostAuth::Password))
-                    .label("Пароль")
-                    .tooltip("Аутентификация по паролю учётной записи")
+                    .label(t!("app.auth_password"))
+                    .tooltip(t!("app.auth_password_tip"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.form.auth = HostAuth::Password;
                         cx.notify();
@@ -1750,8 +1749,8 @@ impl AppView {
                     .selected(is(&HostAuth::Key {
                         path: Default::default(),
                     }))
-                    .label("Файл ключа")
-                    .tooltip("Аутентификация по указанному файлу ключа")
+                    .label(t!("app.auth_key"))
+                    .tooltip(t!("app.auth_key_tip"))
                     .on_click(cx.listener(|this, _, _window, cx| {
                         this.form.auth = HostAuth::Key {
                             path: Default::default(),
@@ -1770,7 +1769,7 @@ impl AppView {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(Self::field_label("Значок и название", muted))
+                    .child(Self::field_label(t!("app.field_icon_name"), muted))
                     .child(
                         h_flex()
                             .gap_2()
@@ -1795,21 +1794,21 @@ impl AppView {
                         v_flex()
                             .flex_grow_1()
                             .gap_1()
-                            .child(Self::field_label("Адрес", muted))
+                            .child(Self::field_label(t!("app.field_address"), muted))
                             .child(Input::new(&self.form.host)),
                     )
                     .child(
                         v_flex()
                             .w(px(72.))
                             .gap_1()
-                            .child(Self::field_label("Порт", muted))
+                            .child(Self::field_label(t!("app.field_port"), muted))
                             .child(Input::new(&self.form.port)),
                     ),
             )
             .child(
                 v_flex()
                     .gap_1()
-                    .child(Self::field_label("Пользователь", muted))
+                    .child(Self::field_label(t!("app.field_user"), muted))
                     .child(Input::new(&self.form.user)),
             )
             .into_any_element()
@@ -1819,9 +1818,7 @@ impl AppView {
         let muted = cx.theme().muted_foreground;
 
         match self.form.auth {
-            HostAuth::Auto => Label::new(
-                "Используются ключи SSH-агента, затем ключи из каталога ~/.ssh.",
-            )
+            HostAuth::Auto => Label::new(t!("app.auth_auto_hint"))
             .text_xs()
             .text_color(muted)
             .into_any_element(),
@@ -1829,9 +1826,7 @@ impl AppView {
                 .gap_1()
                 .child(Input::new(&self.form.password))
                 .child(
-                    Label::new(
-                        "Пароль передаётся только на этот сервер. Чтобы не вводить его при каждом подключении, сохраните хост.",
-                    )
+                    Label::new(t!("app.auth_password_hint"))
                     .text_xs()
                     .text_color(muted),
                 )
@@ -1891,10 +1886,8 @@ impl AppView {
                                 .ghost()
                                 .small()
                                 .selected(device_only)
-                                .label("Не синхронизировать")
-                                .tooltip(
-                                    "Запись хранится только на этом устройстве и не синхронизируется.",
-                                )
+                                .label(t!("app.dont_sync"))
+                                .tooltip(t!("app.dont_sync_tip"))
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     let target = for_bind.clone();
                                     this.toggle_device_only(&v_bind, &target, cx);
@@ -1905,10 +1898,8 @@ impl AppView {
                                 .ghost()
                                 .small()
                                 .selected(forward_agent)
-                                .label("Переадресация SSH-агента")
-                                .tooltip(
-                                    "Аналог ssh -A. Сервер сможет запрашивать подписи вашими ключами на время сеанса; каждый запрос требует подтверждения.",
-                                )
+                                .label(t!("app.forward_agent"))
+                                .tooltip(t!("app.forward_agent_tip"))
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     let target = for_forward.clone();
                                     this.toggle_forward_agent(&v_forward, &target, cx);
@@ -1919,12 +1910,12 @@ impl AppView {
                     this.child(
                         h_flex()
                             .gap_1()
-                            .child(Label::new("Пароль сохранён").text_xs().text_color(muted))
+                            .child(Label::new(t!("app.password_saved")).text_xs().text_color(muted))
                             .child(
                                 Button::new("record-show-password")
                                     .ghost()
                                     .small()
-                                    .label("Показать")
+                                    .label(t!("app.show"))
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         let target = for_show.clone();
                                         this.ask_reveal(&v_show, &target, false, cx);
@@ -1934,7 +1925,7 @@ impl AppView {
                                 Button::new("record-copy-password")
                                     .ghost()
                                     .small()
-                                    .label("Скопировать")
+                                    .label(t!("app.copy"))
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         let target = for_copy.clone();
                                         this.ask_reveal(&v_copy, &target, true, cx);
@@ -1944,7 +1935,7 @@ impl AppView {
                                 Button::new("record-forget-password")
                                     .ghost()
                                     .small()
-                                    .label("Удалить")
+                                    .label(t!("app.delete"))
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         let target = for_forget.clone();
                                         this.forget_secret(
@@ -1966,9 +1957,7 @@ impl AppView {
                             .border_1()
                             .border_color(border)
                             .child(
-                                Label::new(
-                                    "Пароль будет показан на экране или помещён в буфер обмена, доступный другим программам. Продолжить?",
-                                )
+                                Label::new(t!("app.reveal_warning"))
                                 .text_xs()
                                 .text_color(warning),
                             )
@@ -1979,7 +1968,7 @@ impl AppView {
                                         Button::new("reveal-yes")
                                             .primary()
                                             .small()
-                                            .label("Продолжить")
+                                            .label(t!("app.continue"))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.confirm_reveal(cx)
                                             })),
@@ -1988,7 +1977,7 @@ impl AppView {
                                         Button::new("reveal-no")
                                             .ghost()
                                             .small()
-                                            .label("Отмена")
+                                            .label(t!("app.cancel"))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.hide_reveal(cx)
                                             })),
@@ -2008,7 +1997,7 @@ impl AppView {
                             Button::new("reveal-hide")
                                 .ghost()
                                 .small()
-                                .label("Скрыть")
+                                .label(t!("app.hide"))
                                 .on_click(cx.listener(|this, _, _window, cx| this.hide_reveal(cx))),
                         )
                 }))
@@ -2030,9 +2019,7 @@ impl AppView {
                 .border_1()
                 .border_color(danger)
                 .child(
-                    Label::new(SharedString::from(format!(
-                        "Сервер отклонил сохранённый пароль для {target}. Повторные попытки прекращены во избежание блокировки."
-                    )))
+                    Label::new(t!("app.rejected_notice", target = target))
                     .text_xs()
                     .text_color(danger),
                 )
@@ -2043,7 +2030,7 @@ impl AppView {
                             Button::new("stored-rejected-forget")
                                 .primary()
                                 .xsmall()
-                                .label("Удалить пароль и запросить заново")
+                                .label(t!("app.rejected_forget"))
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     let target = for_forget.clone();
                                     this.forget_secret(vault.as_deref(), &target, proto::SecretPurpose::Password, cx);
@@ -2055,7 +2042,7 @@ impl AppView {
                             Button::new("stored-rejected-dismiss")
                                 .ghost()
                                 .xsmall()
-                                .label("Закрыть")
+                                .label(t!("app.close"))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.stored_rejected = None;
                                     cx.notify();
@@ -2081,13 +2068,13 @@ impl AppView {
             .bg(muted_bg)
             .border_b_1()
             .border_color(border)
-            .child(Label::new("Сеанс завершён").text_sm().text_color(muted))
+            .child(Label::new(t!("app.session_ended")).text_sm().text_color(muted))
             .child(
                 Button::new("reconnect")
                     .primary()
                     .small()
                     .icon(Icon::new(IconName::Replace))
-                    .label("Переподключиться")
+                    .label(t!("app.reconnect"))
                     .on_click(cx.listener(move |this, _, _window, cx| this.reconnect(index, cx))),
             )
             .into_any_element()
@@ -2106,8 +2093,8 @@ impl Render for AppView {
         let session_panel = self.session_panel(cx);
         let foreground = cx.theme().foreground;
 
-        // Откреплённая панель: у края окна полоса-ловушка, при наведении —
-        // панель поверх содержимого.
+        // Unpinned panel: a hover strip at the window edge; on hover,
+        // the panel over the content.
         let rail_pinned = self.settings.rail_pinned;
         let panel_pinned = self.settings.panel_pinned;
         let (rail, rail_overlay) = match (rail_pinned, rail) {
@@ -2234,11 +2221,12 @@ pub fn open_main_window(cx: &mut App) -> Result<()> {
     crate::ui::theme::init(cx);
 
     let startup = settings::load();
+    crate::i18n::apply(&startup.language);
     crate::ui::font::MonoFont::apply(&startup, cx);
     crate::ui::theme::apply(&startup, None, cx);
 
     let bind = |keys: &str, action: Box<dyn gpui_kit::Action>| {
-        KeyBinding::load(keys, action, None, false, None, cx).expect("корректное сочетание клавиш")
+        KeyBinding::load(keys, action, None, false, None, cx).expect("valid key binding")
     };
     cx.bind_keys([
         KeyBinding::new(
@@ -2343,7 +2331,7 @@ mod tests {
     const ROW_DETAIL_CHARS: usize = 30;
 
     #[test]
-    fn korotkaya_stroka_ne_menyaetsya_a_dlinnaya_obrezaetsya() {
+    fn short_string_is_unchanged_and_long_one_is_truncated() {
         assert_eq!(shorten("prod-01", ROW_TITLE_CHARS), "prod-01");
 
         let long = "administrator@very-long-hostname.production.example.com";
@@ -2354,8 +2342,8 @@ mod tests {
     }
 
     #[test]
-    fn kirillica_ne_ryvetsya_poseredine_bukvy() {
-        let text = "боевой сервер в московском датацентре, тот самый";
+    fn cyrillic_is_not_cut_in_the_middle_of_a_letter() {
+        let text = "prod sérvér in the Zürich dätäcéntér — 東京 is the backup";
         let short = shorten(text, ROW_DETAIL_CHARS);
         assert_eq!(short.chars().count(), ROW_DETAIL_CHARS + 1);
         assert!(text.starts_with(short.trim_end_matches('…')));

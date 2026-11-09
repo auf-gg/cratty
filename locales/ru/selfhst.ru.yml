@@ -1,0 +1,8 @@
+selfhst:
+  parse_failed: "каталог selfh.st не разобрать"
+  empty: "каталог selfh.st пуст"
+  load_failed: "каталог selfh.st не загрузился"
+  not_utf8: "каталог selfh.st не UTF-8"
+  icon_failed: "значок %{name} не скачался"
+  cut_off: "ответ оборвался"
+  too_large: "ответ слишком большой"

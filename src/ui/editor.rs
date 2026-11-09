@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use crate::ui::theme::MainAction;
 use futures::channel::{mpsc, oneshot};
 use gpui_kit::component::{
@@ -43,8 +44,8 @@ fn is_crlf(text: &str) -> bool {
     crlf > 0 && crlf == text.matches('\n').count() && crlf == text.matches('\r').count()
 }
 
-/// Язык для подсветки: расширение файла, а у файлов без него и у дотфайлов —
-/// имя целиком (`Makefile`, `sshd_config`, `.bashrc`): подсветка знает и их.
+/// Highlighting language: the file extension, and for files without one and for dotfiles —
+/// the whole name (`Makefile`, `sshd_config`, `.bashrc`): the highlighter knows those too.
 fn language_of(name: &str) -> String {
     let language = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => ext,
@@ -52,7 +53,7 @@ fn language_of(name: &str) -> String {
     }
     .to_ascii_lowercase();
     match language.as_str() {
-        // Юниты systemd — тот же INI.
+        // systemd units are the same INI.
         "service" | "socket" | "timer" | "mount" | "path" | "target" | "network" | "netdev" => {
             "ini".into()
         }
@@ -161,7 +162,7 @@ impl EditorView {
             })
             .is_err()
         {
-            self.status = Some(("Соединение закрыто. Сохранение невозможно.".into(), true));
+            self.status = Some((t!("editor.cannot_save").into(), true));
             cx.notify();
             return;
         }
@@ -177,14 +178,14 @@ impl EditorView {
                     Ok(Ok(())) => {
                         this.dirty = false;
                         this.confirm_close = false;
-                        this.status = Some(("Сохранено".into(), false));
+                        this.status = Some((t!("editor.saved").into(), false));
                         if close_after {
                             cx.emit(EditorEvent::Close);
                         }
                     }
                     Ok(Err(error)) => this.status = Some((error.into(), true)),
                     Err(_) => {
-                        this.status = Some(("Соединение закрыто. Файл не сохранён.".into(), true))
+                        this.status = Some((t!("editor.not_saved").into(), true))
                     }
                 }
                 cx.notify();
@@ -208,7 +209,7 @@ impl Render for EditorView {
         let mono = crate::ui::font::MonoFont::get(cx).family.clone();
 
         let status = match (&self.status, self.saving, self.dirty) {
-            (_, true, _) => Some(("Сохранение…".into(), theme.muted_foreground)),
+            (_, true, _) => Some((t!("editor.saving").into(), theme.muted_foreground)),
             (Some((text, true)), _, _) => Some((text.clone(), theme.danger)),
             (Some((text, false)), _, _) => Some((text.clone(), theme.success)),
             _ => None,
@@ -289,8 +290,8 @@ impl Render for EditorView {
                     .child(
                         Button::new("editor-save")
                             .small()
-                            .label("Сохранить")
-                            .tooltip("Сохранить на сервере (Ctrl+S)")
+                            .label(t!("editor.save"))
+                            .tooltip(t!("editor.save_tip"))
                             .main_action(self.dirty && !self.saving)
                             .on_click(cx.listener(|this, _, _window, cx| this.save(false, cx))),
                     )
@@ -306,9 +307,9 @@ impl Render for EditorView {
                                     "icons/window-maximize.svg"
                                 }))
                                 .tooltip(if expanded {
-                                    "Показать рядом с терминалом"
+                                    t!("editor.dock")
                                 } else {
-                                    "Развернуть"
+                                    t!("editor.expand")
                                 })
                                 .on_click(cx.listener(move |this, _, _window, cx| {
                                     this.expanded = !expanded;
@@ -321,7 +322,7 @@ impl Render for EditorView {
                                 .ghost()
                                 .small()
                                 .icon(Icon::empty().path("icons/close.svg"))
-                                .tooltip("Закрыть файл")
+                                .tooltip(t!("editor.close_file"))
                                 .on_click(
                                     cx.listener(|this, _, _window, cx| this.request_close(cx)),
                                 ),
@@ -338,7 +339,7 @@ impl Render for EditorView {
                         .border_b_1()
                         .border_color(theme.warning)
                         .child(
-                            Label::new("Файл содержит несохранённые изменения. Закрыть его?")
+                            Label::new(t!("editor.unsaved"))
                                 .text_sm(),
                         )
                         .child(
@@ -349,7 +350,7 @@ impl Render for EditorView {
                                     Button::new("editor-save-close")
                                         .primary()
                                         .small()
-                                        .label("Сохранить и закрыть")
+                                        .label(t!("editor.save_close"))
                                         .on_click(
                                             cx.listener(|this, _, _window, cx| this.save(true, cx)),
                                         ),
@@ -358,7 +359,7 @@ impl Render for EditorView {
                                     Button::new("editor-discard")
                                         .danger()
                                         .small()
-                                        .label("Закрыть без сохранения")
+                                        .label(t!("editor.discard"))
                                         .on_click(cx.listener(|_, _, _window, cx| {
                                             cx.emit(EditorEvent::Close)
                                         })),
@@ -367,7 +368,7 @@ impl Render for EditorView {
                                     Button::new("editor-keep")
                                         .ghost()
                                         .small()
-                                        .label("Отмена")
+                                        .label(t!("editor.cancel"))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.confirm_close = false;
                                             cx.notify();
@@ -396,16 +397,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn koncy_strok_opredelyayutsya_tolko_esli_oni_vse_odinakovye() {
+    fn line_endings_are_detected_only_if_all_are_identical() {
         assert!(is_crlf("a\r\nb\r\n"));
         assert!(!is_crlf("a\nb\n"));
-        assert!(!is_crlf("без переводов"));
+        assert!(!is_crlf("no line breaks"));
         assert!(!is_crlf("a\r\nb\n"));
         assert!(!is_crlf("a\rb\r\n"));
     }
 
     #[test]
-    fn yazyk_po_rasshireniyu() {
+    fn language_by_extension() {
         assert_eq!(language_of("nginx.CONF"), "conf");
         assert_eq!(language_of("config.json"), "json");
         assert_eq!(language_of("Makefile"), "makefile");

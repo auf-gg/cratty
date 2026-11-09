@@ -15,7 +15,7 @@ impl ProxyKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Socks5 => "SOCKS5",
-            Self::Unsupported => "неизвестный вид",
+            Self::Unsupported => "unknown kind",
         }
     }
 }
@@ -44,7 +44,7 @@ pub struct ProxyRecord {
 
 impl core::fmt::Debug for ProxyRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ProxyRecord(<скрыт>)")
+        f.write_str("ProxyRecord(<hidden>)")
     }
 }
 
@@ -90,9 +90,9 @@ impl ProxyRecord {
 
     pub fn summary(&self) -> String {
         let login = if self.user.is_empty() {
-            "без входа".to_string()
+            "no login".to_string()
         } else {
-            format!("вход {}", self.user)
+            format!("login {}", self.user)
         };
         format!("{} · {} · {}", self.kind.name(), self.address(), login)
     }
@@ -107,7 +107,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adres_ipv6_beretsya_v_skobki() {
+    fn ipv6_address_is_bracketed() {
         assert_eq!(
             ProxyRecord::new(ProxyKind::Socks5, "proxy.local", 1080).address(),
             "proxy.local:1080"
@@ -119,45 +119,45 @@ mod tests {
     }
 
     #[test]
-    fn zapis_perezhivaet_serializaciyu_vmeste_s_parolem() {
+    fn record_survives_serialization_with_password() {
         let mut proxy = ProxyRecord::new(ProxyKind::Socks5, "proxy.local", 1080);
-        proxy.label = "офис".into();
+        proxy.label = "office".into();
         proxy.user = "dan".into();
         proxy.set_password(Secret::new(b"hunter2".to_vec()));
 
-        let json = serde_json::to_string(&proxy).expect("сериализация");
-        let back: ProxyRecord = serde_json::from_str(&json).expect("разбор");
+        let json = serde_json::to_string(&proxy).expect("serialization");
+        let back: ProxyRecord = serde_json::from_str(&json).expect("parse");
         assert_eq!(back, proxy);
         assert_eq!(back.password().map(Secret::expose), Some(&b"hunter2"[..]));
     }
 
     #[test]
-    fn neznakomyy_vid_razbiraetsya_no_ne_goditsya() {
+    fn unknown_kind_parses_but_is_invalid() {
         let proxy: ProxyRecord =
             serde_json::from_str(r#"{"protocol":"http","host":"proxy.local","port":3128}"#)
-                .expect("разбор");
+                .expect("parse");
         assert_eq!(proxy.kind, ProxyKind::Unsupported);
         assert!(!proxy.is_usable());
     }
 
     #[test]
-    fn proksi_v_tele_zapisi_razbiraetsya_obratno() {
+    fn proxy_in_record_body_parses_back() {
         let body = crate::RecordBody::Proxy(ProxyRecord::new(ProxyKind::Socks5, "p", 1080));
-        let json = serde_json::to_string(&body).expect("сериализация");
+        let json = serde_json::to_string(&body).expect("serialization");
         assert_eq!(json.matches("\"kind\"").count(), 1, "{json}");
-        let back: crate::RecordBody = serde_json::from_str(&json).expect("разбор");
+        let back: crate::RecordBody = serde_json::from_str(&json).expect("parse");
         assert_eq!(back, body);
     }
 
     #[test]
-    fn port_po_umolchaniyu_socks() {
-        let proxy: ProxyRecord = serde_json::from_str(r#"{"host":"proxy.local"}"#).expect("разбор");
+    fn default_port_is_socks() {
+        let proxy: ProxyRecord = serde_json::from_str(r#"{"host":"proxy.local"}"#).expect("parse");
         assert_eq!(proxy.port, SOCKS_PORT);
         assert_eq!(proxy.kind, ProxyKind::Socks5);
     }
 
     #[test]
-    fn zapis_bez_adresa_negodna() {
+    fn record_without_address_is_invalid() {
         assert!(!ProxyRecord::default().is_usable());
         assert!(!ProxyRecord::new(ProxyKind::Socks5, "  ", 1080).is_usable());
         assert!(!ProxyRecord::new(ProxyKind::Socks5, "p", 0).is_usable());

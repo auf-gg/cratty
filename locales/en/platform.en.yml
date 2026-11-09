@@ -1,0 +1,7 @@
+platform:
+  core_dump_failed: "failed to disable memory dumps (RLIMIT_CORE)"
+  ptrace_failed: "failed to protect the process from ptrace (PR_SET_DUMPABLE)"
+  memlock_low: "keys are not pinned in memory: RLIMIT_MEMLOCK is too low, and pages may be swapped out"
+  working_set_low: "keys are not pinned in memory: working set quota is too low, and pages may be written to the page file"
+  dumps_unsupported: "memory dumps are not disabled on this platform"
+  pin_unsupported: "keys are not pinned in memory on this platform"

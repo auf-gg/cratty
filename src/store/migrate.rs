@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use rust_i18n::t;
 use anyhow::{Context, Result};
 use proto::{HostAuth, HostRecord};
 use serde::Deserialize;
@@ -112,7 +113,7 @@ pub fn read_legacy(path: &Path) -> Vec<HostRecord> {
             .filter_map(LegacyHost::into_record)
             .collect(),
         Err(error) => {
-            eprintln!("не разобрать {}: {error}", path.display());
+            eprintln!("failed to parse {}: {error}", path.display());
             Vec::new()
         }
     }
@@ -122,7 +123,7 @@ pub fn remove_legacy(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    std::fs::remove_file(path).with_context(|| format!("не удалить {}", path.display()))
+    std::fs::remove_file(path).with_context(|| t!("store.remove_failed", path = path.display()).into_owned())
 }
 
 #[cfg(test)]
@@ -132,16 +133,16 @@ mod tests {
     fn temp_file(name: &str, contents: &str) -> PathBuf {
         let unique = proto::DeviceId::generate().expect("CSPRNG");
         let path = std::env::temp_dir().join(format!("cratty-legacy-{name}-{unique}.json"));
-        std::fs::write(&path, contents).expect("запись");
+        std::fs::write(&path, contents).expect("write");
         path
     }
 
     #[test]
-    fn perenosit_polnyy_format() {
+    fn migrates_full_format() {
         let path = temp_file(
             "full",
             r#"{"hosts":[
-                {"label":"боевой","host":"prod.example.com","port":2222,
+                {"label":"production","host":"prod.example.com","port":2222,
                  "user":"root","auth":{"kind":"password"}},
                 {"label":"","host":"dev.example.com","port":22,
                  "user":"","auth":{"kind":"key","path":"/home/u/.ssh/id_ed25519"}}
@@ -150,7 +151,7 @@ mod tests {
 
         let hosts = read_legacy(&path);
         assert_eq!(hosts.len(), 2);
-        assert_eq!(hosts[0].label, "боевой");
+        assert_eq!(hosts[0].label, "production");
         assert_eq!(hosts[0].port, 2222);
         assert_eq!(hosts[0].auth, HostAuth::Password);
         assert_eq!(
@@ -164,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn perenosit_samyy_staryy_format() {
+    fn migrates_oldest_format() {
         let path = temp_file(
             "oldest",
             r#"{"hosts":[
@@ -191,10 +192,10 @@ mod tests {
     }
 
     #[test]
-    fn zapisi_bez_adresa_ne_perenosyatsya() {
+    fn records_without_address_are_not_migrated() {
         let path = temp_file(
             "empty",
-            r#"{"hosts":[{"label":"пусто"},{"host":"a.example"}]}"#,
+            r#"{"hosts":[{"label":"empty"},{"host":"a.example"}]}"#,
         );
         let hosts = read_legacy(&path);
         assert_eq!(hosts.len(), 1);
@@ -203,23 +204,23 @@ mod tests {
     }
 
     #[test]
-    fn otsutstvie_fayla_eto_ne_oshibka() {
-        assert!(read_legacy(Path::new("нет-такого-файла.json")).is_empty());
-        assert!(remove_legacy(Path::new("нет-такого-файла.json")).is_ok());
+    fn missing_file_is_not_an_error() {
+        assert!(read_legacy(Path::new("no-such-file.json")).is_empty());
+        assert!(remove_legacy(Path::new("no-such-file.json")).is_ok());
     }
 
     #[test]
-    fn ispochennyy_fayl_ne_meshaet() {
-        let path = temp_file("broken", "{это не json");
+    fn corrupted_file_does_not_interfere() {
+        let path = temp_file("broken", "{this is not json");
         assert!(read_legacy(&path).is_empty());
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn udalenie_ubiraet_fayl() {
+    fn removal_deletes_file() {
         let path = temp_file("remove", r#"{"hosts":[]}"#);
         assert!(path.exists());
-        remove_legacy(&path).expect("удаление");
+        remove_legacy(&path).expect("remove");
         assert!(!path.exists());
     }
 }

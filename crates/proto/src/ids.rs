@@ -20,15 +20,15 @@ macro_rules! id_type {
             pub fn parse(text: &str) -> Result<Self> {
                 if text.len() != ID_BYTES * 2 {
                     return Err(Error::Format(concat!(
-                        "длина идентификатора ",
+                        "length of identifier ",
                         stringify!($name)
                     )));
                 }
                 if !text.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
                     return Err(Error::Format(concat!(
-                        "идентификатор ",
+                        "identifier ",
                         stringify!($name),
-                        " не строчный hex"
+                        " is not lowercase hex"
                     )));
                 }
                 Ok(Self(text.to_owned()))
@@ -49,15 +49,15 @@ macro_rules! id_type {
 
 id_type!(
     VaultId,
-    "Идентификатор хранилища. Входит в AAD каждой записи."
+    "Vault identifier. Part of the AAD of every record."
 );
 id_type!(
     RecordId,
-    "Идентификатор записи. Он же имя файла и часть AAD."
+    "Record identifier. Also the file name and part of the AAD."
 );
 id_type!(
     DeviceId,
-    "Идентификатор устройства. Тайбрейкер при слиянии в M13."
+    "Device identifier. Tie-breaker when merging in M13."
 );
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identifikatory_ne_povtoryayutsya() {
+    fn ids_do_not_repeat() {
         let a = RecordId::generate().expect("CSPRNG");
         let b = RecordId::generate().expect("CSPRNG");
         assert_ne!(a, b);
@@ -83,13 +83,13 @@ mod tests {
     }
 
     #[test]
-    fn razbor_prinimaet_svoi_identifikatory() {
+    fn parsing_accepts_own_ids() {
         let id = VaultId::generate().expect("CSPRNG");
-        assert_eq!(VaultId::parse(id.as_str()).expect("разбор"), id);
+        assert_eq!(VaultId::parse(id.as_str()).expect("parse"), id);
     }
 
     #[test]
-    fn razbor_otvergaet_vsyo_ostalnoe() {
+    fn parsing_rejects_everything_else() {
         for bad in [
             "",
             "../../etc/passwd",
@@ -102,13 +102,13 @@ mod tests {
         ] {
             assert!(
                 RecordId::parse(bad).is_err(),
-                "идентификатор {bad:?} прошёл разбор"
+                "identifier {bad:?} passed parsing"
             );
         }
     }
 
     #[test]
-    fn hex_bez_verhnego_registra() {
+    fn hex_has_no_uppercase() {
         assert_eq!(to_hex(&[0x00, 0x0f, 0xa0, 0xff]), "000fa0ff");
     }
 }

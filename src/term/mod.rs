@@ -4,6 +4,7 @@ pub mod mouse;
 pub mod palette;
 pub mod predict;
 
+use rust_i18n::t;
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
@@ -318,7 +319,7 @@ impl Terminal {
             .is_none_or(|search| search.query != query)
         {
             let regex = RegexSearch::new(&format!("(?i){}", escape_regex(query)))
-                .map_err(|error| format!("не собрать поиск: {error}"))?;
+                .map_err(|error| t!("term.search_build_failed", error = error).into_owned())?;
             self.search = Some(Search {
                 query: query.to_owned(),
                 regex,
@@ -548,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn ssylka_osc8_i_tekstom() {
+    fn osc8_link_with_text() {
         let (mut term, _rx) = terminal(60, 5);
         term.advance(
             b"\x1b]8;;https://example.com/docs\x07docs\x1b]8;;\x07 and http://plain.org\r\n",
@@ -565,17 +566,17 @@ mod tests {
     }
 
     #[test]
-    fn osc52_kopiruet_no_ne_chitaet() {
+    fn osc52_copies_but_does_not_read() {
         let (mut term, mut rx) = terminal(40, 5);
-        term.advance(b"\x1b]52;c;0L/RgNC40LLQtdGC\x07");
-        assert_eq!(term.responder().take_clipboard().as_deref(), Some("привет"));
+        term.advance(b"\x1b]52;c;aMOpbGxv\x07");
+        assert_eq!(term.responder().take_clipboard().as_deref(), Some("héllo"));
 
         term.advance(b"\x1b]52;c;?\x07");
-        assert!(rx.try_recv().is_err(), "терминал ответил содержимым буфера");
+        assert!(rx.try_recv().is_err(), "the terminal replied with the clipboard contents");
     }
 
     #[test]
-    fn poisk_po_istorii() {
+    fn search_through_history() {
         let (mut term, _rx) = terminal(40, 5);
         for index in 0..30 {
             term.advance(format!("line {index}\r\n").as_bytes());
@@ -586,16 +587,16 @@ mod tests {
         }
         term.advance(b"NEEDLE two\r\n$ ");
 
-        let found = term.find("needle", true).expect("поиск").expect("найдено");
+        let found = term.find("needle", true).expect("search").expect("found");
         let snapshot = term.snapshot();
         let row = &snapshot.lines[found.start.0];
         assert!(row.text().starts_with("NEEDLE two"), "{:?}", row.text());
 
-        let found = term.find("needle", true).expect("поиск").expect("найдено");
+        let found = term.find("needle", true).expect("search").expect("found");
         let snapshot = term.snapshot();
         assert!(
             snapshot.display_offset > 0,
-            "экран не прокрутился к находке"
+            "the screen did not scroll to the match"
         );
         assert!(
             snapshot.lines[found.start.0]
@@ -604,12 +605,12 @@ mod tests {
         );
         assert_eq!(found.end.1 - found.start.1, 5);
 
-        assert_eq!(term.find("line (", true).expect("поиск"), None);
-        assert!(term.find("nothing here", true).expect("поиск").is_none());
+        assert_eq!(term.find("line (", true).expect("search"), None);
+        assert!(term.find("nothing here", true).expect("search").is_none());
     }
 
     #[test]
-    fn programma_vklyuchaet_i_vyklyuchaet_mysh() {
+    fn program_enables_and_disables_mouse() {
         let (mut term, _rx) = terminal(80, 24);
         let click = mouse::Event {
             button: mouse::Button::Left,
@@ -649,7 +650,7 @@ mod tests {
     fn cursor_follows_the_text() {
         let (mut term, _rx) = terminal(20, 3);
         term.advance(b"abc");
-        let cursor = term.snapshot().cursor.expect("курсор должен быть виден");
+        let cursor = term.snapshot().cursor.expect("the cursor should be visible");
         assert_eq!((cursor.line, cursor.column), (0, 3));
     }
 
@@ -709,7 +710,7 @@ mod tests {
         term.advance(b"one\r\ntwo\r\nthree");
         term.advance(b"\x1b[2J\x1b[H");
         assert_eq!(lines(&term), vec!["", "", ""]);
-        let cursor = term.snapshot().cursor.expect("курсор виден");
+        let cursor = term.snapshot().cursor.expect("cursor visible");
         assert_eq!((cursor.line, cursor.column), (0, 0));
     }
 
@@ -730,8 +731,8 @@ mod tests {
     #[test]
     fn wide_chars_do_not_produce_a_phantom_cell() {
         let (mut term, _rx) = terminal(10, 1);
-        term.advance("шире→漢字".as_bytes());
-        assert_eq!(lines(&term)[0], "шире→漢字");
+        term.advance("wide→漢字".as_bytes());
+        assert_eq!(lines(&term)[0], "wide→漢字");
     }
 
     #[test]
@@ -767,10 +768,10 @@ mod tests {
         term.advance(b"\x1b[3;5H");
         term.advance(b"\x1b[6n");
 
-        let reply = rx.next().await.expect("ответ не отправлен");
+        let reply = rx.next().await.expect("no reply was sent");
         match reply {
             ToSsh::Input(bytes) => assert_eq!(&bytes[..], b"\x1b[3;5R"),
-            other => panic!("ожидали Input, получили {other:?}"),
+            other => panic!("expected Input, got {other:?}"),
         }
     }
 
@@ -779,22 +780,22 @@ mod tests {
         let (mut term, mut rx) = terminal(80, 24);
         term.advance(b"\x1b[c");
 
-        let reply = rx.next().await.expect("ответ не отправлен");
+        let reply = rx.next().await.expect("no reply was sent");
         match reply {
             ToSsh::Input(bytes) => assert!(
                 bytes.starts_with(b"\x1b[?"),
-                "неожиданный ответ на DA: {:?}",
+                "unexpected reply to DA: {:?}",
                 String::from_utf8_lossy(&bytes)
             ),
-            other => panic!("ожидали Input, получили {other:?}"),
+            other => panic!("expected Input, got {other:?}"),
         }
     }
 
     #[test]
     fn osc_title_reaches_the_responder() {
         let (mut term, _rx) = terminal(20, 1);
-        term.advance(b"\x1b]0;\xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82\x07");
-        assert_eq!(term.responder().title().as_deref(), Some("привет"));
+        term.advance(b"\x1b]0;h\xc3\xa9llo\x07");
+        assert_eq!(term.responder().title().as_deref(), Some("héllo"));
     }
 
     #[test]

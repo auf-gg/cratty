@@ -9,9 +9,9 @@ use super::AppView;
 type Step = Box<dyn Fn(&mut AppView, &mut Window, &mut Context<AppView>) + 'static>;
 
 impl AppView {
-    pub(super) fn section(title: &'static str, cx: &App) -> Div {
+    pub(super) fn section(title: impl Into<SharedString>, cx: &App) -> Div {
         v_flex().px_5().py_4().gap_2().child(
-            Label::new(title)
+            Label::new(title.into())
                 .text_sm()
                 .font_semibold()
                 .text_color(cx.theme().foreground),
@@ -63,7 +63,7 @@ impl AppView {
             .into_any_element()
     }
 
-    pub(super) fn popover(title: &'static str, width: Pixels, cx: &App) -> Div {
+    pub(super) fn popover(title: impl Into<SharedString>, width: Pixels, cx: &App) -> Div {
         let theme = cx.theme();
         v_flex()
             .absolute()
@@ -81,7 +81,7 @@ impl AppView {
             .shadow_lg()
             .child(
                 div().px_2().pt_1().pb_1().child(
-                    Label::new(title)
+                    Label::new(title.into())
                         .text_xs()
                         .font_semibold()
                         .text_color(theme.muted_foreground),
@@ -90,7 +90,7 @@ impl AppView {
     }
 
     pub(super) fn drawer_group(
-        title: &'static str,
+        title: impl Into<SharedString>,
         body: impl IntoElement,
         cx: &App,
     ) -> AnyElement {
@@ -99,7 +99,7 @@ impl AppView {
             .pt_3()
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(Label::new(title).text_sm().font_semibold())
+            .child(Label::new(title.into()).text_sm().font_semibold())
             .child(body)
             .into_any_element()
     }

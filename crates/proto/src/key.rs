@@ -22,7 +22,7 @@ pub struct KeyRecord {
 
 impl core::fmt::Debug for KeyRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("KeyRecord(<скрыт>)")
+        f.write_str("KeyRecord(<hidden>)")
     }
 }
 
@@ -45,14 +45,14 @@ impl KeyRecord {
         self.secrets.get(SecretPurpose::PrivateKey)
     }
 
-    /// Исходный файл ключа, если ключ скопирован с диска для восстановления.
+    /// Original key file, if the key was copied from disk for restoration.
     pub fn key_file(&self) -> Option<&Secret> {
         self.secrets.get(SecretPurpose::KeyFile)
     }
 
-    /// Копия файла ключа: исходные байты и путь `source`, по которому его
-    /// восстанавливать. Расшифрованный ключ для агента — только если файл не
-    /// зашифрован (`private`).
+    /// Copy of the key file: the original bytes and the `source` path where it is
+    /// to be restored. A decrypted key for the agent exists only if the file is not
+    /// encrypted (`private`).
     pub fn from_file(
         source: String,
         file: Secret,
@@ -85,7 +85,7 @@ impl KeyRecord {
                 return candidate.clone();
             }
         }
-        "ключ без имени".to_owned()
+        "unnamed key".to_owned()
     }
 
     pub fn matches(&self, query: &str) -> bool {
@@ -126,26 +126,26 @@ mod tests {
     }
 
     #[test]
-    fn zapis_perezhivaet_serializaciyu() {
+    fn record_survives_serialization() {
         let record = key();
-        let json = serde_json::to_vec(&record).expect("сериализация");
-        let restored: KeyRecord = serde_json::from_slice(&json).expect("разбор");
+        let json = serde_json::to_vec(&record).expect("serialization");
+        let restored: KeyRecord = serde_json::from_slice(&json).expect("parse");
         assert_eq!(restored, record);
         assert_eq!(
-            restored.private().expect("приватная часть").expose(),
+            restored.private().expect("private part").expose(),
             b"PRIVATE"
         );
     }
 
     #[test]
-    fn debug_nichego_ne_pechataet() {
+    fn debug_prints_nothing() {
         let text = format!("{:?}", key());
-        assert_eq!(text, "KeyRecord(<скрыт>)");
+        assert_eq!(text, "KeyRecord(<hidden>)");
         assert!(!text.contains("dan@laptop"));
     }
 
     #[test]
-    fn nepolnaya_zapis_ne_goditsya() {
+    fn incomplete_record_is_invalid() {
         assert!(key().is_usable());
 
         let mut without_public = key();
@@ -158,22 +158,22 @@ mod tests {
     }
 
     #[test]
-    fn zagolovok_beret_pervoe_neputoe() {
+    fn title_takes_first_non_empty() {
         let mut record = key();
         assert_eq!(record.title(), "dan@laptop");
-        record.label = "рабочий".into();
-        assert_eq!(record.title(), "рабочий");
+        record.label = "work".into();
+        assert_eq!(record.title(), "work");
 
         let empty = KeyRecord::default();
-        assert_eq!(empty.title(), "ключ без имени");
+        assert_eq!(empty.title(), "unnamed key");
     }
 
     #[test]
-    fn poisk_idet_po_imeni_kommentariyu_i_otpechatku() {
+    fn search_matches_name_comment_and_fingerprint() {
         let record = key();
         assert!(record.matches(""));
         assert!(record.matches("LAPTOP"));
         assert!(record.matches("sha256:01"));
-        assert!(!record.matches("сервер"));
+        assert!(!record.matches("zzz-nomatch"));
     }
 }

@@ -1,0 +1,9 @@
+updater:
+  request_failed: "无法请求最新版本"
+  cut_off: "GitHub 响应被截断"
+  unexpected: "GitHub 返回了无法识别的响应"
+  temp_failed: "无法创建临时文件夹"
+  download_failed: "无法下载更新"
+  save_failed: "无法保存更新"
+  interrupted: "下载已中断"
+  launch_failed: "无法启动安装程序"

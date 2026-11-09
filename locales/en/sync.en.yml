@@ -1,0 +1,5 @@
+sync:
+  folder_error: "Sync folder: %{error}"
+  locked_during: "The vault was locked during sync."
+  received: "Entries received: %{applied}, local newer: %{kept}"
+  and_more: "%{first} (and %{count} more)"

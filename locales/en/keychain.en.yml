@@ -1,0 +1,6 @@
+keychain:
+  unavailable: "OS secret store unavailable: %{error}"
+  write_failed: "failed to write key to OS store: %{error}"
+  bad_length: "the OS store holds an entry that is not 32 bytes"
+  read_failed: "failed to read key from OS store: %{error}"
+  remove_failed: "failed to remove key from OS store: %{error}"

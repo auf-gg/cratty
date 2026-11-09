@@ -9,6 +9,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{AnyElement, Context, Entity, SharedString, Window, div, prelude::*, px};
 use proto::{RecordId, SnippetRecord};
+use rust_i18n::t;
 
 use super::{AppView, ROW_TITLE_CHARS, TabKind, shorten};
 
@@ -24,11 +25,11 @@ impl SnippetForm {
     pub fn new(window: &mut Window, cx: &mut Context<AppView>) -> Self {
         Self {
             label: cx
-                .new(|cx| InputState::new(window, cx).placeholder("Например, Перезапуск сервиса")),
+                .new(|cx| InputState::new(window, cx).placeholder(t!("snippets.name_placeholder"))),
             command: cx.new(|cx| {
                 TextareaState::new(window, cx)
                     .auto_grow(3, 12)
-                    .placeholder("Команда (допускается несколько строк)")
+                    .placeholder(t!("snippets.command_placeholder"))
             }),
             run: true,
             editing: None,
@@ -83,7 +84,7 @@ impl AppView {
             run: self.snippet_form.run,
         };
         if !snippet.is_usable() {
-            self.error = Some("Укажите команду.".into());
+            self.error = Some(t!("snippets.err_command").to_string().into());
             cx.notify();
             return;
         }
@@ -138,12 +139,12 @@ impl AppView {
         let snippets = self.current_unlocked().map(|unlocked| unlocked.snippets());
         let body: AnyElement =
             match snippets {
-                None => Label::new("Хранилище заблокировано. Сниппеты недоступны.")
+                None => Label::new(t!("snippets.locked"))
                     .text_sm()
                     .text_color(muted)
                     .into_any_element(),
                 Some(list) if list.is_empty() => {
-                    Label::new("Сниппеты не добавлены. Создайте их в разделе «Сниппеты».")
+                    Label::new(t!("snippets.popover_empty"))
                         .text_sm()
                         .text_color(muted)
                         .into_any_element()
@@ -181,9 +182,9 @@ impl AppView {
                                     )
                                     .child(
                                         Label::new(if run {
-                                            "Выполнить"
+                                            t!("snippets.run")
                                         } else {
-                                            "Вставить"
+                                            t!("snippets.insert")
                                         })
                                         .text_xs()
                                         .text_color(if run { theme.warning } else { muted }),
@@ -201,7 +202,7 @@ impl AppView {
                     .into_any_element(),
             };
         Some(
-            Self::popover("Сниппеты", px(340.), cx)
+            Self::popover(t!("snippets.title"), px(340.), cx)
                 .child(body)
                 .into_any_element(),
         )
@@ -221,12 +222,12 @@ impl AppView {
             .pb_3()
             .justify_between()
             .items_center()
-            .child(Label::new("Сниппеты").text_xl().font_semibold())
+            .child(Label::new(t!("snippets.title")).text_xl().font_semibold())
             .child(
                 Button::new("new-snippet")
                     .primary()
                     .icon(Icon::new(IconName::Plus))
-                    .label("Новый сниппет")
+                    .label(t!("snippets.new"))
                     .on_click(cx.listener(|this, _, window, cx| this.snippet_new(window, cx))),
             );
 
@@ -277,9 +278,9 @@ impl AppView {
                     )
                     .child(
                         Label::new(if run {
-                            "Выполняется сразу"
+                            t!("snippets.runs_immediately")
                         } else {
-                            "Только вставка"
+                            t!("snippets.insert_only")
                         })
                         .text_xs()
                         .text_color(muted),
@@ -312,7 +313,7 @@ impl AppView {
                             .pb_6()
                             .gap_3()
                             .child(
-                                Label::new("Сохранённые команды для быстрого ввода в терминале через кнопку «Сниппеты».")
+                                Label::new(t!("snippets.intro"))
                                     .text_sm()
                                     .text_color(muted),
                             )
@@ -323,9 +324,9 @@ impl AppView {
                                         .items_center()
                                         .gap_2()
                                         .child(Icon::empty().path("icons/square-terminal.svg").size(px(36.)).text_color(muted))
-                                        .child(Label::new("Сниппеты не добавлены"))
+                                        .child(Label::new(t!("snippets.empty_title")))
                                         .child(
-                                            Label::new("Нажмите «Новый сниппет», чтобы сохранить команду.")
+                                            Label::new(t!("snippets.empty_hint"))
                                                 .text_sm()
                                                 .text_color(muted),
                                         ),
@@ -371,9 +372,9 @@ impl AppView {
                             .border_color(theme.border)
                             .child(
                                 Label::new(if editing {
-                                    "Изменить сниппет"
+                                    t!("snippets.edit_title")
                                 } else {
-                                    "Новый сниппет"
+                                    t!("snippets.new_title")
                                 })
                                 .text_lg()
                                 .font_semibold(),
@@ -400,13 +401,13 @@ impl AppView {
                             .child(
                                 v_flex()
                                     .gap_1()
-                                    .child(Self::field_label("Название", muted))
+                                    .child(Self::field_label(t!("snippets.name"), muted))
                                     .child(Input::new(&form.label)),
                             )
                             .child(
                                 v_flex()
                                     .gap_1()
-                                    .child(Self::field_label("Команда", muted))
+                                    .child(Self::field_label(t!("snippets.command"), muted))
                                     .child(
                                         div().font_family(mono).child(Textarea::new(&form.command)),
                                     ),
@@ -419,8 +420,8 @@ impl AppView {
                                             .ghost()
                                             .xsmall()
                                             .selected(run)
-                                            .label("Выполнить сразу")
-                                            .tooltip("Команда выполняется сразу после вставки")
+                                            .label(t!("snippets.run_immediately"))
+                                            .tooltip(t!("snippets.run_tooltip"))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.snippet_form.run = true;
                                                 cx.notify();
@@ -431,8 +432,8 @@ impl AppView {
                                             .ghost()
                                             .xsmall()
                                             .selected(!run)
-                                            .label("Только вставить")
-                                            .tooltip("Команда вставляется без выполнения")
+                                            .label(t!("snippets.insert_only"))
+                                            .tooltip(t!("snippets.insert_tooltip"))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.snippet_form.run = false;
                                                 cx.notify();
@@ -455,7 +456,7 @@ impl AppView {
                             .child(
                                 Button::new("snippet-save")
                                     .primary()
-                                    .label("Сохранить")
+                                    .label(t!("snippets.save"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.snippet_save(window, cx)
                                     })),
@@ -466,7 +467,7 @@ impl AppView {
                                     Button::new("snippet-remove")
                                         .danger()
                                         .ghost()
-                                        .label("Удалить")
+                                        .label(t!("snippets.delete"))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.snippet_remove(window, cx)
                                         })),

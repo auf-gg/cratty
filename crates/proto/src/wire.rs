@@ -19,7 +19,7 @@ impl Writer {
     }
 
     pub fn bytes(&mut self, value: &[u8]) -> &mut Self {
-        let len = u32::try_from(value.len()).expect("поле длиннее 4 ГиБ недостижимо");
+        let len = u32::try_from(value.len()).expect("field longer than 4 GiB is unreachable");
         self.0.extend_from_slice(&len.to_le_bytes());
         self.0.extend_from_slice(value);
         self
@@ -48,41 +48,41 @@ impl<'a> Reader<'a> {
         let end = self
             .position
             .checked_add(len)
-            .ok_or(Error::Format("переполнение длины"))?;
+            .ok_or(Error::Format("length overflow"))?;
         let slice = self
             .bytes
             .get(self.position..end)
-            .ok_or(Error::Format("данные обрезаны"))?;
+            .ok_or(Error::Format("data truncated"))?;
         self.position = end;
         Ok(slice)
     }
 
     pub fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().expect("срез 4 байта"),
+            self.take(4)?.try_into().expect("4-byte slice"),
         ))
     }
 
     pub fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(
-            self.take(8)?.try_into().expect("срез 8 байт"),
+            self.take(8)?.try_into().expect("8-byte slice"),
         ))
     }
 
     pub fn bytes(&mut self) -> Result<&'a [u8]> {
-        let len = usize::try_from(self.u32()?).map_err(|_| Error::Format("длина не в usize"))?;
+        let len = usize::try_from(self.u32()?).map_err(|_| Error::Format("length not in usize"))?;
         self.take(len)
     }
 
     pub fn str(&mut self) -> Result<&'a str> {
-        core::str::from_utf8(self.bytes()?).map_err(|_| Error::Format("поле не UTF-8"))
+        core::str::from_utf8(self.bytes()?).map_err(|_| Error::Format("field is not UTF-8"))
     }
 
     pub fn finish(self) -> Result<()> {
         if self.position == self.bytes.len() {
             Ok(())
         } else {
-            Err(Error::Format("в файле остались лишние байты"))
+            Err(Error::Format("extra bytes left in the file"))
         }
     }
 }
@@ -90,7 +90,7 @@ impl<'a> Reader<'a> {
 pub fn take_magic<'a>(bytes: &'a [u8], magic: &[u8]) -> Result<Reader<'a>> {
     let mut reader = Reader::new(bytes);
     if reader.take(magic.len())? != magic {
-        return Err(Error::Format("не файл этого приложения"));
+        return Err(Error::Format("not a file of this application"));
     }
     Ok(reader)
 }
@@ -100,23 +100,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zapis_i_chtenie_sovpadayut() {
+    fn write_and_read_match() {
         let mut writer = Writer::new();
-        writer.u32(1234).u64(99).str("привет").bytes(&[1, 2, 3]);
+        writer.u32(1234).u64(99).str("hello").bytes(&[1, 2, 3]);
         let encoded = writer.finish();
 
         let mut reader = Reader::new(&encoded);
         assert_eq!(reader.u32().expect("u32"), 1234);
         assert_eq!(reader.u64().expect("u64"), 99);
-        assert_eq!(reader.str().expect("str"), "привет");
+        assert_eq!(reader.str().expect("str"), "hello");
         assert_eq!(reader.bytes().expect("bytes"), &[1, 2, 3]);
-        reader.finish().expect("байты кончились");
+        reader.finish().expect("bytes ran out");
     }
 
     #[test]
-    fn obrez_na_lyuboy_pozicii_daet_oshibku() {
+    fn truncation_at_any_position_errors() {
         let mut writer = Writer::new();
-        writer.u32(1).str("хост").u64(5);
+        writer.u32(1).str("host").u64(5);
         let encoded = writer.finish();
 
         for cut in 0..encoded.len() {
@@ -127,12 +127,12 @@ mod tests {
                 reader.u64()?;
                 reader.finish()
             })();
-            assert!(parsed.is_err(), "обрез до {cut} байт прошёл разбор");
+            assert!(parsed.is_err(), "truncation to {cut} bytes passed parsing");
         }
     }
 
     #[test]
-    fn lishniy_hvost_ne_prohodit() {
+    fn extra_trailing_bytes_are_rejected() {
         let mut writer = Writer::new();
         writer.u32(1);
         let mut encoded = writer.finish();
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn ne_utf8_ne_prohodit() {
+    fn non_utf8_is_rejected() {
         let mut writer = Writer::new();
         writer.bytes(&[0xFF, 0xFE]);
         let encoded = writer.finish();
@@ -152,14 +152,14 @@ mod tests {
     }
 
     #[test]
-    fn vranyo_pro_dlinu_ne_ronyaet() {
+    fn lying_length_does_not_crash() {
         let mut encoded = u32::MAX.to_le_bytes().to_vec();
         encoded.push(1);
         assert!(Reader::new(&encoded).bytes().is_err());
     }
 
     #[test]
-    fn magiya_proveryaetsya() {
+    fn magic_is_checked() {
         let magic = b"RSREC\x01";
         let mut bytes = magic.to_vec();
         bytes.push(42);

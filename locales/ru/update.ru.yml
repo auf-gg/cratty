@@ -1,0 +1,7 @@
+update:
+  downloading: "Загрузка… %{percent}%"
+  install: "Обновить и перезапустить"
+  available: "Доступна версия %{version}"
+  installed: "Установлена %{version}. Открытые сеансы будут закрыты."
+  failed: "Не удалось обновить: %{error}"
+  later: "Позже"

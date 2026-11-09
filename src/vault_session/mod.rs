@@ -3,6 +3,7 @@ pub mod autolock;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use rust_i18n::t;
 use anyhow::{Context, Result, anyhow, bail};
 use proto::{
     Account, DeviceId, HostRecord, KeyRecord, ProxyRecord, Record, RecordBody, RecordId, VaultId,
@@ -16,9 +17,15 @@ use crate::keychain::KeyStash;
 use crate::store::{VaultStore, migrate, now_ms};
 use autolock::{AutoLock, Verdict};
 
-const PASSWORD_SLOT_LABEL: &str = "мастер-пароль";
-const RECOVERY_SLOT_LABEL: &str = "код восстановления";
-const OS_KEY_SLOT_LABEL: &str = "ключ этого компьютера";
+fn password_slot_label() -> String {
+    t!("vault.slot_password").into_owned()
+}
+fn recovery_slot_label() -> String {
+    t!("vault.slot_recovery").into_owned()
+}
+fn os_key_slot_label() -> String {
+    t!("vault.slot_os_key").into_owned()
+}
 
 pub enum VaultState {
     Absent,
@@ -100,11 +107,11 @@ pub struct SnippetEntry {
     pub snippet: proto::SnippetRecord,
 }
 
-/// Группа хостов, как её показывать: имя и значок.
+/// Host group as it is shown: name and icon.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostGroup {
     pub name: String,
-    /// Пусто — значок по умолчанию.
+    /// Empty — the default icon.
     pub icon: String,
 }
 
@@ -137,24 +144,17 @@ pub(crate) fn resolve_via_in(
         .enumerate()
         .map(|(index, id)| {
             let item = find(id).ok_or_else(|| {
-                format!(
-                    "звена №{} из цепочки нет в хранилище — его удалили или оно ещё \
-                     не приехало синхронизацией. Подключение без него не выполняется",
-                    index + 1
-                )
+                t!("vault.chain_link_missing", index = index + 1).into_owned()
             })?;
             if let ViaItem::Proxy(proxy) = &item
                 && !proxy.is_usable()
             {
-                return Err(format!(
-                    "прокси «{}» из цепочки не годится к подключению: {}",
-                    proxy.title(),
-                    if proxy.kind == proto::ProxyKind::Unsupported {
-                        "его вид не знаком этой версии приложения"
-                    } else {
-                        "не указан адрес или порт"
-                    }
-                ));
+                let title = proxy.title();
+                return Err(if proxy.kind == proto::ProxyKind::Unsupported {
+                    t!("vault.chain_proxy_unknown_kind", title = title).into_owned()
+                } else {
+                    t!("vault.chain_proxy_no_address", title = title).into_owned()
+                });
             }
             Ok(item)
         })
@@ -233,7 +233,7 @@ impl RecordSet {
             .filter(|entry| entry.host.is_usable())
             .collect();
 
-        // Сначала расставленные вручную по месту, за ними остальные — свежие выше.
+        // Manually placed ones first, in position, then the rest — newer on top.
         hosts.sort_by(|left, right| {
             let (a, b) = (left.host.order, right.host.order);
             (a == 0)
@@ -323,7 +323,7 @@ impl RecordSet {
         device_only: bool,
     ) -> Result<RecordId> {
         if !host.is_usable() {
-            bail!("у записи нет адреса");
+            bail!("{}", t!("vault.entry_no_address"));
         }
         let existing = self.find_by_target(&host.target()).map(|entry| entry.id);
         self.upsert(store, existing, Some(device_only), RecordBody::Host(host))
@@ -343,7 +343,7 @@ impl RecordSet {
                 let entry = self
                     .entries
                     .get(&id)
-                    .ok_or_else(|| anyhow!("запись исчезла из хранилища"))?;
+                    .ok_or_else(|| anyhow!("{}", t!("vault.entry_disappeared")))?;
                 Record {
                     id,
                     rev: entry.rev.saturating_add(1),
@@ -369,7 +369,7 @@ impl RecordSet {
         let entry = self
             .entries
             .get(id)
-            .ok_or_else(|| anyhow!("такой записи нет"))?;
+            .ok_or_else(|| anyhow!("{}", t!("vault.entry_not_found")))?;
         if entry.body.is_tombstone() {
             return Ok(());
         }
@@ -389,7 +389,7 @@ impl RecordSet {
     fn write(&mut self, store: &VaultStore, record: Record) -> Result<RecordId> {
         let sealed = record
             .seal(&self.record_key, &self.vault_id, self.key_gen)
-            .map_err(|error| anyhow!("не зашифровать запись: {error}"))?;
+            .map_err(|error| anyhow!("{}", t!("vault.encrypt_failed", error = error)))?;
         store.write_record(&sealed)?;
 
         let id = record.id.clone();
@@ -537,7 +537,7 @@ impl Unlocked {
 
     pub fn upsert_key(&mut self, store: &VaultStore, key: KeyRecord) -> Result<RecordId> {
         if !key.is_usable() {
-            bail!("у ключа нет публичной или приватной части");
+            bail!("{}", t!("vault.key_no_parts"));
         }
 
         let existing = self.find_key_by_public(&key.public).map(|entry| entry.id);
@@ -545,8 +545,8 @@ impl Unlocked {
             .upsert(store, existing, None, RecordBody::Key(key))
     }
 
-    /// Ключи, скопированные с диска (с исходным файлом), включая зашифрованные,
-    /// которых нет в списке агента.
+    /// Keys copied from disk (with the original file), including encrypted ones,
+    /// that are not in the agent's list.
     pub fn key_backups(&self) -> Vec<StoredKey> {
         self.records
             .entries
@@ -563,15 +563,15 @@ impl Unlocked {
             .collect()
     }
 
-    /// Сохраняет копию файла ключа. Запись ищется по исходному пути; если файл
-    /// не изменился, ничего не пишет и возвращает `None`.
+    /// Saves a copy of a key file. The entry is looked up by its original path; if the file
+    /// has not changed, nothing is written and `None` is returned.
     pub fn backup_key_file(
         &mut self,
         store: &VaultStore,
         key: KeyRecord,
     ) -> Result<Option<RecordId>> {
         let Some(file) = key.key_file().filter(|file| !file.is_empty()) else {
-            bail!("нет содержимого файла ключа");
+            bail!("{}", t!("vault.key_file_empty"));
         };
         let existing = self
             .key_backups()
@@ -600,10 +600,7 @@ impl Unlocked {
         let users = self.hosts_via(id);
         if !users.is_empty() {
             let names: Vec<String> = users.iter().map(|entry| entry.host.title()).collect();
-            bail!(
-                "через этот хост подключаются {}. Сначала уберите его из их цепочек",
-                names.join(", ")
-            );
+            bail!("{}", t!("vault.host_has_dependents", names = names.join(", ")));
         }
         self.records.remove(store, id)
     }
@@ -624,8 +621,8 @@ impl Unlocked {
         self.records.snippets()
     }
 
-    /// Скачанный значок по ключу (`selfhst:github`) и ревизия его записи:
-    /// по ревизии интерфейс понимает, что картинку пора пересобрать.
+    /// A downloaded icon by key (`selfhst:github`) and the revision of its entry:
+    /// the UI uses the revision to know the image needs rebuilding.
     pub fn icon(&self, key: &str) -> Option<(u64, &proto::IconRecord)> {
         self.records.entries.values().find_map(|entry| {
             entry
@@ -636,11 +633,11 @@ impl Unlocked {
         })
     }
 
-    /// Кладёт значок в хранилище (заменяя прежний с тем же ключом), чтобы он
-    /// был виден без сети и приехал на другие устройства.
+    /// Puts the icon into the vault (replacing the previous one with the same key) so it
+    /// is visible offline and reaches other devices.
     pub fn store_icon(&mut self, store: &VaultStore, icon: proto::IconRecord) -> Result<()> {
         if !icon.is_complete() {
-            bail!("у значка нет картинки для одной из тем");
+            bail!("{}", t!("vault.icon_no_image"));
         }
         let key = icon.key();
         let existing = self.records.entries.iter().find_map(|(id, entry)| {
@@ -663,7 +660,7 @@ impl Unlocked {
         }
     }
 
-    /// Ссылается ли на значок хоть один хост или группа.
+    /// Whether at least one host or group references the icon.
     pub fn icon_in_use(&self, key: &str) -> bool {
         self.records
             .entries
@@ -675,8 +672,8 @@ impl Unlocked {
             })
     }
 
-    /// Удаляет скачанный значок, если на него больше никто не ссылается:
-    /// в хранилище лежат только используемые значки.
+    /// Removes a downloaded icon if nothing references it any more:
+    /// only icons in use are kept in the vault.
     pub fn release_icon(&mut self, store: &VaultStore, key: &str) -> Result<()> {
         if key.is_empty() || self.icon_in_use(key) {
             return Ok(());
@@ -694,7 +691,7 @@ impl Unlocked {
         Ok(())
     }
 
-    /// Записи оформления групп: id и содержимое.
+    /// Group appearance entries: id and contents.
     fn group_records(&self) -> Vec<(RecordId, proto::GroupRecord)> {
         self.records
             .entries
@@ -708,8 +705,8 @@ impl Unlocked {
             .collect()
     }
 
-    /// Группы, в которых есть хосты, по алфавиту. Имя пишется так, как в записи
-    /// оформления, а без неё — как у первого хоста группы.
+    /// Groups that contain hosts, alphabetically. The name is spelled as in the appearance
+    /// entry, or, without one, as on the group's first host.
     pub fn groups(&self) -> Vec<HostGroup> {
         let records = self.group_records();
         let mut groups: BTreeMap<String, HostGroup> = BTreeMap::new();
@@ -736,8 +733,8 @@ impl Unlocked {
         groups.into_values().collect()
     }
 
-    /// Имя группы для сохранения хоста: введённое с клавиатуры совпадает с уже
-    /// существующей группой без учёта регистра — берётся её написание.
+    /// Group name for saving a host: if what was typed matches an existing
+    /// group case-insensitively, the existing spelling is used.
     pub fn group_name(&self, typed: &str) -> String {
         let typed = typed.trim();
         if typed.is_empty() {
@@ -750,12 +747,12 @@ impl Unlocked {
             .unwrap_or_else(|| typed.to_owned())
     }
 
-    /// Переносит хост в группу `group`; пустое имя выносит его из группы.
+    /// Moves a host into group `group`; an empty name takes it out of the group.
     ///
-    /// Без `anchor` хост встаёт в конец группы (своя группа — ничего не
-    /// меняется). С `anchor` он занимает место этого хоста: ниже него, если
-    /// тащили сверху вниз внутри группы, иначе выше. Места всей группы
-    /// при этом нумеруются заново.
+    /// Without `anchor` the host goes to the end of the group (its own group — nothing
+    /// changes). With `anchor` it takes that host's place: below it if
+    /// dragged top to bottom within the group, otherwise above. Positions of the whole group
+    /// are renumbered in the process.
     pub fn move_host(
         &mut self,
         store: &VaultStore,
@@ -765,7 +762,7 @@ impl Unlocked {
     ) -> Result<()> {
         let entry = self
             .find_by_target(target)
-            .ok_or_else(|| anyhow!("хост {target} не найден"))?;
+            .ok_or_else(|| anyhow!("{}", t!("vault.host_not_found", target = target)))?;
         let group = group.trim();
         let key = proto::GroupRecord::key(group);
         let same_group = proto::GroupRecord::key(&entry.host.group) == key;
@@ -791,10 +788,10 @@ impl Unlocked {
         let to = members
             .iter()
             .position(|member| member.host.target() == anchor)
-            .ok_or_else(|| anyhow!("хост {anchor} не в группе «{group}»"))?;
-        // Сверху вниз: после удаления хоста якорь сдвигается на один вверх, и
-        // `to` указывает место сразу под ним. Снизу или из другой группы `to` —
-        // место над якорем.
+            .ok_or_else(|| anyhow!("{}", t!("vault.host_not_in_group", anchor = anchor, group = group)))?;
+        // Top to bottom: after the host is removed the anchor shifts up by one, and
+        // `to` points to the spot right below it. From below or from another group `to` is
+        // the spot above the anchor.
         if let Some(from) = members.iter().position(|member| member.id == entry.id) {
             members.remove(from);
         }
@@ -817,8 +814,8 @@ impl Unlocked {
         Ok(())
     }
 
-    /// Переименовывает группу `old` и задаёт ей значок. Новое имя уже занято
-    /// другой группой — группы сливаются.
+    /// Renames group `old` and sets its icon. If the new name is already taken
+    /// by another group, the groups merge.
     pub fn edit_group(
         &mut self,
         store: &VaultStore,
@@ -828,15 +825,15 @@ impl Unlocked {
     ) -> Result<()> {
         let name = name.trim();
         if name.is_empty() {
-            bail!("у группы должно быть имя");
+            bail!("{}", t!("vault.group_name_required"));
         }
         if old.trim().is_empty() {
-            bail!("хосты без группы переименовать нельзя");
+            bail!("{}", t!("vault.group_ungrouped_rename"));
         }
         let keys = [proto::GroupRecord::key(old), proto::GroupRecord::key(name)];
 
-        // Хосты обеих групп — и переименованной, и той, с которой она слилась, —
-        // получают одно написание.
+        // Hosts of both groups — the renamed one and the one it merged with —
+        // get the same spelling.
         for entry in self.hosts() {
             if !keys.contains(&proto::GroupRecord::key(&entry.host.group))
                 || entry.host.group == name
@@ -866,7 +863,7 @@ impl Unlocked {
         Ok(())
     }
 
-    /// Имя хранилища из его зашифрованной записи; `None`, если её ещё нет.
+    /// Vault name from its encrypted entry; `None` if there is none yet.
     pub fn vault_name(&self) -> Option<String> {
         let id = RecordId::parse(proto::VAULT_META_ID).ok()?;
         self.records
@@ -878,11 +875,11 @@ impl Unlocked {
             .filter(|name| !name.trim().is_empty())
     }
 
-    /// Записывает имя хранилища; оно уходит на другие устройства с синхронизацией.
+    /// Writes the vault name; it goes to other devices with sync.
     pub fn set_vault_name(&mut self, store: &VaultStore, name: &str) -> Result<()> {
         let name = name.trim();
         if name.is_empty() {
-            bail!("имя хранилища не может быть пустым");
+            bail!("{}", t!("vault.name_empty"));
         }
         if self.vault_name().as_deref() == Some(name) {
             return Ok(());
@@ -907,7 +904,7 @@ impl Unlocked {
         snippet: proto::SnippetRecord,
     ) -> Result<RecordId> {
         if !snippet.is_usable() {
-            bail!("у сниппета нет команды");
+            bail!("{}", t!("vault.snippet_no_command"));
         }
         if let Some(id) = &existing
             && self
@@ -917,7 +914,7 @@ impl Unlocked {
                 .and_then(|entry| entry.body.as_snippet())
                 .is_none()
         {
-            bail!("сниппет исчез из хранилища — возможно, его удалили на другом устройстве");
+            bail!("{}", t!("vault.snippet_gone"));
         }
         self.records
             .upsert(store, existing, None, RecordBody::Snippet(snippet))
@@ -934,15 +931,15 @@ impl Unlocked {
         proxy: ProxyRecord,
     ) -> Result<RecordId> {
         if proxy.host.trim().is_empty() {
-            bail!("у прокси нет адреса");
+            bail!("{}", t!("vault.proxy_no_address"));
         }
         if proxy.port == 0 {
-            bail!("у прокси не указан порт");
+            bail!("{}", t!("vault.proxy_no_port"));
         }
         if let Some(id) = &existing
             && self.records.proxy(id).is_none()
         {
-            bail!("прокси исчез из хранилища — возможно, его удалили на другом устройстве");
+            bail!("{}", t!("vault.proxy_gone"));
         }
         self.records
             .upsert(store, existing, None, RecordBody::Proxy(proxy))
@@ -959,10 +956,7 @@ impl Unlocked {
         let users = self.hosts_via(id);
         if !users.is_empty() {
             let names: Vec<String> = users.iter().map(|entry| entry.host.title()).collect();
-            bail!(
-                "прокси стоит в цепочке у {}. Сначала уберите его оттуда",
-                names.join(", ")
-            );
+            bail!("{}", t!("vault.proxy_in_chain", names = names.join(", ")));
         }
         self.records.remove(store, id)
     }
@@ -1004,7 +998,7 @@ pub struct NewVault {
 
 pub fn prepare_new_vault(password: &[u8], target: Duration) -> Result<NewVault> {
     let params = vault::calibrate(target, &vault::CalibrationLimits::default())
-        .map_err(|error| anyhow!("не подобрать параметры Argon2id: {error}"))?
+        .map_err(|error| anyhow!("{}", t!("vault.argon_params_failed", error = error)))?
         .params;
     prepare_new_vault_with_params(password, params)
 }
@@ -1013,12 +1007,12 @@ pub fn prepare_new_vault_with_params(password: &[u8], params: Argon2idParams) ->
     let data_key = DataKey::generate().map_err(|error| anyhow!("{error}"))?;
 
     let (password_slot, _) =
-        WrapSlot::from_password(&data_key, password, params, PASSWORD_SLOT_LABEL)
-            .map_err(|error| anyhow!("не создать обёртку на пароле: {error}"))?;
+        WrapSlot::from_password(&data_key, password, params, &password_slot_label())
+            .map_err(|error| anyhow!("{}", t!("vault.password_wrap_failed", error = error)))?;
 
     let code = RecoveryCode::generate().map_err(|error| anyhow!("{error}"))?;
-    let recovery_slot = WrapSlot::from_recovery_code(&data_key, &code, RECOVERY_SLOT_LABEL)
-        .map_err(|error| anyhow!("не создать обёртку на коде восстановления: {error}"))?;
+    let recovery_slot = WrapSlot::from_recovery_code(&data_key, &code, &recovery_slot_label())
+        .map_err(|error| anyhow!("{}", t!("vault.recovery_wrap_failed", error = error)))?;
 
     let mut slots = SlotSet::new();
     slots.push(password_slot);
@@ -1037,8 +1031,8 @@ pub fn prepare_new_vault_with_params(password: &[u8], params: Argon2idParams) ->
     })
 }
 
-/// Тяжёлая часть смены пароля, для фонового потока: проверяет текущий пароль
-/// и заворачивает ключ данных под новый. Результат ставится
+/// The heavy part of a password change, for a background thread: verifies the current password
+/// and wraps the data key under the new one. The result is put
 /// [`VaultSession::replace_password_slot`].
 pub fn prepare_password_change(
     account: &Account,
@@ -1047,12 +1041,12 @@ pub fn prepare_password_change(
     target: Duration,
 ) -> Result<WrapSlot> {
     let data_key =
-        derive_from_password(account, current).map_err(|_| anyhow!("текущий пароль неверный"))?;
+        derive_from_password(account, current).map_err(|_| anyhow!("{}", t!("vault.current_password_wrong")))?;
     let params = vault::calibrate(target, &vault::CalibrationLimits::default())
-        .map_err(|error| anyhow!("не подобрать параметры Argon2id: {error}"))?
+        .map_err(|error| anyhow!("{}", t!("vault.argon_params_failed", error = error)))?
         .params;
-    let (slot, _) = WrapSlot::from_password(&data_key, new, params, PASSWORD_SLOT_LABEL)
-        .map_err(|error| anyhow!("не создать обёртку на новом пароле: {error}"))?;
+    let (slot, _) = WrapSlot::from_password(&data_key, new, params, &password_slot_label())
+        .map_err(|error| anyhow!("{}", t!("vault.new_password_wrap_failed", error = error)))?;
     Ok(slot)
 }
 
@@ -1061,10 +1055,10 @@ pub fn derive_from_password(account: &Account, password: &[u8]) -> Result<DataKe
         .slots
         .iter_kind(SlotKind::Password)
         .next()
-        .ok_or_else(|| anyhow!("в хранилище нет обёртки на пароле"))?;
+        .ok_or_else(|| anyhow!("{}", t!("vault.no_password_wrap")))?;
     slot.unlock_with_password(password)
         .map(|(data_key, _auth_hash)| data_key)
-        .map_err(|_| anyhow!("неверный пароль"))
+        .map_err(|_| anyhow!("{}", t!("vault.wrong_password")))
 }
 
 pub fn derive_from_recovery_code(account: &Account, code: &RecoveryCode) -> Result<DataKey> {
@@ -1072,15 +1066,15 @@ pub fn derive_from_recovery_code(account: &Account, code: &RecoveryCode) -> Resu
         .slots
         .iter_kind(SlotKind::RecoveryCode)
         .next()
-        .ok_or_else(|| anyhow!("в хранилище нет обёртки на коде восстановления"))?;
+        .ok_or_else(|| anyhow!("{}", t!("vault.no_recovery_wrap")))?;
     slot.unlock_with_recovery_code(code)
-        .map_err(|_| anyhow!("код восстановления не подошёл"))
+        .map_err(|_| anyhow!("{}", t!("vault.recovery_code_mismatch")))
 }
 
 pub fn derive_from_os_key(account: &Account, stash: &dyn KeyStash) -> Result<DataKey> {
     let key = stash
         .get(account.vault_id.as_str())?
-        .ok_or_else(|| anyhow!("в хранилище секретов ОС нет ключа от этого хранилища"))?;
+        .ok_or_else(|| anyhow!("{}", t!("vault.no_os_key")))?;
     unlock_with_os_key_material(account, &key)
 }
 
@@ -1093,12 +1087,9 @@ fn unlock_with_os_key_material(account: &Account, key: &Key32) -> Result<DataKey
         }
     }
     if seen {
-        bail!(
-            "ключ из хранилища ОС не подошёл к обёртке — похоже, запись осталась \
-             от другого хранилища"
-        );
+        bail!("{}", t!("vault.os_key_mismatch"));
     }
-    bail!("в хранилище нет обёртки на ключе операционной системы");
+    bail!("{}", t!("vault.no_os_wrap"));
 }
 
 fn os_key_slot_id(account: &Account) -> Option<[u8; SLOT_ID_LEN]> {
@@ -1175,15 +1166,15 @@ impl VaultSession {
     pub fn locked_account(&self) -> Result<Account> {
         match &self.state {
             VaultState::Locked { account, .. } => Ok((**account).clone()),
-            VaultState::Unlocked(_) => bail!("хранилище уже открыто"),
+            VaultState::Unlocked(_) => bail!("{}", t!("vault.already_unlocked")),
             VaultState::Broken { reason } => bail!("{reason}"),
-            VaultState::Absent => bail!("хранилище ещё не создано"),
+            VaultState::Absent => bail!("{}", t!("vault.not_created")),
         }
     }
 
     pub fn install(&mut self, prepared: NewVault, import: Vec<HostRecord>) -> Result<RecoveryCode> {
         if self.store.exists() {
-            bail!("хранилище уже создано");
+            bail!("{}", t!("vault.already_created"));
         }
 
         let NewVault {
@@ -1201,7 +1192,7 @@ impl VaultSession {
 
         self.store
             .read_account()
-            .context("хранилище записано, но не перечитывается")?;
+            .context(t!("vault.written_unreadable").into_owned())?;
 
         self.state = VaultState::Unlocked(unlocked);
         Ok(code)
@@ -1245,22 +1236,22 @@ impl VaultSession {
             VaultState::Locked { account, .. } => Ok(Some((**account).clone())),
             VaultState::Unlocked(_) => Ok(None),
             VaultState::Broken { reason } => bail!("{reason}"),
-            VaultState::Absent => bail!("хранилище ещё не создано"),
+            VaultState::Absent => bail!("{}", t!("vault.not_created")),
         }
     }
 
     pub fn change_password(&mut self, new_password: &[u8], params: Argon2idParams) -> Result<()> {
         let Some(unlocked) = self.unlocked() else {
-            bail!("хранилище закрыто");
+            bail!("{}", t!("vault.locked"));
         };
 
         let (new_slot, _) = WrapSlot::from_password(
             &unlocked.data_key,
             new_password,
             params,
-            PASSWORD_SLOT_LABEL,
+            &password_slot_label(),
         )
-        .map_err(|error| anyhow!("не создать обёртку на новом пароле: {error}"))?;
+        .map_err(|error| anyhow!("{}", t!("vault.new_password_wrap_failed", error = error)))?;
         self.replace_password_slot(new_slot)
     }
 
@@ -1268,8 +1259,8 @@ impl VaultSession {
         self.store.read_account()
     }
 
-    /// Ставит обёртку на новом пароле вместо прежних. Обёртки на коде
-    /// восстановления и на ключе ОС не трогает.
+    /// Puts the new password wrap in place of the previous ones. Wraps on the recovery code
+    /// and the OS key are left untouched.
     pub fn replace_password_slot(&mut self, new_slot: WrapSlot) -> Result<()> {
         let mut account = self.store.read_account()?;
         let old: Vec<_> = account
@@ -1283,12 +1274,12 @@ impl VaultSession {
             account
                 .slots
                 .remove(&id)
-                .map_err(|error| anyhow!("не убрать старую обёртку: {error}"))?;
+                .map_err(|error| anyhow!("{}", t!("vault.remove_old_wrap_failed", error = error)))?;
         }
         self.store.write_account(&account)
     }
 
-    /// Хранилище перенесли в другой каталог: дальше читаем и пишем там.
+    /// The vault was moved to another directory: read and write there from now on.
     pub fn relocate(&mut self, root: std::path::PathBuf) {
         self.store = VaultStore::new(root);
     }
@@ -1299,12 +1290,12 @@ impl VaultSession {
 
     pub fn enable_os_key(&mut self, stash: &dyn KeyStash) -> Result<()> {
         let Some(unlocked) = self.unlocked() else {
-            bail!("хранилище закрыто");
+            bail!("{}", t!("vault.locked"));
         };
 
         let key = Key32::generate().map_err(|error| anyhow!("{error}"))?;
-        let slot = WrapSlot::from_external_key(&unlocked.data_key, &key, OS_KEY_SLOT_LABEL)
-            .map_err(|error| anyhow!("не создать обёртку на ключе ОС: {error}"))?;
+        let slot = WrapSlot::from_external_key(&unlocked.data_key, &key, &os_key_slot_label())
+            .map_err(|error| anyhow!("{}", t!("vault.os_wrap_failed", error = error)))?;
 
         let mut account = self.store.read_account()?;
         let old: Vec<_> = account
@@ -1317,7 +1308,7 @@ impl VaultSession {
             account
                 .slots
                 .remove(&id)
-                .map_err(|error| anyhow!("не убрать прежнюю обёртку на ключе ОС: {error}"))?;
+                .map_err(|error| anyhow!("{}", t!("vault.remove_prev_os_wrap_failed", error = error)))?;
         }
 
         stash.put(account.vault_id.as_str(), &key)?;
@@ -1342,16 +1333,13 @@ impl VaultSession {
             account
                 .slots
                 .remove(&id)
-                .map_err(|error| anyhow!("не убрать обёртку на ключе ОС: {error}"))?;
+                .map_err(|error| anyhow!("{}", t!("vault.remove_os_wrap_failed", error = error)))?;
         }
 
         self.store.write_account(&account)?;
         self.os_key_slot = None;
 
-        stash.delete(account.vault_id.as_str()).context(
-            "обёртка убрана, хранилище этим ключом больше не открыть, но сама \
-             запись осталась в хранилище секретов ОС — её можно удалить вручную",
-        )
+        stash.delete(account.vault_id.as_str()).context(t!("vault.os_wrap_removed_entry_remains").into_owned())
     }
 
     pub fn unlock_with_os_key(&mut self, stash: &dyn KeyStash) -> Result<()> {
@@ -1414,14 +1402,13 @@ impl VaultSession {
         self.state = match account {
             Some(account) => VaultState::Locked { account, notice },
             None if self.store.exists() => VaultState::Broken {
-                reason: "файл аккаунта пропал или испортился, пока хранилище было открыто"
-                    .to_owned(),
+                reason: t!("vault.account_vanished").into_owned(),
             },
             None => VaultState::Absent,
         };
     }
 
-    pub fn tick(&mut self, now: Instant, wall_ms: u64) -> Option<&'static str> {
+    pub fn tick(&mut self, now: Instant, wall_ms: u64) -> Option<String> {
         let verdict = match &mut self.state {
             VaultState::Unlocked(unlocked) => {
                 unlocked
@@ -1432,8 +1419,8 @@ impl VaultSession {
         };
 
         if verdict.locks() {
-            let reason = verdict.reason();
-            self.lock(reason.map(str::to_owned));
+            let reason = verdict.reason().map(std::borrow::Cow::into_owned);
+            self.lock(reason.clone());
             reason
         } else {
             None
@@ -1485,7 +1472,7 @@ mod tests {
     }
 
     fn params() -> Argon2idParams {
-        Argon2idParams::new(1024, 1, 1, [0x71; vault::SALT_LEN]).expect("параметры")
+        Argon2idParams::new(1024, 1, 1, [0x71; vault::SALT_LEN]).expect("params")
     }
 
     fn session(name: &str) -> VaultSession {
@@ -1497,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn pervyy_zapusk_hranilishcha_net() {
+    fn first_run_has_no_vault() {
         let session = session("absent");
         assert!(session.state().is_absent());
         assert!(session.unlocked().is_none());
@@ -1505,11 +1492,11 @@ mod tests {
     }
 
     #[test]
-    fn sozdanie_otkryvaet_hranilishche_i_vydaet_kod() {
+    fn creation_opens_vault_and_issues_code() {
         let mut session = session("create");
         let code = session
-            .create_for_tests("мастер-пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("master password".as_bytes(), params(), Vec::new())
+            .expect("create");
 
         assert!(session.state().is_unlocked());
         assert!(session.store().exists());
@@ -1523,28 +1510,28 @@ mod tests {
     }
 
     #[test]
-    fn hosty_perezhivayut_zakrytie_i_otkrytie() {
+    fn hosts_survive_locking_and_unlocking() {
         let mut session = session("hosts");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
 
         let store_root = session.store().root().to_path_buf();
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let mut host = HostRecord::new("prod-01.example.com");
-        host.label = "боевой".into();
+        host.label = "production".into();
         host.user = "root".into();
         unlocked
             .upsert_host(&VaultStore::new(store_root.clone()), host.clone())
-            .expect("запись");
+            .expect("write");
 
         session.lock(None);
         assert!(!session.state().is_unlocked());
 
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("разблокировка");
-        let hosts = session.unlocked().expect("открыто").hosts();
+            .unlock_with_password("password".as_bytes())
+            .expect("unlock");
+        let hosts = session.unlocked().expect("unlocked").hosts();
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].host, host);
 
@@ -1552,51 +1539,51 @@ mod tests {
     }
 
     #[test]
-    fn neverny_parol_ne_otkryvaet_i_ne_teryaet_hranilishche() {
+    fn wrong_password_does_not_open_and_does_not_lose_the_vault() {
         let mut session = session("wrong-password");
         session
-            .create_for_tests("правильный".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("correct".as_bytes(), params(), Vec::new())
+            .expect("create");
         session.lock(None);
 
         let error = session
-            .unlock_with_password("неправильный".as_bytes())
-            .expect_err("должно отказать")
+            .unlock_with_password("incorrect".as_bytes())
+            .expect_err("should refuse")
             .to_string();
-        assert_eq!(error, "неверный пароль");
+        assert_eq!(error, "wrong password");
         assert!(!session.state().is_unlocked());
 
         session
-            .unlock_with_password("правильный".as_bytes())
-            .expect("разблокировка");
+            .unlock_with_password("correct".as_bytes())
+            .expect("unlock");
 
         cleanup(&session);
     }
 
     #[test]
-    fn kod_vosstanovleniya_otkryvaet_zabytoe_hranilishche() {
+    fn recovery_code_opens_forgotten_vault() {
         let mut session = session("recovery");
         let code = session
-            .create_for_tests("забытый".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("forgotten".as_bytes(), params(), Vec::new())
+            .expect("create");
         session.lock(None);
 
         session
             .unlock_with_recovery_code(&code)
-            .expect("разблокировка кодом");
+            .expect("unlock with code");
         assert!(session.state().is_unlocked());
 
         cleanup(&session);
     }
 
     #[test]
-    fn hranilishche_otkryvaetsya_frazoy_iz_slov_bip39_kak_ona_vvedena() {
+    fn vault_opens_with_bip39_phrase_as_entered() {
         use vault::secrecy::ExposeSecret;
 
         let mut session = session("mnemonic");
         let code = session
-            .create_for_tests("забытый".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("forgotten".as_bytes(), params(), Vec::new())
+            .expect("create");
         let words = std::str::from_utf8(code.format_for_user().expose_secret())
             .expect("ASCII")
             .to_uppercase()
@@ -1604,146 +1591,146 @@ mod tests {
         assert_eq!(words.split_whitespace().count(), 24);
         session.lock(None);
 
-        let typed = RecoveryCode::parse(words.as_bytes()).expect("разбор");
+        let typed = RecoveryCode::parse(words.as_bytes()).expect("parse");
         session
             .unlock_with_recovery_code(&typed)
-            .expect("разблокировка фразой");
+            .expect("unlock with phrase");
         assert!(session.state().is_unlocked());
 
         cleanup(&session);
     }
 
     #[test]
-    fn povtornoe_sohranenie_hosta_ne_plodit_zapisi() {
+    fn saving_host_again_does_not_multiply_records() {
         let mut session = session("upsert");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let mut host = HostRecord::new("example.com");
         host.user = "root".into();
-        let first = unlocked.upsert_host(&store, host.clone()).expect("запись");
+        let first = unlocked.upsert_host(&store, host.clone()).expect("write");
 
-        host.label = "переименован".into();
-        let second = unlocked.upsert_host(&store, host.clone()).expect("правка");
+        host.label = "renamed".into();
+        let second = unlocked.upsert_host(&store, host.clone()).expect("edit");
 
-        assert_eq!(first, second, "тот же адрес — та же запись");
+        assert_eq!(first, second, "same address — same entry");
         let hosts = unlocked.hosts();
         assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].host.label, "переименован");
+        assert_eq!(hosts[0].host.label, "renamed");
 
         cleanup(&session);
     }
 
     #[test]
-    fn udalenie_stavit_nadgrobie_i_perezhivaet_perezapusk() {
+    fn deletion_leaves_tombstone_and_survives_restart() {
         let mut session = session("remove");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let id = unlocked
             .upsert_host(&store, HostRecord::new("example.com"))
-            .expect("запись");
-        unlocked.remove_host(&store, &id).expect("удаление");
+            .expect("write");
+        unlocked.remove_host(&store, &id).expect("remove");
         assert!(unlocked.hosts().is_empty());
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("разблокировка");
+            .unlock_with_password("password".as_bytes())
+            .expect("unlock");
         assert!(
-            session.unlocked().expect("открыто").hosts().is_empty(),
-            "удалённый хост воскрес после перезапуска"
+            session.unlocked().expect("unlocked").hosts().is_empty(),
+            "a deleted host came back after restart"
         );
 
         cleanup(&session);
     }
 
     #[test]
-    fn smena_parolya_ne_trogaet_zapisi() {
+    fn password_change_does_not_touch_records() {
         let mut session = session("change-password");
         session
-            .create_for_tests("старый".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("old".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
         session
             .unlocked_mut()
-            .expect("открыто")
+            .expect("unlocked")
             .upsert_host(&store, HostRecord::new("example.com"))
-            .expect("запись");
+            .expect("write");
 
         let new_params =
-            Argon2idParams::new(1024, 1, 1, [0x72; vault::SALT_LEN]).expect("параметры");
+            Argon2idParams::new(1024, 1, 1, [0x72; vault::SALT_LEN]).expect("params");
         session
-            .change_password("новый".as_bytes(), new_params)
-            .expect("смена пароля");
+            .change_password("new".as_bytes(), new_params)
+            .expect("change password");
 
         session.lock(None);
-        assert!(session.unlock_with_password("старый".as_bytes()).is_err());
+        assert!(session.unlock_with_password("old".as_bytes()).is_err());
         session
-            .unlock_with_password("новый".as_bytes())
-            .expect("новый пароль");
-        assert_eq!(session.unlocked().expect("открыто").hosts().len(), 1);
+            .unlock_with_password("new".as_bytes())
+            .expect("new password");
+        assert_eq!(session.unlocked().expect("unlocked").hosts().len(), 1);
 
         cleanup(&session);
     }
 
     #[test]
-    fn smena_parolya_v_dva_shaga_proveryaet_tekushchiy() {
+    fn two_step_password_change_checks_current_one() {
         let mut session = session("change-password-prepared");
         session
-            .create_for_tests("старый".as_bytes(), params(), Vec::new())
-            .expect("создание");
-        let account = session.read_account().expect("аккаунт");
+            .create_for_tests("old".as_bytes(), params(), Vec::new())
+            .expect("create");
+        let account = session.read_account().expect("account");
         let fast = Duration::from_millis(1);
 
         assert!(
-            prepare_password_change(&account, "чужой".as_bytes(), "новый".as_bytes(), fast)
+            prepare_password_change(&account, "foreign".as_bytes(), "new".as_bytes(), fast)
                 .is_err(),
-            "сменили пароль, не зная текущего"
+            "changed the password without knowing the current one"
         );
 
-        let slot = prepare_password_change(&account, "старый".as_bytes(), "новый".as_bytes(), fast)
-            .expect("подготовка");
-        session.replace_password_slot(slot).expect("замена");
+        let slot = prepare_password_change(&account, "old".as_bytes(), "new".as_bytes(), fast)
+            .expect("prepare");
+        session.replace_password_slot(slot).expect("replace");
 
         session.lock(None);
-        assert!(session.unlock_with_password("старый".as_bytes()).is_err());
+        assert!(session.unlock_with_password("old".as_bytes()).is_err());
         session
-            .unlock_with_password("новый".as_bytes())
-            .expect("новый пароль");
+            .unlock_with_password("new".as_bytes())
+            .expect("new password");
 
         cleanup(&session);
     }
 
     #[test]
-    fn import_iz_starogo_spiska_popadaet_v_hranilishche() {
+    fn import_from_old_list_lands_in_vault() {
         let mut session = session("import");
         let mut first = HostRecord::new("prod.example.com");
-        first.label = "боевой".into();
+        first.label = "production".into();
         let second = HostRecord::new("dev.example.com");
 
         session
-            .create_for_tests("пароль".as_bytes(), params(), vec![first, second])
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), vec![first, second])
+            .expect("create");
 
-        let hosts = session.unlocked().expect("открыто").hosts();
+        let hosts = session.unlocked().expect("unlocked").hosts();
         assert_eq!(hosts.len(), 2);
 
         cleanup(&session);
     }
 
     #[test]
-    fn avtolok_zakryvaet_i_klyuchi_uhodyat() {
+    fn autolock_locks_and_keys_go_away() {
         let mut session = session("autolock");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
 
         let now = Instant::now();
         assert!(session.tick(now, now_ms()).is_none());
@@ -1751,8 +1738,8 @@ mod tests {
         let later = now + Duration::from_secs(3600);
         let reason = session
             .tick(later, now_ms() + 3_600_000)
-            .expect("закрылось");
-        assert!(reason.contains("хранилище закрыто"));
+            .expect("locked");
+        assert!(reason.contains("vault locked"));
         assert!(!session.state().is_unlocked());
         assert!(session.unlocked().is_none());
 
@@ -1760,58 +1747,58 @@ mod tests {
     }
 
     #[test]
-    fn zakrytie_ne_teryaet_zapisi() {
+    fn locking_does_not_lose_records() {
         let mut session = session("lock-keeps");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
         session
             .unlocked_mut()
-            .expect("открыто")
+            .expect("unlocked")
             .upsert_host(&store, HostRecord::new("example.com"))
-            .expect("запись");
+            .expect("write");
 
-        session.lock(Some("проверка".into()));
+        session.lock(Some("check".into()));
         match session.state() {
             VaultState::Locked { notice, .. } => {
-                assert_eq!(notice.as_deref(), Some("проверка"))
+                assert_eq!(notice.as_deref(), Some("check"))
             }
-            _ => panic!("хранилище должно быть закрыто"),
+            _ => panic!("the vault must be locked"),
         }
 
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("разблокировка");
-        assert_eq!(session.unlocked().expect("открыто").hosts().len(), 1);
+            .unlock_with_password("password".as_bytes())
+            .expect("unlock");
+        assert_eq!(session.unlocked().expect("unlocked").hosts().len(), 1);
 
         cleanup(&session);
     }
 
     #[test]
-    fn parol_perezhivaet_zakrytie_i_otkrytie() {
+    fn password_survives_locking_and_unlocking() {
         let mut session = session("password");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
         let mut host = HostRecord::new("prod.example.com");
         host.set_password(proto::Secret::new(b"hunter2".to_vec()));
         session
             .unlocked_mut()
-            .expect("открыто")
+            .expect("unlocked")
             .upsert_host(&store, host)
-            .expect("запись");
+            .expect("write");
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("разблокировка");
+            .unlock_with_password("password".as_bytes())
+            .expect("unlock");
 
-        let hosts = session.unlocked().expect("открыто").hosts();
+        let hosts = session.unlocked().expect("unlocked").hosts();
         assert_eq!(
-            hosts[0].host.password().expect("пароль").expose(),
+            hosts[0].host.password().expect("password").expose(),
             b"hunter2"
         );
 
@@ -1819,93 +1806,93 @@ mod tests {
     }
 
     #[test]
-    fn pravka_zapisi_ne_teryaet_parol() {
+    fn record_edit_does_not_lose_password() {
         let mut session = session("keep-password");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let mut host = HostRecord::new("example.com");
         host.set_password(proto::Secret::new(b"hunter2".to_vec()));
-        unlocked.upsert_host(&store, host.clone()).expect("запись");
+        unlocked.upsert_host(&store, host.clone()).expect("write");
 
-        host.label = "переименован".into();
-        unlocked.upsert_host(&store, host).expect("правка");
+        host.label = "renamed".into();
+        unlocked.upsert_host(&store, host).expect("edit");
 
         let hosts = unlocked.hosts();
         assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].host.label, "переименован");
-        assert!(hosts[0].host.has_password(), "пароль потерялся при правке");
+        assert_eq!(hosts[0].host.label, "renamed");
+        assert!(hosts[0].host.has_password(), "the password was lost on edit");
 
         cleanup(&session);
     }
 
     #[test]
-    fn parol_mozhno_zabyt() {
+    fn password_can_be_forgotten() {
         let mut session = session("forget-password");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let mut host = HostRecord::new("example.com");
         host.set_password(proto::Secret::new(b"hunter2".to_vec()));
-        unlocked.upsert_host(&store, host.clone()).expect("запись");
+        unlocked.upsert_host(&store, host.clone()).expect("write");
 
         host.forget_password();
-        unlocked.upsert_host(&store, host).expect("правка");
+        unlocked.upsert_host(&store, host).expect("edit");
         assert!(!unlocked.hosts()[0].host.has_password());
 
         cleanup(&session);
     }
 
     #[test]
-    fn privyazka_k_ustroystvu_upravlyaet_sinhronizaciey() {
+    fn device_binding_controls_sync() {
         let mut session = session("device-only");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let free = unlocked
             .upsert_host(&store, HostRecord::new("shared.example.com"))
-            .expect("запись");
+            .expect("write");
         let bound = unlocked
             .upsert_host_with(&store, HostRecord::new("local.example.com"), true)
-            .expect("запись");
+            .expect("write");
 
         let syncable = unlocked.syncable_ids();
         assert!(syncable.contains(&free));
         assert!(
             !syncable.contains(&bound),
-            "привязанная к устройству запись не должна уходить в синхронизацию"
+            "a device-bound entry must not go into sync"
         );
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("разблокировка");
+            .unlock_with_password("password".as_bytes())
+            .expect("unlock");
 
-        let unlocked = session.unlocked().expect("открыто");
+        let unlocked = session.unlocked().expect("unlocked");
         assert_eq!(unlocked.syncable_ids(), vec![free]);
         let local = unlocked
             .find_by_target("local.example.com")
-            .expect("запись на месте");
-        assert!(local.device_only, "привязка потерялась после перезапуска");
+            .expect("record in place");
+        assert!(local.device_only, "the binding was lost after restart");
 
         cleanup(&session);
     }
 
     #[test]
-    fn kopiya_fayla_klyucha_ne_dubliruetsya_i_perezhivaet_perezapusk() {
+    fn key_file_copy_is_not_duplicated_and_survives_restart() {
         let mut session = session("key-backup");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
         let backup = |bytes: &[u8]| {
             KeyRecord::from_file(
@@ -1916,144 +1903,144 @@ mod tests {
             )
         };
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let first = unlocked
             .backup_key_file(&store, backup(b"KEY-1"))
-            .expect("копия")
-            .expect("записано");
+            .expect("copy")
+            .expect("written");
         assert_eq!(
             unlocked
                 .backup_key_file(&store, backup(b"KEY-1"))
-                .expect("повтор"),
+                .expect("repeat"),
             None,
-            "неизменный файл переписан"
+            "an unchanged file was rewritten"
         );
         let second = unlocked
             .backup_key_file(&store, backup(b"KEY-2"))
-            .expect("обновление")
-            .expect("записано");
-        assert_eq!(first, second, "изменённый файл создал вторую запись");
+            .expect("update")
+            .expect("written");
+        assert_eq!(first, second, "a changed file created a second entry");
         assert!(
             unlocked.keys().is_empty(),
-            "зашифрованная копия не для агента"
+            "an encrypted copy is not for the agent"
         );
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("разблокировка");
-        let backups = session.unlocked().expect("открыто").key_backups();
+            .unlock_with_password("password".as_bytes())
+            .expect("unlock");
+        let backups = session.unlocked().expect("unlocked").key_backups();
         assert_eq!(backups.len(), 1);
-        assert_eq!(backups[0].key.key_file().expect("файл").expose(), b"KEY-2");
+        assert_eq!(backups[0].key.key_file().expect("file").expose(), b"KEY-2");
         assert_eq!(backups[0].key.source, "~/.ssh/id_test");
 
         cleanup(&session);
     }
 
     #[test]
-    fn imya_hranilishcha_hranitsya_i_uhodit_v_sinhronizaciyu() {
+    fn vault_name_is_stored_and_goes_to_sync() {
         let mut session = session("vault-name");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         assert_eq!(unlocked.vault_name(), None);
         assert!(unlocked.set_vault_name(&store, "   ").is_err());
-        unlocked.set_vault_name(&store, "Работа").expect("имя");
+        unlocked.set_vault_name(&store, "Work").expect("name");
         unlocked
-            .set_vault_name(&store, " Работа 2 ")
-            .expect("переименование");
-        assert_eq!(unlocked.vault_name().as_deref(), Some("Работа 2"));
+            .set_vault_name(&store, " Work 2 ")
+            .expect("rename");
+        assert_eq!(unlocked.vault_name().as_deref(), Some("Work 2"));
 
         let meta = RecordId::parse(proto::VAULT_META_ID).expect("id");
         assert!(
             unlocked.syncable_ids().contains(&meta),
-            "имя должно уходить на другие устройства"
+            "the name must go to other devices"
         );
         assert!(
             unlocked.hosts().is_empty() && unlocked.snippets().is_empty(),
-            "запись имени не должна попадать в списки"
+            "the name entry must not appear in the lists"
         );
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("разблокировка");
+            .unlock_with_password("password".as_bytes())
+            .expect("unlock");
         assert_eq!(
-            session.unlocked().expect("открыто").vault_name().as_deref(),
-            Some("Работа 2")
+            session.unlocked().expect("unlocked").vault_name().as_deref(),
+            Some("Work 2")
         );
 
         cleanup(&session);
     }
 
     #[test]
-    fn pravka_ne_snimaet_privyazku_k_ustroystvu() {
+    fn edit_does_not_remove_device_binding() {
         let mut session = session("device-only-edit");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let mut host = HostRecord::new("local.example.com");
         let id = unlocked
             .upsert_host_with(&store, host.clone(), true)
-            .expect("запись");
+            .expect("write");
 
-        host.label = "переименован".into();
-        unlocked.upsert_host(&store, host).expect("правка");
+        host.label = "renamed".into();
+        unlocked.upsert_host(&store, host).expect("edit");
 
         assert!(
             !unlocked.syncable_ids().contains(&id),
-            "переименование отправило запись на сервер"
+            "renaming sent the entry to the server"
         );
 
         cleanup(&session);
     }
 
     #[test]
-    fn parolya_net_v_fayle_zapisi() {
+    fn password_is_absent_from_record_file() {
         let mut session = session("password-on-disk");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
         let mut host = HostRecord::new("example.com");
         host.set_password(proto::Secret::new(b"hunter2".to_vec()));
         session
             .unlocked_mut()
-            .expect("открыто")
+            .expect("unlocked")
             .upsert_host(&store, host)
-            .expect("запись");
+            .expect("write");
 
         let dir = session.store().root().join(proto::RECORDS_DIR);
         let mut checked = 0;
-        for entry in std::fs::read_dir(&dir).expect("каталог записей") {
-            let bytes = std::fs::read(entry.expect("файл").path()).expect("чтение");
+        for entry in std::fs::read_dir(&dir).expect("records directory") {
+            let bytes = std::fs::read(entry.expect("file").path()).expect("read");
             assert!(
                 !bytes.windows(7).any(|window| window == b"hunter2"),
-                "пароль нашёлся в файле записи"
+                "the password was found in the record file"
             );
             checked += 1;
         }
-        assert!(checked > 0, "записи не нашлись — тест ничего не проверил");
+        assert!(checked > 0, "no records found — the test checked nothing");
 
         cleanup(&session);
     }
 
     #[test]
-    fn povtornoe_sozdanie_otvergaetsya() {
+    fn repeated_creation_is_rejected() {
         let mut session = session("recreate");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         assert!(
             session
-                .create_for_tests("другой".as_bytes(), params(), Vec::new())
+                .create_for_tests("other".as_bytes(), params(), Vec::new())
                 .is_err()
         );
         cleanup(&session);
@@ -2064,34 +2051,34 @@ mod tests {
     fn session_with_os_key(name: &str) -> (VaultSession, MemoryStash) {
         let mut session = session(name);
         session
-            .create_for_tests("мастер-пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("master password".as_bytes(), params(), Vec::new())
+            .expect("create");
 
         let store = VaultStore::new(session.store().root().to_path_buf());
         let mut host = HostRecord::new("prod-01.example.com");
         host.user = "root".into();
         session
             .unlocked_mut()
-            .expect("открыто")
+            .expect("unlocked")
             .upsert_host(&store, host)
-            .expect("запись");
+            .expect("write");
 
         let stash = MemoryStash::new();
-        session.enable_os_key(&stash).expect("включение ключа ОС");
+        session.enable_os_key(&stash).expect("enable OS key");
         assert!(session.has_os_key());
 
         (session, stash)
     }
 
     #[test]
-    fn klyuch_os_otkryvaet_hranilishche_bez_parolya() {
+    fn os_key_opens_vault_without_password() {
         let (mut session, stash) = session_with_os_key("os-key-unlock");
         session.lock(None);
         assert!(!session.state().is_unlocked());
-        assert!(session.has_os_key(), "обёртка переживает закрытие");
+        assert!(session.has_os_key(), "the wrap survives locking");
 
-        session.unlock_with_os_key(&stash).expect("разблокировка");
-        let hosts = session.unlocked().expect("открыто").hosts();
+        session.unlock_with_os_key(&stash).expect("unlock");
+        let hosts = session.unlocked().expect("unlocked").hosts();
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].host.host, "prod-01.example.com");
 
@@ -2099,24 +2086,24 @@ mod tests {
     }
 
     #[test]
-    fn otklyuchenie_ubiraet_i_obertku_i_zapis() {
+    fn disabling_removes_both_wrapper_and_record() {
         let (mut session, stash) = session_with_os_key("os-key-disable");
         let vault_id = session
             .store()
             .read_account()
-            .expect("аккаунт")
+            .expect("account")
             .vault_id
             .as_str()
             .to_owned();
 
-        session.disable_os_key(&stash).expect("отключение");
+        session.disable_os_key(&stash).expect("disable");
         assert!(!session.has_os_key());
-        assert!(stash.get(&vault_id).expect("чтение").is_none());
+        assert!(stash.get(&vault_id).expect("read").is_none());
         assert_eq!(
             session
                 .store()
                 .read_account()
-                .expect("аккаунт")
+                .expect("account")
                 .slots
                 .iter_kind(SlotKind::ExternalKey)
                 .count(),
@@ -2126,37 +2113,37 @@ mod tests {
         session.lock(None);
         assert!(session.unlock_with_os_key(&stash).is_err());
         session
-            .unlock_with_password("мастер-пароль".as_bytes())
-            .expect("разблокировка паролем");
+            .unlock_with_password("master password".as_bytes())
+            .expect("unlock with password");
 
         cleanup(&session);
     }
 
     #[test]
-    fn propavshiy_klyuch_os_ne_lomaet_parol() {
+    fn missing_os_key_does_not_break_password() {
         let (mut session, stash) = session_with_os_key("os-key-wiped");
         session.lock(None);
         stash.wipe();
 
         let error = session
             .unlock_with_os_key(&stash)
-            .expect_err("открылось без ключа");
-        assert!(format!("{error:#}").contains("нет ключа"));
+            .expect_err("opened without key");
+        assert!(format!("{error:#}").contains("has no key"));
 
         session
-            .unlock_with_password("мастер-пароль".as_bytes())
-            .expect("разблокировка паролем");
+            .unlock_with_password("master password".as_bytes())
+            .expect("unlock with password");
 
         cleanup(&session);
     }
 
     #[test]
-    fn chuzhoy_klyuch_os_ne_otkryvaet_hranilishche() {
+    fn foreign_os_key_does_not_open_vault() {
         let (mut session, stash) = session_with_os_key("os-key-alien");
         let vault_id = session
             .store()
             .read_account()
-            .expect("аккаунт")
+            .expect("account")
             .vault_id
             .as_str()
             .to_owned();
@@ -2167,41 +2154,41 @@ mod tests {
         assert!(!session.state().is_unlocked());
 
         session
-            .unlock_with_password("мастер-пароль".as_bytes())
-            .expect("разблокировка паролем");
+            .unlock_with_password("master password".as_bytes())
+            .expect("unlock with password");
 
         cleanup(&session);
     }
 
     #[test]
-    fn povtornoe_vklyuchenie_zamenyaet_obertku() {
+    fn enabling_again_replaces_wrapper() {
         let (mut session, stash) = session_with_os_key("os-key-again");
-        let account = session.store().read_account().expect("аккаунт");
+        let account = session.store().read_account().expect("account");
         let vault_id = account.vault_id.as_str().to_owned();
-        let old_key = stash.get(&vault_id).expect("чтение").expect("ключ есть");
+        let old_key = stash.get(&vault_id).expect("read").expect("key present");
 
-        session.enable_os_key(&stash).expect("повторное включение");
+        session.enable_os_key(&stash).expect("repeated enable");
 
-        let account = session.store().read_account().expect("аккаунт");
+        let account = session.store().read_account().expect("account");
         assert_eq!(
             account.slots.iter_kind(SlotKind::ExternalKey).count(),
             1,
-            "обёрток на ключе ОС должно остаться ровно одна"
+            "exactly one OS key wrap must remain"
         );
-        let new_key = stash.get(&vault_id).expect("чтение").expect("ключ есть");
+        let new_key = stash.get(&vault_id).expect("read").expect("key present");
         assert_ne!(old_key, new_key);
         assert!(unlock_with_os_key_material(&account, &old_key).is_err());
-        unlock_with_os_key_material(&account, &new_key).expect("новый ключ подходит");
+        unlock_with_os_key_material(&account, &new_key).expect("new key fits");
 
         cleanup(&session);
     }
 
     #[test]
-    fn vklyuchenie_na_zakrytom_hranilishche_otkazyvaet() {
+    fn enabling_on_locked_vault_is_refused() {
         let mut session = session("os-key-locked");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         session.lock(None);
 
         let stash = MemoryStash::new();
@@ -2212,20 +2199,20 @@ mod tests {
     }
 
     #[test]
-    fn fayl_akkaunta_ne_soderzhit_klyucha_os() {
+    fn account_file_does_not_contain_os_key() {
         let (session, stash) = session_with_os_key("os-key-bytes");
-        let account = session.store().read_account().expect("аккаунт");
+        let account = session.store().read_account().expect("account");
         let key = stash
             .get(account.vault_id.as_str())
-            .expect("чтение")
-            .expect("ключ есть");
+            .expect("read")
+            .expect("key present");
 
         let bytes =
-            std::fs::read(session.store().root().join(proto::ACCOUNT_FILE)).expect("файл аккаунта");
+            std::fs::read(session.store().root().join(proto::ACCOUNT_FILE)).expect("account file");
         let needle = key.as_bytes();
         assert!(
             !bytes.windows(needle.len()).any(|window| window == needle),
-            "ключ ОС нашёлся в файле аккаунта"
+            "the OS key was found in the account file"
         );
 
         cleanup(&session);
@@ -2233,49 +2220,49 @@ mod tests {
 
     fn office_proxy() -> ProxyRecord {
         let mut proxy = ProxyRecord::new(proto::ProxyKind::Socks5, "proxy.office", 1080);
-        proxy.label = "офис".into();
+        proxy.label = "office".into();
         proxy.user = "dan".into();
         proxy.set_password(proto::Secret::new(b"hunter2".to_vec()));
         proxy
     }
 
     #[test]
-    fn cepochka_proksi_perezhivaet_zakrytie() {
+    fn proxy_chain_survives_locking() {
         let mut session = session("proxy-chain");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let first = unlocked
             .upsert_proxy(&store, None, office_proxy())
-            .expect("прокси");
+            .expect("proxy");
         let second = unlocked
             .upsert_proxy(
                 &store,
                 None,
                 ProxyRecord::new(proto::ProxyKind::Socks5, "tor", 9050),
             )
-            .expect("прокси");
+            .expect("proxy");
 
         let mut host = HostRecord::new("example.com");
         host.via = vec![first.clone(), second.clone()];
-        unlocked.upsert_host(&store, host).expect("хост");
+        unlocked.upsert_host(&store, host).expect("host");
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("открытие");
-        let unlocked = session.unlocked().expect("открыто");
+            .unlock_with_password("password".as_bytes())
+            .expect("open");
+        let unlocked = session.unlocked().expect("unlocked");
 
-        let host = unlocked.find_by_target("example.com").expect("хост");
-        let chain = unlocked.resolve_via(&host.host.via).expect("цепочка");
+        let host = unlocked.find_by_target("example.com").expect("host");
+        let chain = unlocked.resolve_via(&host.host.via).expect("chain");
         let proxies: Vec<&ProxyRecord> = chain
             .iter()
             .map(|item| match item {
                 ViaItem::Proxy(proxy) => proxy,
-                ViaItem::Host(_) => panic!("ждали прокси"),
+                ViaItem::Host(_) => panic!("expected a proxy"),
             })
             .collect();
         assert_eq!(proxies.len(), 2);
@@ -2290,27 +2277,27 @@ mod tests {
     }
 
     #[test]
-    fn sokhranyonnyy_khost_zveno_cepochki() {
+    fn saved_host_is_a_chain_hop() {
         let mut session = session("jump-host");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
 
         let mut bastion = HostRecord::new("bastion.example.com");
         bastion.user = "jump".into();
         bastion.set_password(proto::Secret::new(b"bastion-pw".to_vec()));
-        let bastion_id = unlocked.upsert_host(&store, bastion).expect("хост");
+        let bastion_id = unlocked.upsert_host(&store, bastion).expect("host");
 
         let mut inner = HostRecord::new("db.internal");
         inner.via = vec![bastion_id.clone()];
-        unlocked.upsert_host(&store, inner).expect("хост");
+        unlocked.upsert_host(&store, inner).expect("host");
 
-        let inner = unlocked.find_by_target("db.internal").expect("хост");
+        let inner = unlocked.find_by_target("db.internal").expect("host");
         match unlocked
             .resolve_via(&inner.host.via)
-            .expect("цепочка")
+            .expect("chain")
             .as_slice()
         {
             [ViaItem::Host(host)] => {
@@ -2320,25 +2307,25 @@ mod tests {
                     Some(&b"bastion-pw"[..])
                 );
             }
-            other => panic!("ждали один хост, пришло {other:?}"),
+            other => panic!("expected one host, got {other:?}"),
         }
 
         let error = unlocked
             .remove_host(&store, &bastion_id)
-            .expect_err("используется");
+            .expect_err("in use");
         assert!(error.to_string().contains("db.internal"), "{error}");
 
         cleanup(&session);
     }
 
     #[test]
-    fn znachok_hranitsya_i_zamenyaetsya() {
+    fn icon_is_stored_and_replaced() {
         let mut session = session("icons");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
 
         let mut icon = proto::IconRecord {
             source: "selfhst".into(),
@@ -2354,50 +2341,50 @@ mod tests {
                 .store_icon(&store, proto::IconRecord::default())
                 .is_err()
         );
-        unlocked.store_icon(&store, icon.clone()).expect("значок");
-        let (first_rev, _) = unlocked.icon("selfhst:github").expect("есть");
-        unlocked.store_icon(&store, icon.clone()).expect("тот же");
-        assert_eq!(unlocked.icon("selfhst:github").expect("есть").0, first_rev);
+        unlocked.store_icon(&store, icon.clone()).expect("icon");
+        let (first_rev, _) = unlocked.icon("selfhst:github").expect("present");
+        unlocked.store_icon(&store, icon.clone()).expect("same");
+        assert_eq!(unlocked.icon("selfhst:github").expect("present").0, first_rev);
 
         icon.light = b"<svg light/>".to_vec();
-        unlocked.store_icon(&store, icon.clone()).expect("замена");
+        unlocked.store_icon(&store, icon.clone()).expect("replace");
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("открытие");
-        let unlocked = session.unlocked_mut().expect("открыто");
-        let (rev, stored) = unlocked.icon("selfhst:github").expect("есть");
+            .unlock_with_password("password".as_bytes())
+            .expect("open");
+        let unlocked = session.unlocked_mut().expect("unlocked");
+        let (rev, stored) = unlocked.icon("selfhst:github").expect("present");
         assert!(rev > first_rev);
         assert_eq!(stored, &icon);
         assert!(unlocked.icon("selfhst:gitlab").is_none());
 
-        // Значок держится, пока на него ссылается хост, и уходит вместе с ним.
+        // The icon stays while a host references it and goes away with it.
         let mut host = HostRecord::new("git.example");
         host.icon = "selfhst:github".into();
-        unlocked.upsert_host(&store, host.clone()).expect("хост");
+        unlocked.upsert_host(&store, host.clone()).expect("host");
         unlocked
             .release_icon(&store, "selfhst:github")
-            .expect("используется");
+            .expect("in use");
         assert!(unlocked.icon("selfhst:github").is_some());
         host.icon.clear();
-        unlocked.upsert_host(&store, host).expect("без значка");
+        unlocked.upsert_host(&store, host).expect("without icon");
         unlocked
             .release_icon(&store, "selfhst:github")
-            .expect("освобождение");
+            .expect("release");
         assert!(unlocked.icon("selfhst:github").is_none());
 
         cleanup(&session);
     }
 
     #[test]
-    fn gruppy_pereimenovyvayutsya_i_slivayutsya() {
+    fn groups_are_renamed_and_merged() {
         let mut session = session("groups");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
 
         let host = |address: &str, group: &str| {
             let mut host = HostRecord::new(address);
@@ -2424,50 +2411,50 @@ mod tests {
                 .map(|group| group.name)
                 .collect()
         };
-        assert_eq!(names(unlocked).len(), 2, "Prod и prod — одна группа");
+        assert_eq!(names(unlocked).len(), 2, "Prod and prod are one group");
         assert_eq!(unlocked.group_name("  STAGE "), "Stage");
-        assert_eq!(unlocked.group_name("Новая"), "Новая");
+        assert_eq!(unlocked.group_name("New"), "New");
         assert_eq!(unlocked.group_name("  "), "");
 
         unlocked
-            .edit_group(&store, "prod", "Боевые", "database")
-            .expect("переименование");
+            .edit_group(&store, "prod", "Production", "database")
+            .expect("rename");
         assert!(unlocked.edit_group(&store, "Stage", " ", "").is_err());
         assert_eq!(
             unlocked.groups(),
             vec![
                 HostGroup {
-                    name: "Stage".into(),
-                    icon: String::new(),
+                    name: "Production".into(),
+                    icon: "database".into(),
                 },
                 HostGroup {
-                    name: "Боевые".into(),
-                    icon: "database".into(),
+                    name: "Stage".into(),
+                    icon: String::new(),
                 },
             ]
         );
 
-        // Переименование в занятое имя сливает группы.
+        // Renaming to a taken name merges the groups.
         unlocked
-            .edit_group(&store, "Stage", "боевые", "rocket")
-            .expect("слияние");
+            .edit_group(&store, "Stage", "production", "rocket")
+            .expect("merge");
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("открытие");
-        let unlocked = session.unlocked_mut().expect("открыто");
+            .unlock_with_password("password".as_bytes())
+            .expect("open");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         assert_eq!(
             unlocked.groups(),
             vec![HostGroup {
-                name: "боевые".into(),
+                name: "production".into(),
                 icon: "rocket".into(),
             }]
         );
         let grouped = unlocked
             .hosts()
             .into_iter()
-            .filter(|entry| entry.host.group == "боевые")
+            .filter(|entry| entry.host.group == "production")
             .count();
         assert_eq!(grouped, 3);
 
@@ -2475,34 +2462,34 @@ mod tests {
     }
 
     #[test]
-    fn host_perenositsya_v_gruppu_i_iz_neyo() {
+    fn host_moves_into_and_out_of_group() {
         let mut session = session("move-host");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
 
         let mut host = HostRecord::new("a.example");
         host.group = "Prod".into();
         unlocked.upsert_host_with(&store, host, true).expect("a");
-        let group_of = |unlocked: &Unlocked| unlocked.find_by_target("a.example").expect("есть");
+        let group_of = |unlocked: &Unlocked| unlocked.find_by_target("a.example").expect("present");
 
         unlocked
             .move_host(&store, "a.example", " Stage ", None)
-            .expect("в другую группу");
+            .expect("to another group");
         let entry = group_of(unlocked);
         assert_eq!(entry.host.group, "Stage");
-        assert!(entry.device_only, "привязка к устройству сохраняется");
+        assert!(entry.device_only, "the device binding is preserved");
 
         unlocked
             .move_host(&store, "a.example", "", None)
-            .expect("из группы");
+            .expect("out of group");
         assert_eq!(group_of(unlocked).host.group, "");
         assert!(unlocked.groups().is_empty());
         assert!(
             unlocked
-                .move_host(&store, "нет.example", "Prod", None)
+                .move_host(&store, "missing.example", "Prod", None)
                 .is_err()
         );
 
@@ -2510,18 +2497,18 @@ mod tests {
     }
 
     #[test]
-    fn hosty_pereuporyadochivayutsya_vnutri_gruppy() {
+    fn hosts_are_reordered_within_group() {
         let mut session = session("reorder-hosts");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
 
         for address in ["d.example", "c.example", "b.example", "a.example"] {
             let mut host = HostRecord::new(address);
             host.group = "Prod".into();
-            unlocked.upsert_host(&store, host).expect("хост");
+            unlocked.upsert_host(&store, host).expect("host");
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let mut other = HostRecord::new("x.example");
@@ -2536,34 +2523,34 @@ mod tests {
                 .map(|entry| entry.host.host)
                 .collect()
         };
-        // Пока мест нет — свежие выше.
+        // No positions yet — newer on top.
         assert_eq!(
             order(unlocked, "Prod"),
             ["a.example", "b.example", "c.example", "d.example"]
         );
 
-        // Сверху вниз — под якорь.
+        // Top to bottom — below the anchor.
         unlocked
             .move_host(&store, "a.example", "Prod", Some("c.example"))
-            .expect("вниз");
+            .expect("down");
         assert_eq!(
             order(unlocked, "Prod"),
             ["b.example", "c.example", "a.example", "d.example"]
         );
 
-        // Снизу вверх — над якорем.
+        // Bottom to top — above the anchor.
         unlocked
             .move_host(&store, "d.example", "Prod", Some("b.example"))
-            .expect("вверх");
+            .expect("up");
         assert_eq!(
             order(unlocked, "Prod"),
             ["d.example", "b.example", "c.example", "a.example"]
         );
 
-        // Из другой группы — над якорем.
+        // From another group — above the anchor.
         unlocked
             .move_host(&store, "x.example", "Prod", Some("c.example"))
-            .expect("из другой группы");
+            .expect("from another group");
         assert_eq!(
             order(unlocked, "Prod"),
             [
@@ -2575,12 +2562,12 @@ mod tests {
             ]
         );
 
-        // Порядок переживает перезапуск.
+        // The order survives a restart.
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("открытие");
-        let unlocked = session.unlocked_mut().expect("открыто");
+            .unlock_with_password("password".as_bytes())
+            .expect("open");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         assert_eq!(
             order(unlocked, "Prod"),
             [
@@ -2596,21 +2583,21 @@ mod tests {
     }
 
     #[test]
-    fn snippet_perezhivaet_zakrytie_i_udalyaetsya() {
+    fn snippet_survives_locking_and_can_be_deleted() {
         let mut session = session("snippets");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let snippet = proto::SnippetRecord {
-            label: "Поднять всё".into(),
+            label: "Bring everything up".into(),
             command: "cd /opt/stacks && ./all_up.sh".into(),
             run: true,
         };
         let id = unlocked
             .upsert_snippet(&store, None, snippet.clone())
-            .expect("сниппет");
+            .expect("snippet");
         assert!(
             unlocked
                 .upsert_snippet(&store, None, proto::SnippetRecord::default())
@@ -2619,9 +2606,9 @@ mod tests {
 
         session.lock(None);
         session
-            .unlock_with_password("пароль".as_bytes())
-            .expect("открытие");
-        let unlocked = session.unlocked_mut().expect("открыто");
+            .unlock_with_password("password".as_bytes())
+            .expect("open");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         assert_eq!(
             unlocked
                 .snippets()
@@ -2631,79 +2618,79 @@ mod tests {
             vec![snippet]
         );
 
-        unlocked.remove_snippet(&store, &id).expect("удаление");
+        unlocked.remove_snippet(&store, &id).expect("remove");
         assert!(unlocked.snippets().is_empty());
 
         cleanup(&session);
     }
 
     #[test]
-    fn propavshiy_proksi_ne_vypadaet_iz_cepochki_molcha() {
+    fn missing_proxy_is_not_silently_dropped_from_chain() {
         let mut session = session("proxy-missing");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
-        let unlocked = session.unlocked().expect("открыто");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
+        let unlocked = session.unlocked().expect("unlocked");
 
         let ghost = RecordId::generate().expect("CSPRNG");
         let error = unlocked
             .resolve_via(&[ghost])
-            .expect_err("обязана не собраться");
-        assert!(error.contains("нет в хранилище"), "{error}");
+            .expect_err("must fail to build");
+        assert!(error.contains("not in the vault"), "{error}");
 
         cleanup(&session);
     }
 
     #[test]
-    fn ispolzuemyy_proksi_ne_udalyaetsya() {
+    fn proxy_in_use_cannot_be_deleted() {
         let mut session = session("proxy-in-use");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let id = unlocked
             .upsert_proxy(&store, None, office_proxy())
-            .expect("прокси");
+            .expect("proxy");
         let mut host = HostRecord::new("example.com");
-        host.label = "прод".into();
+        host.label = "prod".into();
         host.via = vec![id.clone()];
-        unlocked.upsert_host(&store, host.clone()).expect("хост");
+        unlocked.upsert_host(&store, host.clone()).expect("host");
 
         let error = unlocked
             .remove_proxy(&store, &id)
-            .expect_err("обязан отказать");
-        assert!(format!("{error}").contains("прод"), "{error}");
+            .expect_err("must refuse");
+        assert!(format!("{error}").contains("prod"), "{error}");
         assert!(unlocked.proxy(&id).is_some());
 
         host.via.clear();
         unlocked
             .upsert_host(&store, host)
-            .expect("хост без цепочки");
-        unlocked.remove_proxy(&store, &id).expect("теперь можно");
+            .expect("host without chain");
+        unlocked.remove_proxy(&store, &id).expect("now allowed");
         assert!(unlocked.proxy(&id).is_none());
 
         cleanup(&session);
     }
 
     #[test]
-    fn pravka_proksi_ne_zavodit_vtoruyu_zapis() {
+    fn proxy_edit_does_not_create_second_record() {
         let mut session = session("proxy-edit");
         session
-            .create_for_tests("пароль".as_bytes(), params(), Vec::new())
-            .expect("создание");
+            .create_for_tests("password".as_bytes(), params(), Vec::new())
+            .expect("create");
         let store = VaultStore::new(session.store().root().to_path_buf());
 
-        let unlocked = session.unlocked_mut().expect("открыто");
+        let unlocked = session.unlocked_mut().expect("unlocked");
         let id = unlocked
             .upsert_proxy(&store, None, office_proxy())
-            .expect("прокси");
+            .expect("proxy");
         let mut changed = office_proxy();
         changed.port = 1081;
         let again = unlocked
             .upsert_proxy(&store, Some(id.clone()), changed)
-            .expect("правка");
+            .expect("edit");
 
         assert_eq!(again, id);
         assert_eq!(unlocked.proxies().len(), 1);

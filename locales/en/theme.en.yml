@@ -1,0 +1,7 @@
+theme:
+  title: "Appearance"
+  mode_system: "System"
+  mode_dark: "Dark"
+  mode_light: "Light"
+  palette_dark: "Dark mode palette"
+  palette_light: "Light mode palette"

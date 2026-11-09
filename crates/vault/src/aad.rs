@@ -11,7 +11,7 @@ impl Aad {
     }
 
     pub fn bytes(&mut self, value: &[u8]) -> &mut Self {
-        let len = u32::try_from(value.len()).expect("поле AAD длиннее 4 ГиБ недостижимо");
+        let len = u32::try_from(value.len()).expect("AAD field longer than 4 GiB is unreachable");
         self.0.extend_from_slice(&len.to_le_bytes());
         self.0.extend_from_slice(value);
         self
@@ -42,7 +42,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn izvestnyy_vektor_kodirovaniya() {
+    fn encoding_known_vector() {
         let mut aad = Aad::new("record");
         aad.bytes(b"v1").u64(7).u32(1);
 
@@ -61,7 +61,7 @@ mod tests {
     }
 
     #[test]
-    fn granicy_poley_ne_skleivayutsya() {
+    fn field_boundaries_do_not_merge() {
         let mut a = Aad::new("record");
         a.bytes(b"ab").bytes(b"c");
         let mut b = Aad::new("record");
@@ -70,14 +70,14 @@ mod tests {
     }
 
     #[test]
-    fn kontekst_razdelyaet_operacii() {
+    fn context_separates_operations() {
         let a = Aad::new("record");
         let b = Aad::new("slot");
         assert_ne!(a.finish(), b.finish());
     }
 
     #[test]
-    fn domen_prisutstvuet_vsegda() {
+    fn domain_is_always_present() {
         let aad = Aad::new("record").finish();
         assert!(aad.windows(DOMAIN.len()).any(|w| w == DOMAIN));
     }

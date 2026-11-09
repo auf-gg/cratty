@@ -151,7 +151,7 @@ fn cursor_key(key: Key, mods: Mods, mode: TermMode) -> Vec<u8> {
         Key::Left => b'D',
         Key::Home => b'H',
         Key::End => b'F',
-        _ => unreachable!("cursor_key вызывают только для стрелок, Home и End"),
+        _ => unreachable!("cursor_key is only called for arrows, Home and End"),
     };
 
     if mods.any() {
@@ -210,21 +210,21 @@ mod tests {
     use super::*;
 
     fn plain(key: Key) -> Vec<u8> {
-        encode(key, Mods::NONE, TermMode::empty()).expect("клавиша должна что-то слать")
+        encode(key, Mods::NONE, TermMode::empty()).expect("the key should send something")
     }
 
     fn app(key: Key) -> Vec<u8> {
-        encode(key, Mods::NONE, TermMode::APP_CURSOR).expect("клавиша должна что-то слать")
+        encode(key, Mods::NONE, TermMode::APP_CURSOR).expect("the key should send something")
     }
 
     fn with(key: Key, mods: Mods) -> Vec<u8> {
-        encode(key, mods, TermMode::empty()).expect("клавиша должна что-то слать")
+        encode(key, mods, TermMode::empty()).expect("the key should send something")
     }
 
     #[test]
     fn letters_go_as_utf8() {
         assert_eq!(plain(Key::Char('a')), b"a");
-        assert_eq!(plain(Key::Char('ж')), "ж".as_bytes());
+        assert_eq!(plain(Key::Char('é')), "é".as_bytes());
         assert_eq!(plain(Key::Char('😀')), "😀".as_bytes());
     }
 
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn ctrl_with_a_key_without_a_control_code_sends_nothing() {
         assert_eq!(
-            encode(Key::Char('ж'), Mods::ctrl(), TermMode::empty()),
+            encode(Key::Char('é'), Mods::ctrl(), TermMode::empty()),
             None
         );
     }
@@ -270,7 +270,7 @@ mod tests {
     fn enter_sends_carriage_return_and_respects_lnm() {
         assert_eq!(plain(Key::Enter), b"\r");
         assert_eq!(
-            encode(Key::Enter, Mods::NONE, TermMode::LINE_FEED_NEW_LINE).expect("шлёт"),
+            encode(Key::Enter, Mods::NONE, TermMode::LINE_FEED_NEW_LINE).expect("sends"),
             b"\r\n"
         );
         assert_eq!(with(Key::Enter, Mods::alt()), vec![ESC, b'\r']);
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(with(Key::Up, Mods::alt()), b"\x1b[1;3A");
 
         assert_eq!(
-            encode(Key::Right, Mods::ctrl(), TermMode::APP_CURSOR).expect("шлёт"),
+            encode(Key::Right, Mods::ctrl(), TermMode::APP_CURSOR).expect("sends"),
             b"\x1b[1;5C"
         );
     }

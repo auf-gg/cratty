@@ -1,11 +1,11 @@
-//! Значки хостов и групп: встроенный набор, каталог selfh.st и окно выбора.
+//! Host and group icons: built-in set, the selfh.st catalog and the picker dialog.
 //!
-//! Значок записывается строкой: имя встроенного (`database`), `selfhst:<имя>`
-//! (светлый и тёмный варианты под тему) или `selfhst:<имя>:color` (один
-//! цветной). Скачанный значок до сохранения хоста или группы живёт в памяти,
-//! а с сохранением ложится в хранилище записью [`proto::IconRecord`] — так
-//! список выглядит одинаково без сети и на других устройствах. В хранилище
-//! только используемые значки: переставший быть нужным удаляется.
+//! An icon is stored as a string: a built-in name (`database`), `selfhst:<name>`
+//! (light and dark variants per theme) or `selfhst:<name>:color` (a single
+//! colored one). A downloaded icon lives in memory until the host or group is saved,
+//! and on save it goes into the vault as a [`proto::IconRecord`] — so that
+//! the list looks the same offline and on other devices. The vault holds
+//! only icons in use: one that is no longer needed is removed.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use super::*;
 use crate::selfhst;
 use crate::ui::fontawesome;
 
-/// Значки Font Awesome, которые окно выбора показывает, пока поиск пуст.
+/// Font Awesome icons the picker shows while the search is empty.
 const SUGGESTED: &[&str] = &[
     "folder",
     "server",
@@ -47,16 +47,16 @@ const SUGGESTED: &[&str] = &[
     "heart",
 ];
 
-/// Непрозрачность значков хостов и групп: в полную силу они спорят с текстом.
+/// Opacity of host and group icons: at full strength they compete with the text.
 const ICON_OPACITY: f32 = 0.8;
 
-/// Сколько найденных значков selfh.st показывать: дальше — уточнять поиск.
+/// How many selfh.st search results to show: beyond that, refine the search.
 const SHOWN_RESULTS: usize = 60;
 
-/// Сколько значков Font Awesome показывать под запрос: дальше — уточнять.
+/// How many Font Awesome icons to show per query: beyond that, refine.
 const SHOWN_FA: usize = 84;
 
-/// Значки первых версий групп (до Font Awesome): чем их заменить из Solid.
+/// Icons from the first group versions (before Font Awesome): what to replace them with from Solid.
 fn legacy_icon(icon: &str) -> Option<&'static str> {
     Some(match icon {
         "folder" => "folder",
@@ -91,9 +91,9 @@ fn legacy_icon(icon: &str) -> Option<&'static str> {
     })
 }
 
-/// Путь к одноцветному значку: Font Awesome по ключу `fa:<стиль>:<имя>` или
-/// старому имени; пусто или незнакомо (например, из более новой версии) —
-/// `fallback` из значков приложения.
+/// Path to a monochrome icon: Font Awesome by key `fa:<style>:<name>` or
+/// by old name; empty or unknown (for example, from a newer version) —
+/// `fallback` from the app icons.
 pub(super) fn icon_asset_path(icon: &str, fallback: &str) -> SharedString {
     if let Some(fa) = fontawesome::from_key(icon) {
         return fa.asset_path().into();
@@ -104,12 +104,12 @@ pub(super) fn icon_asset_path(icon: &str, fallback: &str) -> SharedString {
     SharedString::from(format!("icons/{fallback}.svg"))
 }
 
-/// Чей значок выбирается в окне.
+/// Whose icon is being chosen in the dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum IconTarget {
-    /// Хост в открытой форме.
+    /// Host in the open form.
     Host,
-    /// Группа в окне «Группа».
+    /// Group in the "Group" dialog.
     Group,
 }
 
@@ -117,16 +117,16 @@ pub(super) struct IconPicker {
     target: IconTarget,
     vault: String,
     search: Entity<InputState>,
-    /// Значок каталога, который сейчас скачивается.
+    /// Catalog icon that is currently downloading.
     downloading: Option<String>,
-    /// Скачивать цветной вариант вместо светлого и тёмного.
+    /// Download the colored variant instead of light and dark.
     colored: bool,
     error: Option<SharedString>,
     _search_changes: Subscription,
     _task: Option<gpui_kit::Task<()>>,
 }
 
-/// Каталог selfh.st в памяти: загружается из кеша при первом открытии окна.
+/// The selfh.st catalog in memory: loaded from cache when the dialog is first opened.
 #[derive(Default)]
 pub(super) struct SelfhstState {
     catalog: Option<Arc<selfhst::Catalog>>,
@@ -136,18 +136,18 @@ pub(super) struct SelfhstState {
     _task: Option<gpui_kit::Task<()>>,
 }
 
-/// Собранные картинки значков из хранилища: ключ — значок, вариант и ревизия
-/// записи, чтобы картинка не собиралась заново на каждом кадре.
+/// Rendered icon images from the vault: the key is icon, variant and revision
+/// of the record, so the image is not rebuilt on every frame.
 #[derive(Default)]
 pub(super) struct IconImages(RefCell<HashMap<String, Arc<gpui_kit::Image>>>);
 
-/// Скачанные, но ещё не сохранённые значки: в хранилище они попадут вместе с
-/// хостом или группой, а без сохранения просто забудутся.
+/// Downloaded but not yet saved icons: they reach the vault together with
+/// the host or group, and without saving they are simply forgotten.
 pub(super) type PendingIcons = HashMap<String, proto::IconRecord>;
 
 impl AppView {
-    /// Значок хоста или группы размером `size`. Скачанного значка нет в
-    /// хранилище (ещё не приехал синхронизацией) — встроенный `fallback`.
+    /// Host or group icon of size `size`. The downloaded icon is not in
+    /// the vault (hasn't arrived via sync yet) — the built-in `fallback`.
     pub(super) fn icon_view(
         &self,
         vault: &str,
@@ -165,9 +165,9 @@ impl AppView {
                 .opacity(ICON_OPACITY)
                 .into_any_element();
         }
-        // Одноцветный значок — цвета текста с той же прозрачностью, что и
-        // картинки selfh.st: белый логотип и значок Font Awesome рядом выглядят
-        // одинаково.
+        // A monochrome icon takes the text color with the same opacity as
+        // selfh.st images: a white logo and a Font Awesome icon side by side look
+        // the same.
         Icon::empty()
             .path(icon_asset_path(icon, fallback))
             .size(size)
@@ -188,8 +188,8 @@ impl AppView {
             .and_then(|unlocked| unlocked.icon(key))
             .or_else(|| self.pending_icons.get(key).map(|icon| (0, icon)))?;
         let (variant, bytes) = record.for_theme(cx.theme().mode.is_dark());
-        // Растр с запасом под HiDPI: на обычном экране он уменьшится вдвое —
-        // это видеокарта сглаживает чисто, в отличие от 512 пикселей в 16.
+        // Raster with headroom for HiDPI: on a regular screen it shrinks by half —
+        // the GPU smooths that cleanly, unlike 512 pixels down to 16.
         let pixels = (f32::from(size) * 2.).ceil().clamp(16., 256.) as u32;
         let cache_key = format!("{vault}/{key}/{variant:?}/{rev}/{}/{pixels}", bytes.len());
         let mut images = self.icon_images.0.borrow_mut();
@@ -208,7 +208,7 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Поиск значка"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(t!("icons.search_placeholder")));
         let search_changes = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -230,7 +230,7 @@ impl AppView {
         if !self.selfhst.loaded {
             self.selfhst.loaded = true;
             self.selfhst.catalog = selfhst::cached().map(Arc::new);
-            // Каталога нет даже в кеше — без него выбирать не из чего.
+            // The catalog is not even in the cache — without it there is nothing to choose from.
             if self.selfhst.catalog.is_none() {
                 self.refresh_catalog(cx);
             }
@@ -238,7 +238,7 @@ impl AppView {
         cx.notify();
     }
 
-    /// Сверяет каталог с сервером по ETag: не изменился — ничего не скачивается.
+    /// Checks the catalog against the server by ETag: if unchanged, nothing is downloaded.
     fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
         if self.selfhst.refreshing {
             return;
@@ -258,11 +258,11 @@ impl AppView {
             this.update(cx, |this, cx| {
                 this.selfhst.refreshing = false;
                 this.selfhst.notice = Some(match result {
-                    Ok(selfhst::Refresh::Unchanged) => "Каталог не изменился.".into(),
+                    Ok(selfhst::Refresh::Unchanged) => t!("icons.catalog_unchanged").to_string().into(),
                     Ok(selfhst::Refresh::Updated(catalog)) => {
                         let count = catalog.entries.len();
                         this.selfhst.catalog = Some(Arc::new(catalog));
-                        format!("Каталог обновлён: {count} значков.").into()
+                        crate::i18n::plural("icons.catalog_updated", count as u64).into()
                     }
                     Err(error) => format!("{error:#}").into(),
                 });
@@ -273,7 +273,7 @@ impl AppView {
         cx.notify();
     }
 
-    /// Значок, который сейчас стоит у цели окна выбора.
+    /// The icon currently set on the picker's target.
     fn picked_icon(&self, target: IconTarget) -> String {
         match target {
             IconTarget::Host => self.form.icon.clone(),
@@ -285,7 +285,7 @@ impl AppView {
         }
     }
 
-    /// Есть ли картинка значка: в хранилище или скачана и ждёт сохранения.
+    /// Whether the icon image exists: in the vault, or downloaded and awaiting save.
     fn has_icon(&self, vault: &str, key: &str) -> bool {
         self.pending_icons.contains_key(key)
             || self
@@ -293,8 +293,8 @@ impl AppView {
                 .is_some_and(|unlocked| unlocked.icon(key).is_some())
     }
 
-    /// Скачанный значок `key`, если его ещё нет в хранилище `vault`: его
-    /// сохранение кладёт туда и значок.
+    /// The downloaded icon `key`, if it is not yet in vault `vault`: its
+    /// saving puts the icon there as well.
     pub(super) fn icon_to_store(&self, vault: &str, key: &str) -> Option<proto::IconRecord> {
         let stored = self
             .unlocked_of(vault)
@@ -304,8 +304,8 @@ impl AppView {
             .flatten()
     }
 
-    /// Выбор значка: встроенный ставится сразу, значок каталога сначала
-    /// скачивается.
+    /// Icon choice: a built-in one is applied immediately; a catalog icon is
+    /// downloaded first.
     fn choose_icon(&mut self, icon: String, cx: &mut Context<Self>) {
         let Some(picker) = &self.icon_picker else {
             return;
@@ -356,7 +356,7 @@ impl AppView {
         cx.notify();
     }
 
-    /// Кнопка с текущим значком: открывает окно выбора.
+    /// Button with the current icon: opens the picker.
     pub(super) fn icon_button(
         &self,
         id: &'static str,
@@ -382,7 +382,7 @@ impl AppView {
             .hover(|style| style.bg(theme.secondary_hover))
             .child(self.icon_view(vault, icon, fallback, px(22.), cx))
             .tooltip(|window, cx| {
-                gpui_kit::component::tooltip::Tooltip::new("Выбрать значок").build(window, cx)
+                gpui_kit::component::tooltip::Tooltip::new(t!("icons.choose").to_string()).build(window, cx)
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_icon_picker(target, &vault_id, window, cx)
@@ -419,7 +419,7 @@ impl AppView {
             .map(|icon| {
                 let key = icon.map(fontawesome::FaIcon::key).unwrap_or_default();
                 let tip = match icon {
-                    None => "По умолчанию".to_owned(),
+                    None => t!("icons.default").to_string(),
                     Some(icon) => format!("{} · {}", icon.label, icon.style),
                 };
                 let path = icon_asset_path(&key, fallback);
@@ -441,9 +441,9 @@ impl AppView {
             None => vec![
                 Self::hint(
                     if self.selfhst.refreshing {
-                        "Загружаем каталог…"
+                        t!("icons.catalog_loading")
                     } else {
-                        "Каталога пока нет: нажмите «Обновить»."
+                        t!("icons.catalog_none")
                     },
                     cx,
                 )
@@ -458,11 +458,11 @@ impl AppView {
                     .map(|entry| self.catalog_row(entry, &current, picker, cx))
                     .collect();
                 if total == 0 {
-                    rows.push(Self::hint("Ничего не нашлось.", cx).into_any_element());
+                    rows.push(Self::hint(t!("icons.nothing_found"), cx).into_any_element());
                 } else if total > SHOWN_RESULTS {
                     rows.push(
                         Self::hint(
-                            format!("И ещё {} — уточните поиск.", total - SHOWN_RESULTS),
+                            t!("icons.more", count = total - SHOWN_RESULTS),
                             cx,
                         )
                         .into_any_element(),
@@ -475,7 +475,7 @@ impl AppView {
             .selfhst
             .catalog
             .as_ref()
-            .map(|catalog| format!("{} значков", catalog.entries.len()))
+            .map(|catalog| crate::i18n::plural("icons.count", catalog.entries.len() as u64))
             .unwrap_or_default();
 
         Some(
@@ -500,7 +500,7 @@ impl AppView {
                         .bg(crate::ui::theme::solid_background(cx))
                         .border_1()
                         .border_color(theme.border)
-                        .child(Label::new("Значок").font_semibold())
+                        .child(Label::new(t!("icons.title")).font_semibold())
                         .child(Input::new(&picker.search).small())
                         .child(Label::new("Font Awesome").text_sm().font_medium())
                         .child(
@@ -511,11 +511,11 @@ impl AppView {
                                 .child(h_flex().flex_wrap().gap_1().children(fa_buttons)),
                         )
                         .when(fa_empty, |this| {
-                            this.child(Self::hint("Ничего не нашлось.", cx))
+                            this.child(Self::hint(t!("icons.nothing_found"), cx))
                         })
                         .when(fa_more > 0, |this| {
                             this.child(Self::hint(
-                                format!("И ещё {fa_more} — уточните поиск."),
+                                t!("icons.more", count = fa_more),
                                 cx,
                             ))
                         })
@@ -534,7 +534,7 @@ impl AppView {
                                         .ghost()
                                         .small()
                                         .icon(Icon::empty().path("icons/refresh-cw.svg"))
-                                        .tooltip("Обновить каталог")
+                                        .tooltip(t!("icons.refresh"))
                                         .loading(self.selfhst.refreshing)
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.refresh_catalog(cx)
@@ -542,7 +542,7 @@ impl AppView {
                                 ),
                         )
                         .child(Self::hint(
-                            "Значки приложений. Выбранный скачивается в хранилище и виден без сети.",
+                            t!("icons.app_icons_note"),
                             cx,
                         ))
                         .children(
@@ -553,7 +553,7 @@ impl AppView {
                         )
                         .child(
                             gpui_kit::component::checkbox::Checkbox::new("icon-colored")
-                                .label("Цветной значок — один вариант для любой темы")
+                                .label(t!("icons.colored").to_string())
                                 .checked(picker.colored)
                                 .on_click(cx.listener(|this, checked: &bool, _window, cx| {
                                     if let Some(picker) = &mut this.icon_picker {
@@ -577,7 +577,7 @@ impl AppView {
                             h_flex().justify_end().child(
                                 Button::new("icon-picker-close")
                                     .outline()
-                                    .label("Отмена")
+                                    .label(t!("icons.cancel"))
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.icon_picker = None;
                                         cx.notify();
@@ -589,8 +589,8 @@ impl AppView {
         )
     }
 
-    /// Строка значка каталога: имя и категория, без картинки — она скачается,
-    /// только если значок выбрать.
+    /// Catalog icon row: name and category, no image — it is downloaded
+    /// only if the icon is chosen.
     fn catalog_row(
         &self,
         entry: &selfhst::Entry,
@@ -629,7 +629,7 @@ impl AppView {
         )
         .child(
             Label::new(SharedString::from(if downloading {
-                "Скачиваем…".to_owned()
+                t!("icons.downloading").to_string()
             } else {
                 detail
             }))
@@ -639,7 +639,7 @@ impl AppView {
         )
         .when(!busy, |this| {
             this.on_click(cx.listener(move |this, _, _window, cx| {
-                // Уже скачан — качать заново незачем.
+                // Already downloaded — no need to download again.
                 let Some(picker) = &this.icon_picker else {
                     return;
                 };
@@ -655,8 +655,8 @@ impl AppView {
     }
 }
 
-/// Картинка значка размером `pixels`: SVG получает этот размер в корневом
-/// теге, PNG уменьшается. Не вышло — исходные байты как есть.
+/// Icon image of size `pixels`: SVG gets this size in the root
+/// tag, PNG is downscaled. If that fails — the original bytes as is.
 fn raster(format: &str, bytes: &[u8], pixels: u32) -> Option<gpui_kit::Image> {
     use gpui_kit::ImageFormat;
     match format {
@@ -672,9 +672,9 @@ fn raster(format: &str, bytes: &[u8], pixels: u32) -> Option<gpui_kit::Image> {
     }
 }
 
-/// SVG с размером `pixels`×`pixels`: прежние `width` и `height` корневого
-/// тега убираются, масштаб задаёт `viewBox`. Без `viewBox` размер менять
-/// нельзя — картинка обрежется, а не уменьшится.
+/// SVG with size `pixels`×`pixels`: the previous `width` and `height` of the root
+/// tag are removed, and `viewBox` sets the scale. Without `viewBox` the size
+/// cannot be changed — the image would be cropped, not scaled down.
 fn sized_svg(bytes: &[u8], pixels: u32) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(bytes).ok()?;
     let start = text.find("<svg")?;
@@ -695,8 +695,8 @@ fn sized_svg(bytes: &[u8], pixels: u32) -> Option<Vec<u8>> {
     )
 }
 
-/// Тег без атрибута `name="…"`. `stroke-width` и подобные не трогаются:
-/// перед именем должен стоять пробел.
+/// Tag without a `name="…"` attribute. `stroke-width` and similar are left alone:
+/// a space must precede the name.
 fn without_attribute(tag: &str, name: &str) -> String {
     let mut out = tag.to_owned();
     let needle = format!("{name}=");
@@ -722,7 +722,7 @@ fn without_attribute(tag: &str, name: &str) -> String {
     out
 }
 
-/// PNG, уменьшенный до `pixels` по большей стороне.
+/// PNG downscaled to `pixels` on its longer side.
 fn smaller_png(bytes: &[u8], pixels: u32) -> Option<Vec<u8>> {
     let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
     if image.width().max(image.height()) <= pixels {
@@ -739,20 +739,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn svg_poluchaet_razmer_v_kornevom_tege() {
+    fn svg_gets_size_in_root_tag() {
         let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="512" height='512' viewBox="0 0 512 512"><path stroke-width="2"/></svg>"#;
-        let sized = String::from_utf8(sized_svg(svg, 40).expect("размер")).expect("utf8");
+        let sized = String::from_utf8(sized_svg(svg, 40).expect("size")).expect("utf8");
         assert_eq!(
             sized,
             r#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="40" height="40"><path stroke-width="2"/></svg>"#
         );
-        // Без viewBox размер не трогаем.
+        // Without viewBox we leave the size alone.
         assert!(sized_svg(br#"<svg width="24" height="24"></svg>"#, 40).is_none());
         assert!(sized_svg(b"not svg", 40).is_none());
     }
 
     #[test]
-    fn png_umenshaetsya() {
+    fn png_is_downscaled() {
         let png = |width, height| {
             let mut bytes = std::io::Cursor::new(Vec::new());
             image::DynamicImage::new_rgba8(width, height)
@@ -760,29 +760,29 @@ mod tests {
                 .expect("png");
             bytes.into_inner()
         };
-        let small = smaller_png(&png(512, 256), 40).expect("уменьшен");
-        let small = image::load_from_memory(&small).expect("читается");
+        let small = smaller_png(&png(512, 256), 40).expect("downscaled");
+        let small = image::load_from_memory(&small).expect("readable");
         assert_eq!((small.width(), small.height()), (40, 20));
         assert!(
             smaller_png(&png(16, 16), 40).is_none(),
-            "маленький не трогаем"
+            "leave the small one alone"
         );
     }
 
     #[test]
-    fn put_k_znachku() {
+    fn icon_path() {
         assert_eq!(
             icon_asset_path("fa:brands:github", "server"),
             "fa/brands/github.svg"
         );
-        // Имена первых версий ведут к замене из Font Awesome.
+        // Names from the first versions map to a Font Awesome replacement.
         assert_eq!(
             icon_asset_path("database", "folder"),
             "fa/solid/database.svg"
         );
-        assert_eq!(icon_asset_path("из-будущего", "folder"), "icons/folder.svg");
+        assert_eq!(icon_asset_path("from-the-future", "folder"), "icons/folder.svg");
         assert_eq!(
-            icon_asset_path("fa:brands:нет-такого", "folder"),
+            icon_asset_path("fa:brands:no-such-icon", "folder"),
             "icons/folder.svg"
         );
         assert_eq!(icon_asset_path("", "server"), "icons/server.svg");
@@ -793,15 +793,15 @@ mod tests {
     }
 
     #[test]
-    fn znachki_otdayutsya_zagruzchikom() {
+    fn icons_are_served_by_the_loader() {
         use gpui_kit::AssetSource as _;
         let assets = crate::ui::assets::Assets;
         let load = |path: &str| assets.load(path).ok().flatten().is_some();
         for name in SUGGESTED {
-            assert!(load(&format!("fa/solid/{name}.svg")), "нет fa/solid/{name}");
+            assert!(load(&format!("fa/solid/{name}.svg")), "missing fa/solid/{name}");
         }
         for old in ["database", "container", "zap", "square-terminal"] {
-            assert!(load(&icon_asset_path(old, "folder")), "нет замены {old}");
+            assert!(load(&icon_asset_path(old, "folder")), "no replacement for {old}");
         }
         assert!(load("icons/server.svg") && load("icons/folder.svg"));
     }

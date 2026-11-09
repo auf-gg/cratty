@@ -1,0 +1,8 @@
+selfhst:
+  parse_failed: "failed to parse the selfh.st catalog"
+  empty: "the selfh.st catalog is empty"
+  load_failed: "failed to load the selfh.st catalog"
+  not_utf8: "the selfh.st catalog is not UTF-8"
+  icon_failed: "failed to download icon %{name}"
+  cut_off: "response was cut off"
+  too_large: "response is too large"

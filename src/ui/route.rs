@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, label::Label, v_flex};
 use gpui_kit::{AnyElement, App, Div, SharedString, div, prelude::*};
 use proto::{ForwardKind, PortForward};
@@ -35,12 +36,12 @@ pub struct ForwardView {
     pub to: End,
 }
 
-pub fn kind_title(kind: ForwardKind) -> &'static str {
+pub fn kind_title(kind: ForwardKind) -> std::borrow::Cow<'static, str> {
     match kind {
-        ForwardKind::Local => "Локальный",
-        ForwardKind::Remote => "Удалённый",
-        ForwardKind::Dynamic => "Динамический",
-        ForwardKind::Unsupported => "Неизвестный",
+        ForwardKind::Local => t!("route.kind_local"),
+        ForwardKind::Remote => t!("route.kind_remote"),
+        ForwardKind::Dynamic => t!("route.kind_dynamic"),
+        ForwardKind::Unsupported => t!("route.kind_unknown"),
     }
 }
 
@@ -53,32 +54,33 @@ fn end(place: Place, title: impl Into<String>, detail: impl Into<String>) -> End
 }
 
 pub fn forward_view(rule: &PortForward, server: &str) -> ForwardView {
+    let fallback = t!("route.server_fallback");
     let server = if server.trim().is_empty() {
-        "сервер"
+        &*fallback
     } else {
         server
     };
     let listen = rule.listen_port;
     match rule.kind {
         ForwardKind::Local => ForwardView {
-            from: end(Place::You, "Этот компьютер", format!("127.0.0.1:{listen}")),
-            via: format!("через {server}"),
-            to: end(Place::Network, rule.target(), "Адрес в сети сервера"),
+            from: end(Place::You, t!("route.this_computer"), format!("127.0.0.1:{listen}")),
+            via: t!("route.via", server = server).to_string(),
+            to: end(Place::Network, rule.target(), t!("route.addr_server_net")),
         },
         ForwardKind::Remote => ForwardView {
-            from: end(Place::Server, server, format!("Порт {listen} на сервере")),
-            via: "на этот компьютер".into(),
-            to: end(Place::You, rule.target(), "Адрес в локальной сети"),
+            from: end(Place::Server, server, t!("route.port_on_server", port = listen).to_string()),
+            via: t!("route.to_this_computer").to_string(),
+            to: end(Place::You, rule.target(), t!("route.addr_local_net")),
         },
         ForwardKind::Dynamic => ForwardView {
             from: end(Place::You, "SOCKS5", format!("127.0.0.1:{listen}")),
-            via: format!("через {server}"),
-            to: end(Place::Network, "Любой адрес", "Выход в сеть через сервер"),
+            via: t!("route.via", server = server).to_string(),
+            to: end(Place::Network, t!("route.any_address"), t!("route.internet_via_server")),
         },
         ForwardKind::Unsupported => ForwardView {
             from: end(Place::You, "?", ""),
             via: String::new(),
-            to: end(Place::Network, "Правило неизвестного типа", ""),
+            to: end(Place::Network, t!("route.unknown_rule"), ""),
         },
     }
 }
@@ -206,11 +208,11 @@ mod tests {
     }
 
     #[test]
-    fn napravlenie_probrosa_vidno_po_skheme() {
+    fn forward_direction_is_visible_from_the_scheme() {
         let local = forward_view(&rule(ForwardKind::Local), "prod-01");
         assert_eq!(local.from.place, Place::You);
         assert_eq!(local.from.detail, "127.0.0.1:8080");
-        assert_eq!(local.via, "через prod-01");
+        assert_eq!(local.via, "via prod-01");
         assert_eq!(local.to.title, "db.internal:5432");
 
         let remote = forward_view(&rule(ForwardKind::Remote), "prod-01");
@@ -218,7 +220,7 @@ mod tests {
         assert_eq!(remote.to.place, Place::You);
 
         let socks = forward_view(&rule(ForwardKind::Dynamic), "");
-        assert_eq!(socks.via, "через сервер");
+        assert_eq!(socks.via, "via server");
         assert_eq!(socks.to.place, Place::Network);
     }
 }

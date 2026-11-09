@@ -12,8 +12,8 @@ pub const RECORD_MAGIC: &[u8] = b"cratty/record\x01";
 
 pub const BODY_VERSION: u32 = 1;
 
-/// Id записи со свойствами хранилища. Фиксированный, чтобы все устройства
-/// писали в одну запись и сходились по обычному правилу «новее побеждает».
+/// Id of the record holding vault properties. Fixed so that all devices
+/// write to one record and converge by the usual "newer wins" rule.
 pub const VAULT_META_ID: &str = "00000000000000000000000000000000";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,11 +29,11 @@ pub enum RecordBody {
     Key(KeyRecord),
     Proxy(ProxyRecord),
     Snippet(crate::SnippetRecord),
-    /// Оформление группы хостов: имя и значок.
+    /// Host group presentation: name and icon.
     Group(crate::GroupRecord),
-    /// Скачанный значок (например, из каталога selfh.st), чтобы он был и без сети.
+    /// Downloaded icon (for example, from the selfh.st catalog) so it is available offline.
     Icon(crate::IconRecord),
-    /// Свойства самого хранилища (имя). Одна запись с [`VAULT_META_ID`].
+    /// Properties of the vault itself (name). A single record with [`VAULT_META_ID`].
     Vault(VaultMeta),
     #[serde(other)]
     Tombstone,
@@ -42,13 +42,13 @@ pub enum RecordBody {
 impl core::fmt::Debug for RecordBody {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Host(_) => f.write_str("Host(<скрыт>)"),
-            Self::Key(_) => f.write_str("Key(<скрыт>)"),
-            Self::Proxy(_) => f.write_str("Proxy(<скрыт>)"),
-            Self::Snippet(_) => f.write_str("Snippet(<скрыт>)"),
-            Self::Group(_) => f.write_str("Group(<скрыт>)"),
-            Self::Icon(_) => f.write_str("Icon(<скрыт>)"),
-            Self::Vault(_) => f.write_str("Vault(<скрыт>)"),
+            Self::Host(_) => f.write_str("Host(<hidden>)"),
+            Self::Key(_) => f.write_str("Key(<hidden>)"),
+            Self::Proxy(_) => f.write_str("Proxy(<hidden>)"),
+            Self::Snippet(_) => f.write_str("Snippet(<hidden>)"),
+            Self::Group(_) => f.write_str("Group(<hidden>)"),
+            Self::Icon(_) => f.write_str("Icon(<hidden>)"),
+            Self::Vault(_) => f.write_str("Vault(<hidden>)"),
             Self::Tombstone => f.write_str("Tombstone"),
         }
     }
@@ -242,7 +242,7 @@ impl EncryptedRecord {
 
         if sealed.v != BODY_VERSION {
             return Err(Error::Body(format!(
-                "версия тела записи {} не поддерживается",
+                "record body version {} is not supported",
                 sealed.v
             )));
         }
@@ -318,10 +318,10 @@ mod tests {
     use vault::{DataKey, Key32};
 
     #[test]
-    fn starye_vidy_zapisey_chitayutsya_kak_udalyonnye() {
+    fn old_record_kinds_are_read_as_deleted() {
         for json in [
             r#"{"kind":"server","base":"http://x","email":"a@b","seq":3}"#,
-            r#"{"kind":"team","vault_id":"v","name":"боевой"}"#,
+            r#"{"kind":"team","vault_id":"v","name":"production"}"#,
             r#"{"kind":"peer","user_id":"u","pubkey":"AA"}"#,
         ] {
             let body: RecordBody = serde_json::from_str(json).expect(json);
@@ -332,7 +332,7 @@ mod tests {
     fn key() -> RecordKey {
         DataKey::from_key(Key32::from_bytes([0x42; 32]))
             .record_key()
-            .expect("подключ")
+            .expect("subkey")
     }
 
     fn ids() -> (VaultId, RecordId, DeviceId) {
@@ -346,7 +346,7 @@ mod tests {
     fn sample() -> (VaultId, Record) {
         let (vault_id, record_id, device_id) = ids();
         let mut host = HostRecord::new("prod-01.example.com");
-        host.label = "боевой".into();
+        host.label = "production".into();
         host.user = "root".into();
         (
             vault_id,
@@ -360,53 +360,53 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_cherez_shifrovanie_i_bayty() {
+    fn roundtrip_through_encryption_and_bytes() {
         let (vault_id, record) = sample();
-        let sealed = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let sealed = record.seal(&key(), &vault_id, 1).expect("encryption");
 
-        let restored = EncryptedRecord::decode(&sealed.encode()).expect("разбор");
+        let restored = EncryptedRecord::decode(&sealed.encode()).expect("parse");
         assert_eq!(restored, sealed);
 
-        let opened = restored.open(&key(), &vault_id).expect("расшифровка");
+        let opened = restored.open(&key(), &vault_id).expect("decryption");
         assert_eq!(opened, record);
     }
 
     #[test]
-    fn shifrotekst_ne_soderzhit_imya_hosta() {
+    fn ciphertext_does_not_contain_host_name() {
         let (vault_id, record) = sample();
         let bytes = record
             .seal(&key(), &vault_id, 1)
-            .expect("шифрование")
+            .expect("encryption")
             .encode();
         let needle = b"prod-01.example.com";
         assert!(!bytes.windows(needle.len()).any(|window| window == needle));
     }
 
     #[test]
-    fn chuzhoy_klyuch_ne_otkryvaet() {
+    fn foreign_key_does_not_open() {
         let (vault_id, record) = sample();
-        let sealed = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let sealed = record.seal(&key(), &vault_id, 1).expect("encryption");
 
         let alien = DataKey::generate()
             .expect("CSPRNG")
             .record_key()
-            .expect("подключ");
+            .expect("subkey");
         assert!(sealed.open(&alien, &vault_id).is_err());
     }
 
     #[test]
-    fn zapis_iz_chuzhogo_hranilishcha_ne_otkryvaetsya() {
+    fn record_from_foreign_vault_does_not_open() {
         let (vault_id, record) = sample();
-        let sealed = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let sealed = record.seal(&key(), &vault_id, 1).expect("encryption");
 
         let other_vault = VaultId::generate().expect("CSPRNG");
         assert!(sealed.open(&key(), &other_vault).is_err());
     }
 
     #[test]
-    fn pravka_konverta_ne_prohodit() {
+    fn envelope_tampering_is_rejected() {
         let (vault_id, record) = sample();
-        let sealed = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let sealed = record.seal(&key(), &vault_id, 1).expect("encryption");
 
         let mut bumped_rev = sealed.clone();
         bumped_rev.rev += 1;
@@ -432,9 +432,9 @@ mod tests {
     }
 
     #[test]
-    fn izmenennyy_bayt_fayla_ne_razbiraetsya_ili_ne_otkryvaetsya() {
+    fn modified_file_byte_does_not_parse_or_open() {
         let (vault_id, record) = sample();
-        let sealed = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let sealed = record.seal(&key(), &vault_id, 1).expect("encryption");
         let bytes = sealed.encode();
 
         for i in 0..bytes.len() {
@@ -442,33 +442,33 @@ mod tests {
             damaged[i] ^= 0x01;
             let opened =
                 EncryptedRecord::decode(&damaged).and_then(|record| record.open(&key(), &vault_id));
-            assert!(opened.is_err(), "байт {i} изменён, а запись открылась");
+            assert!(opened.is_err(), "byte {i} was modified but the record still opened");
         }
     }
 
     #[test]
-    fn obrezannyy_fayl_ne_razbiraetsya() {
+    fn truncated_file_does_not_parse() {
         let (vault_id, record) = sample();
         let bytes = record
             .seal(&key(), &vault_id, 1)
-            .expect("шифрование")
+            .expect("encryption")
             .encode();
         for cut in 0..bytes.len() {
             assert!(
                 EncryptedRecord::decode(&bytes[..cut]).is_err(),
-                "файл обрезан до {cut} байт и разобрался"
+                "file truncated to {cut} bytes and still parsed"
             );
         }
     }
 
     #[test]
-    fn chuzhoy_fayl_ne_razbiraetsya() {
+    fn foreign_file_does_not_parse() {
         assert!(EncryptedRecord::decode(b"").is_err());
         assert!(EncryptedRecord::decode(b"{\"hosts\":[]}").is_err());
     }
 
     #[test]
-    fn nadgrobie_zamenyaet_telo_no_ne_zapis() {
+    fn tombstone_replaces_body_but_not_record() {
         let (vault_id, record) = sample();
         let device = DeviceId::generate().expect("CSPRNG");
         let dead = record.tombstone(device, 1_700_000_001_000);
@@ -477,15 +477,15 @@ mod tests {
         assert_eq!(dead.rev, record.rev + 1);
         assert!(dead.body.is_tombstone());
 
-        let sealed = dead.seal(&key(), &vault_id, 1).expect("шифрование");
-        let opened = sealed.open(&key(), &vault_id).expect("расшифровка");
+        let sealed = dead.seal(&key(), &vault_id, 1).expect("encryption");
+        let opened = sealed.open(&key(), &vault_id).expect("decryption");
         assert!(opened.body.is_tombstone());
     }
 
     #[test]
-    fn konflikt_reshaetsya_po_rev_potom_mtime_potom_device() {
+    fn conflict_is_resolved_by_rev_then_mtime_then_device() {
         let (vault_id, record) = sample();
-        let sealed = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let sealed = record.seal(&key(), &vault_id, 1).expect("encryption");
 
         let mut newer_rev = sealed.clone();
         newer_rev.rev = sealed.rev + 1;
@@ -505,95 +505,95 @@ mod tests {
     }
 
     #[test]
-    fn parol_perezhivaet_shifrovanie_i_disk() {
+    fn password_survives_encryption_and_disk() {
         let (vault_id, mut record) = sample();
-        let mut host = record.body.as_host().expect("хост").clone();
+        let mut host = record.body.as_host().expect("host").clone();
         host.set_password(crate::Secret::new(b"hunter2".to_vec()));
         record.body = RecordBody::Host(host);
 
-        let sealed = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let sealed = record.seal(&key(), &vault_id, 1).expect("encryption");
         let opened = EncryptedRecord::decode(&sealed.encode())
-            .expect("разбор")
+            .expect("parse")
             .open(&key(), &vault_id)
-            .expect("расшифровка");
+            .expect("decryption");
 
         assert_eq!(
             opened
                 .body
                 .as_host()
-                .expect("хост")
+                .expect("host")
                 .password()
-                .expect("пароль")
+                .expect("password")
                 .expose(),
             b"hunter2"
         );
     }
 
     #[test]
-    fn parolya_net_v_shifrotekste() {
+    fn password_is_absent_from_ciphertext() {
         let (vault_id, mut record) = sample();
-        let mut host = record.body.as_host().expect("хост").clone();
+        let mut host = record.body.as_host().expect("host").clone();
         host.set_password(crate::Secret::new(b"hunter2".to_vec()));
         record.body = RecordBody::Host(host);
 
         let bytes = record
             .seal(&key(), &vault_id, 1)
-            .expect("шифрование")
+            .expect("encryption")
             .encode();
         let needle = b"hunter2";
         assert!(!bytes.windows(needle.len()).any(|window| window == needle));
     }
 
     #[test]
-    fn zapis_bez_sekretov_ne_rastet() {
+    fn record_without_secrets_does_not_grow() {
         let (vault_id, record) = sample();
-        let without = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let without = record.seal(&key(), &vault_id, 1).expect("encryption");
 
-        let mut host = record.body.as_host().expect("хост").clone();
+        let mut host = record.body.as_host().expect("host").clone();
         host.set_password(crate::Secret::new(b"x".to_vec()));
         let with = Record {
             body: RecordBody::Host(host),
             ..record.clone()
         }
         .seal(&key(), &vault_id, 1)
-        .expect("шифрование");
+        .expect("encryption");
 
         assert!(with.payload.len() > without.payload.len());
     }
 
     #[test]
-    fn privyazka_k_ustroystvu_perezhivaet_disk() {
+    fn device_binding_survives_disk() {
         let (vault_id, record) = sample();
         let bound = record.clone().with_device_only(true);
 
-        assert!(record.syncable(), "по умолчанию запись синхронизируется");
+        assert!(record.syncable(), "a record is synced by default");
         assert!(!bound.syncable());
 
         let opened = EncryptedRecord::decode(
             &bound
                 .seal(&key(), &vault_id, 1)
-                .expect("шифрование")
+                .expect("encryption")
                 .encode(),
         )
-        .expect("разбор")
+        .expect("parse")
         .open(&key(), &vault_id)
-        .expect("расшифровка");
+        .expect("decryption");
 
         assert!(opened.device_only);
         assert!(!opened.syncable());
     }
 
     #[test]
-    fn privyazka_ne_vidna_v_konverte() {
+    fn binding_is_not_visible_in_envelope() {
         let (vault_id, record) = sample();
         let free = record
             .clone()
             .seal(&key(), &vault_id, 1)
-            .expect("шифрование");
+            .expect("encryption");
         let bound = record
             .with_device_only(true)
             .seal(&key(), &vault_id, 1)
-            .expect("шифрование");
+            .expect("encryption");
 
         assert_eq!(free.id, bound.id);
         assert_eq!(free.rev, bound.rev);
@@ -603,12 +603,12 @@ mod tests {
         assert_eq!(
             free.payload.len(),
             bound.payload.len(),
-            "по длине шифротекста флаг тоже не должен угадываться"
+            "the flag must not be guessable from the ciphertext length either"
         );
     }
 
     #[test]
-    fn pravka_ne_snimaet_privyazku() {
+    fn tampering_does_not_remove_binding() {
         let (_, record) = sample();
         let bound = record.with_device_only(true);
 
@@ -618,14 +618,14 @@ mod tests {
             1_700_000_500_000,
             RecordBody::Host(HostRecord::new("example.org")),
         );
-        assert!(edited.device_only, "привязка потерялась при правке");
+        assert!(edited.device_only, "device binding was lost on edit");
 
         let dead = bound.tombstone(device, 1_700_000_600_000);
-        assert!(dead.device_only, "привязка потерялась при удалении");
+        assert!(dead.device_only, "device binding was lost on deletion");
     }
 
     #[test]
-    fn staraya_zapis_bez_flaga_sinhroniziruetsya() {
+    fn old_record_without_flag_is_synced() {
         let (vault_id, record) = sample();
 
         let legacy = format!(
@@ -638,7 +638,7 @@ mod tests {
             rev: record.rev,
             key_gen: 1,
         };
-        let payload = vault::seal_record(&key(), &context, legacy.as_bytes()).expect("шифрование");
+        let payload = vault::seal_record(&key(), &context, legacy.as_bytes()).expect("encryption");
         let stored = EncryptedRecord {
             id: record.id.clone(),
             rev: record.rev,
@@ -648,30 +648,30 @@ mod tests {
             payload,
         };
 
-        let opened = stored.open(&key(), &vault_id).expect("расшифровка");
+        let opened = stored.open(&key(), &vault_id).expect("decryption");
         assert!(!opened.device_only);
         assert!(opened.syncable());
     }
 
     #[test]
-    fn debug_ne_pechataet_telo() {
+    fn debug_does_not_print_body() {
         let (_, mut record) = sample();
-        let mut host = record.body.as_host().expect("хост").clone();
+        let mut host = record.body.as_host().expect("host").clone();
         host.set_password(crate::Secret::new(b"hunter2".to_vec()));
         record.body = RecordBody::Host(host);
 
         let text = format!("{record:?}");
-        assert!(!text.contains("hunter2"), "пароль в Debug: {text}");
-        assert!(!text.contains("prod-01"), "адрес в Debug: {text}");
-        assert!(text.contains("<скрыт>"));
+        assert!(!text.contains("hunter2"), "password in Debug: {text}");
+        assert!(!text.contains("prod-01"), "address in Debug: {text}");
+        assert!(text.contains("<hidden>"));
 
         assert_eq!(format!("{:?}", RecordBody::Tombstone), "Tombstone");
     }
 
     #[test]
-    fn ravnye_zapisi_ne_menyayut_pobeditelya() {
+    fn equal_records_do_not_change_winner() {
         let (vault_id, record) = sample();
-        let sealed = record.seal(&key(), &vault_id, 1).expect("шифрование");
+        let sealed = record.seal(&key(), &vault_id, 1).expect("encryption");
         let same = sealed.clone();
         assert_eq!(wins(&sealed, &same), &sealed);
     }

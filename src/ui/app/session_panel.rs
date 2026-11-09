@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 use crate::ssh::forward::ForwardState;
 use crate::ui::route;
 use crate::ui::terminal::Status;
@@ -46,7 +47,7 @@ impl AppView {
                     .p_4()
                     .gap_2()
                     .child(
-                        Label::new("Файловый менеджер использует текущее SSH-соединение.")
+                        Label::new(t!("session.files_hint"))
                             .text_xs()
                             .text_color(theme.muted_foreground),
                     )
@@ -54,7 +55,7 @@ impl AppView {
                         Button::new("panel-open-files")
                             .outline()
                             .small()
-                            .label("Открыть файлы")
+                            .label(t!("session.open_files"))
                             .disabled(tab.is_closed(cx))
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.ensure_files_panel(index, cx)
@@ -64,7 +65,7 @@ impl AppView {
             },
         };
 
-        // Меню «Сниппеты» и «Разделить» раскрываются под своими кнопками в шапке.
+        // The "Snippets" and "Split" menus open under their buttons in the header.
         let menus = div()
             .absolute()
             .top(px(40.))
@@ -73,7 +74,7 @@ impl AppView {
             .children(self.snippets_popover(index, cx))
             .children(self.split_popover(index, cx));
 
-        let tab_label = |id: &'static str, label: &'static str, value: InfoTab| {
+        let tab_label = |id: &'static str, label: Cow<'static, str>, value: InfoTab| {
             let current = self.info_tab == value;
             div()
                 .id(id)
@@ -116,8 +117,8 @@ impl AppView {
                         .pr_2()
                         .gap_4()
                         .items_center()
-                        .child(tab_label("panel-tab-info", "Сведения", InfoTab::Info))
-                        .child(tab_label("panel-tab-files", "Файлы", InfoTab::Files))
+                        .child(tab_label("panel-tab-info", t!("session.tab_info"), InfoTab::Info))
+                        .child(tab_label("panel-tab-files", t!("session.tab_files"), InfoTab::Files))
                         .child(div().flex_grow_1())
                         .child(
                             h_flex()
@@ -128,7 +129,7 @@ impl AppView {
                                         .small()
                                         .selected(self.snippets_open)
                                         .icon(Icon::empty().path("icons/square-terminal.svg"))
-                                        .tooltip("Сниппеты")
+                                        .tooltip(t!("session.snippets"))
                                         .disabled(tab.is_closed(cx))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.snippets_open = !this.snippets_open;
@@ -142,7 +143,7 @@ impl AppView {
                                         .small()
                                         .selected(self.split_menu)
                                         .icon(Icon::empty().path("icons/panel-left-open.svg"))
-                                        .tooltip("Разделить")
+                                        .tooltip(t!("session.split"))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.split_menu = !this.split_menu;
                                             this.snippets_open = false;
@@ -168,10 +169,10 @@ impl AppView {
         }
     }
 
-    fn info_section(title: &'static str, cx: &App) -> gpui_kit::Div {
+    fn info_section(title: impl Into<SharedString>, cx: &App) -> gpui_kit::Div {
         v_flex().gap_1().child(
             div().h(px(28.)).flex().items_center().child(
-                Label::new(title)
+                Label::new(title.into())
                     .text_xs()
                     .font_medium()
                     .text_color(cx.theme().muted_foreground),
@@ -179,14 +180,14 @@ impl AppView {
         )
     }
 
-    fn info_row(label: &'static str, value: AnyElement, cx: &App) -> AnyElement {
+    fn info_row(label: impl Into<SharedString>, value: AnyElement, cx: &App) -> AnyElement {
         h_flex()
             .min_h(px(28.))
             .gap_3()
             .items_center()
             .child(
                 div().w(px(76.)).flex_shrink_0().child(
-                    Label::new(label)
+                    Label::new(label.into())
                         .text_sm()
                         .text_color(cx.theme().muted_foreground),
                 ),
@@ -204,12 +205,12 @@ impl AppView {
         let theme = cx.theme().clone();
         let terminal = view.read(cx);
         let (connected, status_text, status_color) = match terminal.status() {
-            Status::Connecting { .. } => (false, "Подключение…".to_string(), theme.warning),
-            Status::Connected { .. } => (true, "Подключено".to_string(), theme.success),
+            Status::Connecting { .. } => (false, t!("session.connecting").to_string(), theme.warning),
+            Status::Connected { .. } => (true, t!("session.connected").to_string(), theme.success),
             Status::Closed { message, failed } => (
                 false,
                 if message.is_empty() {
-                    "Отключено".to_string()
+                    t!("session.disconnected").to_string()
                 } else {
                     message.to_string()
                 },
@@ -234,17 +235,17 @@ impl AppView {
             .child(Label::new(SharedString::from(status_text)).text_sm())
             .into_any_element();
         let auth = match tab.credentials.auth {
-            HostAuth::Auto => "Автоматически",
-            HostAuth::Password => "Пароль",
-            HostAuth::Key { .. } => "Файл ключа",
+            HostAuth::Auto => t!("session.auth_auto"),
+            HostAuth::Password => t!("session.auth_password"),
+            HostAuth::Key { .. } => t!("session.auth_key"),
         };
 
         let mut steps =
-            vec![route::node(route::Place::You, "Этот компьютер", "", cx).into_any_element()];
+            vec![route::node(route::Place::You, t!("session.this_computer"), "", cx).into_any_element()];
         for item in &tab.credentials.via {
             let (place, detail) = match item {
-                ViaItem::Proxy(_) => (route::Place::Hop, "Прокси-сервер"),
-                ViaItem::Host(_) => (route::Place::Server, "Промежуточный хост"),
+                ViaItem::Proxy(_) => (route::Place::Hop, t!("session.proxy_server")),
+                ViaItem::Host(_) => (route::Place::Server, t!("session.intermediate_host")),
             };
             steps.push(
                 route::node(place, shorten(&item.title(), ROW_TITLE_CHARS), detail, cx)
@@ -255,7 +256,7 @@ impl AppView {
             route::node(
                 route::Place::Server,
                 shorten(&server, ROW_TITLE_CHARS),
-                "Целевой сервер",
+                t!("session.target_server"),
                 cx,
             )
             .into_any_element(),
@@ -266,8 +267,8 @@ impl AppView {
             .enumerate()
             .map(|(index, (rule, state))| {
                 let (text, color) = match state {
-                    ForwardState::Active => ("Активно".to_string(), theme.success),
-                    ForwardState::Off => ("Выключено".to_string(), theme.muted_foreground),
+                    ForwardState::Active => (t!("session.forward_active").to_string(), theme.success),
+                    ForwardState::Off => (t!("session.forward_off").to_string(), theme.muted_foreground),
                     ForwardState::Failed(error) => (error.clone(), theme.danger),
                 };
                 let active = *state == ForwardState::Active;
@@ -295,9 +296,9 @@ impl AppView {
                                     .xsmall()
                                     .ghost()
                                     .label(if active {
-                                        "Выключить"
+                                        t!("session.turn_off")
                                     } else {
-                                        "Включить"
+                                        t!("session.turn_on")
                                     })
                                     .disabled(!connected)
                                     .on_click(cx.listener(move |_, _, _window, cx| {
@@ -318,23 +319,23 @@ impl AppView {
             .pb_4()
             .gap_4()
             .child(
-                Self::info_section("Сеанс", cx)
+                Self::info_section(t!("session.section_session"), cx)
                     .child(Self::info_row(
-                        "Адрес",
+                        t!("session.row_address"),
                         Label::new(SharedString::from(target.clone()))
                             .text_sm()
                             .into_any_element(),
                         cx,
                     ))
-                    .child(Self::info_row("Состояние", status, cx))
+                    .child(Self::info_row(t!("session.row_status"), status, cx))
                     .child(Self::info_row(
-                        "Вход",
+                        t!("session.row_login"),
                         Label::new(auth).text_sm().into_any_element(),
                         cx,
                     )),
             )
             .child(
-                Self::info_section("Маршрут", cx)
+                Self::info_section(t!("session.section_route"), cx)
                     .child(route::flow(steps, cx))
                     .children(tab.credentials.proxy_error.clone().map(|error| {
                         Label::new(SharedString::from(error))
@@ -343,10 +344,10 @@ impl AppView {
                     })),
             )
             .child(
-                Self::info_section("Переадресация портов", cx)
+                Self::info_section(t!("session.section_forwarding"), cx)
                     .when(port_rows.is_empty(), |this| {
                         this.child(
-                            Label::new("Правила переадресации не заданы.")
+                            Label::new(t!("session.no_forwards"))
                                 .text_xs()
                                 .text_color(theme.muted_foreground),
                         )
@@ -358,7 +359,7 @@ impl AppView {
                                 .ghost()
                                 .xsmall()
                                 .icon(Icon::empty().path("icons/pencil.svg"))
-                                .label("Изменить маршрут и переадресацию")
+                                .label(t!("session.edit_route"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.edit(&vault, &target, window, cx)
                                 })),
@@ -375,7 +376,7 @@ mod tests {
     use crate::ui::connect::Request;
 
     #[test]
-    fn adres_bez_standartnogo_porta() {
+    fn address_without_default_port() {
         let request = Request {
             alias: "prod-01".into(),
             user: Some("root".into()),

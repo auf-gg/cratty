@@ -1,0 +1,7 @@
+panes:
+  session_start_failed: "Failed to start the session."
+  disconnected: "Disconnected"
+  reconnect: "Reconnect"
+  close_pane: "Close pane"
+  connection_for_new_pane: "Connection for the new pane"
+  current_host: "Current host"

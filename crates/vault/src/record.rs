@@ -49,7 +49,7 @@ mod tests {
     fn key() -> RecordKey {
         DataKey::from_key(Key32::from_bytes([0x42; KEY_LEN]))
             .record_key()
-            .expect("подключ")
+            .expect("subkey")
     }
 
     fn ctx() -> RecordContext<'static> {
@@ -62,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn aad_zapisi_izvestnyy_vektor() {
+    fn record_aad_known_vector() {
         let mut expected = Vec::new();
         expected.extend_from_slice(&15u32.to_le_bytes());
         expected.extend_from_slice(b"cratty/vault/v1");
@@ -81,22 +81,22 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let sealed = seal_record(&key(), &ctx(), b"ssh://root@prod").expect("шифрование");
-        let opened = open_record(&key(), &ctx(), &sealed).expect("расшифровка");
+        let sealed = seal_record(&key(), &ctx(), b"ssh://root@prod").expect("encryption");
+        let opened = open_record(&key(), &ctx(), &sealed).expect("decryption");
         assert_eq!(opened.expose_secret(), b"ssh://root@prod");
     }
 
     #[test]
-    fn pustaya_zapis_shifruetsya() {
-        let sealed = seal_record(&key(), &ctx(), b"").expect("шифрование");
-        let opened = open_record(&key(), &ctx(), &sealed).expect("расшифровка");
+    fn empty_record_is_encrypted() {
+        let sealed = seal_record(&key(), &ctx(), b"").expect("encryption");
+        let opened = open_record(&key(), &ctx(), &sealed).expect("decryption");
         assert!(opened.expose_secret().is_empty());
     }
 
     #[test]
-    fn shifrotekst_ne_soderzhit_otkrytyy_tekst() {
+    fn ciphertext_does_not_contain_plaintext() {
         let plaintext = b"pa$$w0rd from prod";
-        let sealed = seal_record(&key(), &ctx(), plaintext).expect("шифрование");
+        let sealed = seal_record(&key(), &ctx(), plaintext).expect("encryption");
         assert!(
             !sealed
                 .windows(plaintext.len())
@@ -105,12 +105,12 @@ mod tests {
     }
 
     #[test]
-    fn chuzhoy_klyuch_ne_otkryvaet() {
-        let sealed = seal_record(&key(), &ctx(), "секрет".as_bytes()).expect("шифрование");
+    fn foreign_key_does_not_open() {
+        let sealed = seal_record(&key(), &ctx(), "secret".as_bytes()).expect("encryption");
         let alien = DataKey::generate()
             .expect("CSPRNG")
             .record_key()
-            .expect("подключ");
+            .expect("subkey");
         assert_eq!(
             open_record(&alien, &ctx(), &sealed).unwrap_err(),
             Error::Decrypt
@@ -118,8 +118,8 @@ mod tests {
     }
 
     #[test]
-    fn zapis_ne_perestavlyaetsya_na_chuzhoy_adres() {
-        let sealed = seal_record(&key(), &ctx(), "пароль от прода".as_bytes()).expect("шифрование");
+    fn record_cannot_be_moved_to_foreign_address() {
+        let sealed = seal_record(&key(), &ctx(), "production password".as_bytes()).expect("encryption");
 
         let elsewhere = [
             RecordContext {
@@ -141,13 +141,13 @@ mod tests {
             assert_eq!(
                 open_record(&key(), &other, &sealed).unwrap_err(),
                 Error::Decrypt,
-                "запись открылась по адресу {other:?}"
+                "record opened at address {other:?}"
             );
         }
     }
 
     #[test]
-    fn granicy_identifikatorov_ne_skleivayutsya() {
+    fn identifier_boundaries_do_not_merge() {
         let left = RecordContext {
             vault_id: "ab",
             record_id: "c",
@@ -160,7 +160,7 @@ mod tests {
             rev: 1,
             key_gen: 1,
         };
-        let sealed = seal_record(&key(), &left, "секрет".as_bytes()).expect("шифрование");
+        let sealed = seal_record(&key(), &left, "secret".as_bytes()).expect("encryption");
         assert_eq!(
             open_record(&key(), &right, &sealed).unwrap_err(),
             Error::Decrypt
@@ -168,37 +168,37 @@ mod tests {
     }
 
     #[test]
-    fn izmenennyy_bayt_shifroteksta_ne_otkryvaet() {
-        let sealed = seal_record(&key(), &ctx(), "секрет".as_bytes()).expect("шифрование");
+    fn modified_ciphertext_byte_does_not_open() {
+        let sealed = seal_record(&key(), &ctx(), "secret".as_bytes()).expect("encryption");
         for i in 0..sealed.len() {
             let mut damaged = sealed.clone();
             damaged[i] ^= 0x01;
             assert_eq!(
                 open_record(&key(), &ctx(), &damaged).unwrap_err(),
                 Error::Decrypt,
-                "байт {i} изменён, а запись открылась"
+                "byte {i} was modified but the record still opened"
             );
         }
     }
 
     #[test]
-    fn dve_odinakovye_zapisi_daut_raznye_shifroteksty() {
-        let a = seal_record(&key(), &ctx(), "одно и то же".as_bytes()).expect("шифрование");
-        let b = seal_record(&key(), &ctx(), "одно и то же".as_bytes()).expect("шифрование");
+    fn two_identical_records_give_different_ciphertexts() {
+        let a = seal_record(&key(), &ctx(), "the same thing".as_bytes()).expect("encryption");
+        let b = seal_record(&key(), &ctx(), "the same thing".as_bytes()).expect("encryption");
         assert_ne!(a, b);
     }
 
     #[test]
-    fn klyuch_zapisey_ne_otkryvaet_chuzhoy_domen() {
+    fn records_key_does_not_open_foreign_domain() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let sealed = seal_record(
-            &data_key.record_key().expect("подключ"),
+            &data_key.record_key().expect("subkey"),
             &ctx(),
-            "секрет".as_bytes(),
+            "secret".as_bytes(),
         )
-        .expect("шифрование");
+        .expect("encryption");
 
-        let identity = data_key.identity_key().expect("подключ");
+        let identity = data_key.identity_key().expect("subkey");
         let aad = crate::aead::key_material_aad("identity", 1);
         assert_eq!(
             crate::aead::open_to_vec(identity.as_key(), &aad, &sealed).unwrap_err(),

@@ -1,0 +1,4 @@
+ui_theme:
+  system: "System"
+  dark: "Dark"
+  light: "Light"

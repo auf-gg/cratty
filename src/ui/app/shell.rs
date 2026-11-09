@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 
 impl AppView {
     pub(super) fn go(&mut self, section: Section, cx: &mut Context<Self>) {
@@ -45,8 +46,8 @@ impl AppView {
                                             .when(on, |button| button.danger())
                                             .when(!on, |button| button.ghost())
                                             .icon(Icon::empty().path("icons/monitor.svg"))
-                                            .label(if on { "Ввод во все панели: вкл." } else { "Ввод во все панели" })
-                                            .tooltip("Ввод с клавиатуры передаётся во все панели вкладки")
+                                            .label(if on { t!("shell.broadcast_on") } else { t!("shell.broadcast") })
+                                            .tooltip(t!("shell.broadcast_tip"))
                                             .on_click(cx.listener(move |this, _, _window, cx| {
                                                 this.toggle_broadcast(index, cx)
                                             }))
@@ -128,13 +129,14 @@ impl AppView {
     }
 
     fn page_frame(
-        title: &'static str,
+        title: impl Into<SharedString>,
         actions: Option<AnyElement>,
         body: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let title: SharedString = title.into();
         let theme = cx.theme().clone();
-        // Заголовок с вкладками и блок содержимого — одной ширины, по центру.
+        // The header with tabs and the content block share one width, centered.
         const WIDTH: f32 = 720.;
         v_flex()
             .size_full()
@@ -148,7 +150,7 @@ impl AppView {
                     .pb_3()
                     .justify_between()
                     .items_center()
-                    .child(Label::new(title).text_xl().font_semibold())
+                    .child(Label::new(title.clone()).text_xl().font_semibold())
                     .children(actions),
             )
             .child(
@@ -203,7 +205,7 @@ impl AppView {
     pub(super) fn quick_connect(&mut self, cx: &mut Context<Self>) {
         let raw = self.form.line.read(cx).value().trim().to_string();
         if raw.is_empty() {
-            self.error = Some("Введите адрес в формате пользователь@хост:порт.".into());
+            self.error = Some(t!("shell.enter_address").into());
             cx.notify();
             return;
         }
@@ -213,7 +215,7 @@ impl AppView {
     fn quick_files(&mut self, cx: &mut Context<Self>) {
         let raw = self.form.line.read(cx).value().trim().to_string();
         if raw.is_empty() {
-            self.error = Some("Введите адрес в формате пользователь@хост:порт.".into());
+            self.error = Some(t!("shell.enter_address").into());
             cx.notify();
             return;
         }
@@ -268,7 +270,7 @@ impl AppView {
         }
         let theme = cx.theme().clone();
 
-        let action = |id: &'static str, icon: Icon, label: &'static str, hint: &'static str| {
+        let action = |id: &'static str, icon: Icon, label: Cow<'static, str>, hint: Cow<'static, str>| {
             h_flex()
                 .id(id)
                 .h(px(32.))
@@ -305,16 +307,14 @@ impl AppView {
                                 v_flex()
                                     .child(Label::new("cratty").text_lg().font_semibold())
                                     .child(
-                                        Label::new("SSH-клиент")
+                                        Label::new(t!("shell.ssh_client"))
                                             .text_xs()
                                             .text_color(theme.muted_foreground),
                                     ),
                             ),
                     )
                     .child(
-                        Label::new(
-                            "Выберите хост в списке слева или введите адрес в формате user@host:port и нажмите Enter.",
-                        )
+                        Label::new(t!("shell.home_intro"))
                         .text_sm()
                         .text_color(theme.muted_foreground),
                     )
@@ -325,8 +325,8 @@ impl AppView {
                                 action(
                                     "home-new-host",
                                     Icon::new(IconName::Plus),
-                                    "Новый хост",
-                                    "Сохранить подключение",
+                                    t!("shell.home_new_host"),
+                                    t!("shell.home_new_host_hint"),
                                 )
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.new_host(window, cx)
@@ -336,8 +336,8 @@ impl AppView {
                                 action(
                                     "home-files",
                                     Icon::empty().path("icons/folder.svg"),
-                                    "Открыть файлы по адресу",
-                                    "SFTP",
+                                    t!("shell.home_files"),
+                                    "SFTP".into(),
                                 )
                                 .on_click(cx.listener(|this, _, _window, cx| this.quick_files(cx))),
                             )
@@ -345,8 +345,8 @@ impl AppView {
                                 action(
                                     "home-proxies",
                                     Icon::empty().path("icons/route.svg"),
-                                    "Прокси-серверы",
-                                    "Цепочки подключений",
+                                    t!("shell.home_proxies"),
+                                    t!("shell.home_proxies_hint"),
                                 )
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.go(Section::Proxies, cx)
@@ -356,8 +356,8 @@ impl AppView {
                                 action(
                                     "home-keys",
                                     Icon::empty().path("icons/key-round.svg"),
-                                    "Ключи",
-                                    "SSH-агент и импорт",
+                                    t!("shell.home_keys"),
+                                    t!("shell.home_keys_hint"),
                                 )
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.go(Section::Keys, cx)
@@ -406,7 +406,7 @@ impl AppView {
         Some(
             v_flex()
                 .gap_1()
-                .child(Self::field_label("Хранилище", muted))
+                .child(Self::field_label(t!("shell.field_vault"), muted))
                 .child(if editing {
                     Label::new(SharedString::from(self.vault_name(&self.form.vault)))
                         .text_sm()
@@ -464,9 +464,9 @@ impl AppView {
                             .border_color(theme.border)
                             .child(
                                 Label::new(if editing {
-                                    "Изменить хост"
+                                    t!("shell.edit_host")
                                 } else {
-                                    "Новый хост"
+                                    t!("shell.new_host")
                                 })
                                 .text_lg()
                                 .font_semibold(),
@@ -491,26 +491,26 @@ impl AppView {
                             .py_3()
                             .gap_3()
                             .children(vault_pick)
-                            .child(Label::new("Сервер").text_sm().font_semibold())
+                            .child(Label::new(t!("shell.server")).text_sm().font_semibold())
                             .child(form_fields)
                             .child(Self::drawer_group(
-                                "Аутентификация",
+                                t!("shell.authentication"),
                                 v_flex().gap_2().child(auth_switch).child(auth_fields),
                                 cx,
                             ))
                             .children(
                                 self.chain_block(cx)
-                                    .map(|block| Self::drawer_group("Маршрут", block, cx)),
+                                    .map(|block| Self::drawer_group(t!("shell.route"), block, cx)),
                             )
                             .children(
                                 self.forwards_block(cx).map(|block| {
-                                    Self::drawer_group("Переадресация портов", block, cx)
+                                    Self::drawer_group(t!("shell.port_forwarding"), block, cx)
                                 }),
                             )
                             .children(self.stored_rejected_notice(cx))
                             .children(
                                 self.record_controls(cx)
-                                    .map(|block| Self::drawer_group("Параметры записи", block, cx)),
+                                    .map(|block| Self::drawer_group(t!("shell.entry_options"), block, cx)),
                             )
                             .children(
                                 self.error.clone().map(|error| {
@@ -528,7 +528,7 @@ impl AppView {
                             .child(
                                 Button::new("editor-save")
                                     .primary()
-                                    .label("Сохранить")
+                                    .label(t!("shell.save"))
                                     .on_click(
                                         cx.listener(|this, _, _window, cx| this.save_current(cx)),
                                     ),
@@ -536,7 +536,7 @@ impl AppView {
                             .child(
                                 Button::new("editor-connect")
                                     .outline()
-                                    .label("Подключиться")
+                                    .label(t!("shell.connect"))
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.connect_from_form(cx);
                                         if this.error.is_none() {
@@ -550,7 +550,7 @@ impl AppView {
                                 Button::new("editor-delete")
                                     .ghost()
                                     .icon(Icon::new(IconName::Delete))
-                                    .label("Удалить")
+                                    .label(t!("shell.delete"))
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         this.forget(&vault, &target, cx);
                                         if this.error.is_none() {
@@ -565,9 +565,9 @@ impl AppView {
 
     fn settings_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let tabs = [
-            (SettingsTab::General, "Общие"),
-            (SettingsTab::Security, "Безопасность"),
-            (SettingsTab::Sync, "Синхронизация"),
+            (SettingsTab::General, t!("shell.tab_general")),
+            (SettingsTab::Security, t!("shell.tab_security")),
+            (SettingsTab::Sync, t!("shell.tab_sync")),
         ];
         let current = self.settings_tab;
         let nav = h_flex()
@@ -584,6 +584,6 @@ impl AppView {
                     }))
             }));
         let body = self.settings_panel(current, cx);
-        Self::page_frame("Настройки", Some(nav.into_any_element()), body, cx)
+        Self::page_frame(t!("shell.settings"), Some(nav.into_any_element()), body, cx)
     }
 }

@@ -1,6 +1,6 @@
-//! Файлы ключей хостов живут и в хранилище: при сохранении хоста и открытии
-//! хранилища файл копируется туда как есть (зашифрованный — зашифрованным),
-//! а если в пользовательском каталоге его нет, восстанавливается обратно.
+//! Host key files also live in the vault: when a host is saved and when the
+//! vault is opened, the file is copied there as is (encrypted stays encrypted),
+//! and if it is missing from the user's directory, it is restored.
 
 use std::path::{Path, PathBuf};
 
@@ -8,13 +8,13 @@ use super::key_tools::{display_path, expand_home};
 use super::*;
 use anyhow::Context as _;
 
-/// Запись хранилища с копией файла ключа. Путь хранится в виде `~/…`, чтобы
-/// ключ восстанавливался и на другом компьютере.
+/// Vault record with a copy of the key file. The path is stored as `~/…` so that
+/// the key can be restored on another computer too.
 pub(super) fn record_from_file(path: &Path) -> anyhow::Result<proto::KeyRecord> {
     let text = std::fs::read_to_string(path)
-        .with_context(|| format!("не прочитать {}", path.display()))?;
+        .with_context(|| t!("keys.could_not_read", path = path.display().to_string()).to_string())?;
 
-    // Не зашифрован — сразу пригоден и для агента.
+    // Not encrypted — immediately usable by the agent too.
     let decoded = ssh_agent::keys::decode_private(&text, None).ok();
     let public = match &decoded {
         Some(key) => Some(key.public_key().clone()),
@@ -45,8 +45,8 @@ pub(super) fn record_from_file(path: &Path) -> anyhow::Result<proto::KeyRecord> 
     Ok(record)
 }
 
-/// Открытая часть зашифрованного ключа: из `.pub` рядом или из самого файла —
-/// в формате OpenSSH она хранится открыто.
+/// Public part of an encrypted key: from the adjacent `.pub` or from the file itself —
+/// in OpenSSH format it is stored in the clear.
 fn public_of(path: &Path, text: &str) -> Option<russh::keys::PublicKey> {
     let pub_file = pub_path(path);
     if let Ok(line) = std::fs::read_to_string(&pub_file)
@@ -65,8 +65,8 @@ fn pub_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Возвращает файл ключа на место, если его там нет. Существующий файл не
-/// трогает. `Some(path)` — ключ восстановлен.
+/// Puts the key file back in place if it is missing. An existing file is not
+/// touched. `Some(path)` means the key was restored.
 pub(super) fn restore(record: &proto::KeyRecord) -> anyhow::Result<Option<PathBuf>> {
     let Some(file) = record.key_file().filter(|file| !file.is_empty()) else {
         return Ok(None);
@@ -98,7 +98,8 @@ fn create_private_dir(dir: &Path) -> anyhow::Result<()> {
     if dir.is_dir() {
         return Ok(());
     }
-    std::fs::create_dir_all(dir).with_context(|| format!("не создать {}", dir.display()))?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| t!("keys.could_not_create", path = dir.display().to_string()).to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -120,14 +121,14 @@ fn write_new(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
     let _ = mode;
     let mut file = options
         .open(path)
-        .with_context(|| format!("не создать {}", path.display()))?;
+        .with_context(|| t!("keys.could_not_create", path = path.display().to_string()).to_string())?;
     file.write_all(bytes)
-        .with_context(|| format!("не записать {}", path.display()))
+        .with_context(|| t!("keys.could_not_write", path = path.display().to_string()).to_string())
 }
 
 impl AppView {
-    /// Копирует в хранилище файлы ключей его хостов и восстанавливает те,
-    /// которых нет на диске.
+    /// Copies the key files of its hosts into the vault and restores those
+    /// that are missing on disk.
     pub(super) fn sync_key_files(&mut self, id: &str) {
         let Some(ix) = self.vault_ix(id) else {
             return;
@@ -166,13 +167,10 @@ impl AppView {
 
         let mut lines = Vec::new();
         if !restored.is_empty() {
-            lines.push(format!(
-                "Из хранилища восстановлены ключи: {}.",
-                restored.join(", ")
-            ));
+            lines.push(t!("keys.restored", list = restored.join(", ")).to_string());
         }
         if !problems.is_empty() {
-            lines.push(format!("Ключи: {}", problems.join("; ")));
+            lines.push(t!("keys.problems", list = problems.join("; ")).to_string());
         }
         if !lines.is_empty() {
             self.import_notice = Some(lines.join(" ").into());
@@ -185,43 +183,43 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let unique = proto::DeviceId::generate().expect("случайность");
+        let unique = proto::DeviceId::generate().expect("randomness");
         std::env::temp_dir().join(format!("cratty-key-backup-{name}-{}", unique.as_str()))
     }
 
     #[test]
-    fn kopiya_i_vosstanovlenie_klyucha() {
+    fn key_backup_and_restore() {
         let dir = temp_dir("plain");
-        let path = crate::ssh::keygen::generate(&dir, "srv", "me@pc").expect("ключ");
-        let original = std::fs::read(&path).expect("файл");
+        let path = crate::ssh::keygen::generate(&dir, "srv", "me@pc").expect("key");
+        let original = std::fs::read(&path).expect("file");
         let public = std::fs::read_to_string(pub_path(&path)).expect(".pub");
 
-        let mut record = record_from_file(&path).expect("копия");
+        let mut record = record_from_file(&path).expect("copy");
         assert!(
             record.is_usable(),
-            "незашифрованный ключ должен годиться агенту"
+            "an unencrypted key should be usable by the agent"
         );
         assert_eq!(
-            record.key_file().expect("файл").expose(),
+            record.key_file().expect("file").expose(),
             original.as_slice()
         );
         assert!(record.fingerprint.starts_with("SHA256:"));
 
-        // Путь восстановления — абсолютный, раз каталог не в домашнем.
+        // The restore path is absolute since the directory is not under home.
         record.source = path.display().to_string();
         assert_eq!(
-            restore(&record).expect("на месте"),
+            restore(&record).expect("in place"),
             None,
-            "существующий файл тронут"
+            "existing file was touched"
         );
 
-        std::fs::remove_file(&path).expect("удалить ключ");
-        std::fs::remove_file(pub_path(&path)).expect("удалить .pub");
+        std::fs::remove_file(&path).expect("remove key");
+        std::fs::remove_file(pub_path(&path)).expect("remove .pub");
         assert_eq!(
-            restore(&record).expect("восстановление"),
+            restore(&record).expect("restore"),
             Some(path.clone())
         );
-        assert_eq!(std::fs::read(&path).expect("файл"), original);
+        assert_eq!(std::fs::read(&path).expect("file"), original);
         assert_eq!(
             std::fs::read_to_string(pub_path(&path))
                 .expect(".pub")
@@ -232,42 +230,42 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).expect("файл").permissions().mode();
+            let mode = std::fs::metadata(&path).expect("file").permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn zashifrovannyy_klyuch_hranitsya_kak_est() {
+    fn encrypted_key_is_stored_as_is() {
         use russh::keys::ssh_key::{
             LineEnding, PrivateKey,
             private::{Ed25519Keypair, KeypairData},
         };
 
         let dir = temp_dir("encrypted");
-        std::fs::create_dir_all(&dir).expect("каталог");
+        std::fs::create_dir_all(&dir).expect("directory");
         let key = PrivateKey::new(
             KeypairData::Ed25519(Ed25519Keypair::from_seed(&[7u8; 32])),
             "enc@pc",
         )
-        .expect("ключ");
+        .expect("key");
         let encrypted = key
-            .encrypt(&mut getrandom::SysRng, "фраза")
-            .expect("шифрование");
+            .encrypt(&mut getrandom::SysRng, "phrase")
+            .expect("encryption");
         let path = dir.join("id_enc");
-        std::fs::write(&path, encrypted.to_openssh(LineEnding::LF).expect("текст"))
-            .expect("запись");
+        std::fs::write(&path, encrypted.to_openssh(LineEnding::LF).expect("text"))
+            .expect("write");
 
-        let record = record_from_file(&path).expect("копия без фразы");
+        let record = record_from_file(&path).expect("copy without passphrase");
         assert!(
             record.private().is_none(),
-            "зашифрованный ключ не расшифровывали"
+            "the encrypted key was not decrypted"
         );
-        assert!(!record.public.is_empty(), "открытая часть не найдена");
+        assert!(!record.public.is_empty(), "public part not found");
         assert_eq!(
-            record.key_file().expect("файл").expose(),
-            std::fs::read(&path).expect("файл").as_slice()
+            record.key_file().expect("file").expose(),
+            std::fs::read(&path).expect("file").as_slice()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

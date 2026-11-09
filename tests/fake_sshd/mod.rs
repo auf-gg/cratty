@@ -59,11 +59,11 @@ impl FakeSshd {
     pub async fn start_with_auth(mode: AuthMode) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
-            .expect("не удалось занять порт под тестовый sshd");
-        let addr = listener.local_addr().expect("у слушателя нет адреса");
+            .expect("could not bind a port for the test sshd");
+        let addr = listener.local_addr().expect("listener has no address");
 
         let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
-            .expect("не удалось сгенерировать ключ хоста");
+            .expect("could not generate a host key");
         let fingerprint = host_key
             .public_key()
             .fingerprint(HashAlg::Sha256)
@@ -91,7 +91,7 @@ impl FakeSshd {
             let _ = handle_tx.send(running.handle());
             let _ = running.await;
         });
-        let shutdown = handle_rx.await.expect("сервер не отдал ручку остановки");
+        let shutdown = handle_rx.await.expect("server did not hand over its shutdown handle");
 
         Self {
             addr,
@@ -144,11 +144,11 @@ impl FakeSshd {
     pub async fn probe_agent(&self) -> Result<u32, String> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let handle = self.lock().handle.clone().ok_or("сессия ещё не открыта")?;
+        let handle = self.lock().handle.clone().ok_or("session not opened yet")?;
         let channel = handle
             .channel_open_agent()
             .await
-            .map_err(|error| format!("канал к агенту не открылся: {error}"))?;
+            .map_err(|error| format!("channel to the agent did not open: {error}"))?;
         let mut stream = channel.into_stream();
 
         stream
@@ -161,7 +161,7 @@ impl FakeSshd {
             .await
             .map_err(|error| error.to_string())?;
         if head[4] != 12 {
-            return Err(format!("агент ответил кодом {}", head[4]));
+            return Err(format!("agent replied with code {}", head[4]));
         }
         Ok(u32::from_be_bytes([head[5], head[6], head[7], head[8]]))
     }
@@ -183,7 +183,7 @@ impl FakeSshd {
 
 impl Drop for FakeSshd {
     fn drop(&mut self) {
-        self.shutdown.shutdown("тест закончился".into());
+        self.shutdown.shutdown("test finished".into());
     }
 }
 
@@ -246,7 +246,7 @@ impl Shell {
         } else if !line.is_empty() {
             session.data(
                 channel,
-                format!("fake: неизвестная команда: {line}\r\n").into_bytes(),
+                format!("fake: unknown command: {line}\r\n").into_bytes(),
             )?;
         }
 

@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -47,12 +48,13 @@ impl Hop {
 
     pub fn describe(&self) -> String {
         match self {
-            Self::Socks5(hop) => format!("прокси SOCKS5 {}", join(&hop.host, hop.port)),
-            Self::Jump(hop) => format!(
-                "промежуточный хост {}@{}",
-                hop.user,
-                join(&hop.host, hop.port)
-            ),
+            Self::Socks5(hop) => t!("ssh.hop_socks5", address = join(&hop.host, hop.port)).into_owned(),
+            Self::Jump(hop) => t!(
+                "ssh.hop_jump",
+                user = hop.user,
+                address = join(&hop.host, hop.port)
+            )
+            .into_owned(),
         }
     }
 }
@@ -65,40 +67,41 @@ pub fn join(host: &str, port: u16) -> String {
     }
 }
 
-/// Сколько ждём каждый сетевой шаг подключения: TCP, прокси, туннель, первый
-/// ответ SSH-сервера. Без предела недоступный хост держал бы вкладку минутами.
+/// How long we wait for each network step of a connection: TCP, proxy, tunnel, the first
+/// SSH server reply. Without a limit an unreachable host would hold a tab for minutes.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// `work`, но не дольше [`CONNECT_TIMEOUT`].
+/// `work`, but no longer than [`CONNECT_TIMEOUT`].
 pub async fn deadline<T>(what: &str, work: impl Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(CONNECT_TIMEOUT, work)
         .await
         .unwrap_or_else(|_| {
-            Err(anyhow!(
-                "{what}: нет ответа за {} с",
-                CONNECT_TIMEOUT.as_secs()
-            ))
+            Err(anyhow!(t!(
+                "ssh.route_no_response",
+                what = what,
+                secs = CONNECT_TIMEOUT.as_secs()
+            )))
         })
 }
 
 pub async fn tcp(host: &str, port: u16) -> Result<Transport> {
     let address = join(host, port);
-    let stream = deadline(&format!("TCP до {address}"), async {
+    let stream = deadline(&t!("ssh.route_tcp_label", address = address), async {
         tokio::net::TcpStream::connect((host, port))
             .await
-            .with_context(|| format!("TCP до {address}"))
+            .with_context(|| t!("ssh.route_tcp_label", address = address))
     })
     .await?;
     stream
         .set_nodelay(true)
-        .context("не включить TCP_NODELAY")?;
+        .with_context(|| t!("ssh.route_nodelay_failed"))?;
     Ok(Box::new(stream))
 }
 
-/// Поток, который ждёт первых байт от сервера не дольше [`CONNECT_TIMEOUT`].
-/// Нужен для SSH-рукопожатия: порт может принять соединение и молчать. Дальше
-/// предела нет — пока пользователь решает про ключ хоста или вводит пароль,
-/// сервер законно молчит, а мёртвое соединение потом ловит keepalive.
+/// A stream that waits for the first bytes from the server for no longer than [`CONNECT_TIMEOUT`].
+/// Needed for the SSH handshake: a port may accept the connection and stay silent. After that
+/// there is no limit — while the user decides about the host key or enters a password,
+/// the server is legitimately silent, and keepalive catches a dead connection later.
 pub fn answering(stream: Transport) -> Transport {
     Box::new(FirstByte {
         inner: stream,
@@ -130,10 +133,11 @@ impl AsyncRead for FirstByte {
         {
             return Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                format!(
-                    "сервер не ответил по SSH за {} с",
-                    CONNECT_TIMEOUT.as_secs()
-                ),
+                t!(
+                    "ssh.route_ssh_no_answer",
+                    secs = CONNECT_TIMEOUT.as_secs()
+                )
+                .into_owned(),
             )));
         }
         Poll::Pending
@@ -164,7 +168,7 @@ pub async fn socks5(
     host: &str,
     port: u16,
 ) -> Result<Transport> {
-    deadline("прокси SOCKS5", socks5_handshake(stream, hop, host, port)).await
+    deadline(&t!("ssh.route_socks5_label"), socks5_handshake(stream, hop, host, port)).await
 }
 
 async fn socks5_handshake(
@@ -181,13 +185,9 @@ async fn socks5_handshake(
     } else {
         let password = match &hop.password {
             Some(secret) => std::str::from_utf8(secret.expose())
-                .map_err(|_| anyhow!("пароль прокси не UTF-8 — SOCKS5 такой не передаст"))?,
+                .map_err(|_| anyhow!(t!("ssh.route_proxy_password_not_utf8")))?,
             None => {
-                return Err(anyhow!(
-                    "у прокси задан логин {}, но нет пароля — SOCKS5 без пароля \
-                     с логином не входит",
-                    hop.user
-                ));
+                return Err(anyhow!(t!("ssh.route_proxy_no_password", user = hop.user)));
             }
         };
         Socks5Stream::connect_with_password_and_socket(stream, target, &hop.user, password)
@@ -202,20 +202,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ipv6_v_opisanii_beretsya_v_skobki() {
+    fn ipv6_in_description_is_bracketed() {
         assert_eq!(join("::1", 22), "[::1]:22");
         assert_eq!(join("example.com", 2222), "example.com:2222");
     }
 
     #[test]
-    fn zvenya_nazyvayutsya_chelovecheski() {
+    fn hops_have_human_readable_names() {
         let socks = Hop::Socks5(Socks5Hop {
             host: "proxy.local".into(),
             port: 1080,
             user: String::new(),
             password: None,
         });
-        assert_eq!(socks.describe(), "прокси SOCKS5 proxy.local:1080");
+        assert_eq!(socks.describe(), "SOCKS5 proxy proxy.local:1080");
         assert_eq!(socks.address(), ("proxy.local", 1080));
     }
 }
@@ -226,24 +226,24 @@ mod timeout_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test(start_paused = true)]
-    async fn molchashchiy_server_otvalivaetsya_po_taimautu() {
+    async fn silent_server_drops_off_on_timeout() {
         let (ours, _theirs) = tokio::io::duplex(64);
         let mut stream = answering(Box::new(ours));
         let mut buf = [0u8; 8];
-        let error = stream.read(&mut buf).await.expect_err("ждали таймаут");
+        let error = stream.read(&mut buf).await.expect_err("expected a timeout");
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn posle_pervogo_otveta_taimauta_net() {
+    async fn no_timeout_after_first_response() {
         let (ours, mut theirs) = tokio::io::duplex(64);
         let mut stream = answering(Box::new(ours));
         theirs.write_all(b"SSH-2.0").await.unwrap();
         let mut buf = [0u8; 8];
         assert_eq!(stream.read(&mut buf).await.unwrap(), 7);
 
-        // Дальше сервер может молчать сколько угодно: ждёт пароль от человека.
+        // After that the server may stay silent as long as it likes: it is waiting for a password from a human.
         let wait = tokio::time::timeout(CONNECT_TIMEOUT * 4, stream.read(&mut buf)).await;
-        assert!(wait.is_err(), "поток оборвался, хотя первый ответ уже был");
+        assert!(wait.is_err(), "the stream was cut off although the first reply had already arrived");
     }
 }

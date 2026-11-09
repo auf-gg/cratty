@@ -1,4 +1,5 @@
 use gpui_kit::SharedString;
+use rust_i18n::t;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -13,23 +14,21 @@ impl Stage {
         true
     }
 
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self) -> String {
         match self {
-            Self::Create => "Создать хранилище",
-            Self::Recovery { .. } => "Запишите фразу восстановления",
-            Self::Unlock => "Хранилище заблокировано",
-            Self::UnlockWithCode => "Вход по коду восстановления",
+            Self::Create => t!("vault_ui.stage_create_title").to_string(),
+            Self::Recovery { .. } => t!("vault_ui.stage_recovery_title").to_string(),
+            Self::Unlock => t!("vault_ui.stage_unlock_title").to_string(),
+            Self::UnlockWithCode => t!("vault_ui.stage_unlock_code_title").to_string(),
         }
     }
 
-    pub fn subtitle(&self) -> &'static str {
+    pub fn subtitle(&self) -> String {
         match self {
-            Self::Create => "",
-            Self::Recovery { .. } => "",
-            Self::Unlock => {
-                "Введите мастер-пароль для доступа к сохранённым хостам и ключам. Подключение по адресу доступно без разблокировки."
-            }
-            Self::UnlockWithCode => "",
+            Self::Create => String::new(),
+            Self::Recovery { .. } => String::new(),
+            Self::Unlock => t!("vault_ui.unlock_subtitle").to_string(),
+            Self::UnlockWithCode => String::new(),
         }
     }
 }
@@ -44,11 +43,11 @@ pub enum PasswordVerdict {
 }
 
 impl PasswordVerdict {
-    pub fn message(self) -> Option<&'static str> {
+    pub fn message(self) -> Option<String> {
         match self {
             Self::Ok => None,
-            Self::TooShort => Some("Пароль должен содержать не менее восьми символов."),
-            Self::Mismatch => Some("Пароли не совпадают."),
+            Self::TooShort => Some(t!("vault_ui.password_too_short").to_string()),
+            Self::Mismatch => Some(t!("vault_ui.password_mismatch").to_string()),
         }
     }
 
@@ -68,27 +67,27 @@ pub fn check_new_password(password: &str, repeat: &str) -> PasswordVerdict {
 }
 
 pub fn create_explainer(import_count: usize) -> String {
-    let mut text = String::from(
-        "Хосты и ключи шифруются мастер-паролем. Пароль не хранится и не может быть восстановлен; при его утрате доступ возможен только по коду восстановления.",
-    );
     if import_count > 0 {
-        text.push_str(&format!(
-            " Из файла hosts.json будет импортировано записей: {import_count}; после импорта файл будет удалён."
-        ));
+        t!("vault_ui.create_explainer_import", count = import_count).to_string()
+    } else {
+        t!("vault_ui.create_explainer").to_string()
     }
-    text
 }
 
-pub const RECOVERY_EXPLAINER: &str = "Запишите 24 слова из английского словаря BIP39 на бумаге и сохраните отдельно от компьютера. Порядок слов важен. Это единственный способ разблокировать хранилище без мастер-пароля; фраза показывается однократно.";
+pub fn recovery_explainer() -> String {
+    t!("vault_ui.recovery_explainer").to_string()
+}
 
-pub const MIGRATION_WARNING: &str = "Файл hosts.json удалён, однако его копии могли сохраниться в резервных копиях и снимках диска.";
+pub fn migration_warning() -> String {
+    t!("vault_ui.migration_warning").to_string()
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn korotkiy_parol_otvergaetsya() {
+    fn short_password_is_rejected() {
         assert_eq!(
             check_new_password("1234567", "1234567"),
             PasswordVerdict::TooShort
@@ -97,56 +96,56 @@ mod tests {
     }
 
     #[test]
-    fn dlina_schitaetsya_v_znakah() {
+    fn length_is_counted_in_characters() {
         assert_eq!(
-            check_new_password("паролик", "паролик"),
+            check_new_password("passwor", "passwor"),
             PasswordVerdict::TooShort,
-            "семь букв — мало"
+            "seven characters is too few"
         );
-        assert!(check_new_password("паролище", "паролище").is_ok());
+        assert!(check_new_password("password", "password").is_ok());
     }
 
     #[test]
-    fn nesovpadenie_lovitsya() {
+    fn mismatch_is_caught() {
         assert_eq!(
-            check_new_password("правильный", "неправильный"),
+            check_new_password("correct-pw", "incorrect-pw"),
             PasswordVerdict::Mismatch
         );
         assert!(
             PasswordVerdict::Mismatch.message().is_some(),
-            "человеку надо сказать, что именно не так"
+            "the user must be told what exactly is wrong"
         );
         assert!(PasswordVerdict::Ok.message().is_none());
     }
 
     #[test]
-    fn snachala_dlina_potom_sovpadenie() {
+    fn length_first_then_match() {
         assert_eq!(check_new_password("123", "456"), PasswordVerdict::TooShort);
     }
 
     #[test]
-    fn poyasnenie_upominaet_perenos_tolko_kogda_est_chto_perenosit() {
+    fn hint_mentions_migration_only_when_there_is_something_to_migrate() {
         let without = create_explainer(0);
         assert!(!without.contains("hosts.json"));
 
         let with = create_explainer(3);
         assert!(with.contains("3"));
-        assert!(with.contains("удалён"));
+        assert!(with.contains("deleted"));
     }
 
     #[test]
-    fn teksty_govoryat_o_neobratimosti_pryamo() {
-        assert!(create_explainer(0).contains("не может быть восстановлен"));
-        assert!(RECOVERY_EXPLAINER.contains("однократно"));
-        assert!(MIGRATION_WARNING.contains("резервных копиях"));
+    fn texts_state_irreversibility_plainly() {
+        assert!(create_explainer(0).contains("cannot be recovered"));
+        assert!(recovery_explainer().contains("only once"));
+        assert!(migration_warning().contains("backups"));
     }
 
     #[test]
-    fn u_kazhdoy_stadii_est_zagolovok() {
+    fn every_stage_has_a_title() {
         for stage in [
             Stage::Create,
             Stage::Recovery {
-                code: SharedString::from("код"),
+                code: SharedString::from("code"),
                 confirmed: false,
             },
             Stage::Unlock,
@@ -158,21 +157,21 @@ mod tests {
     }
 
     #[test]
-    fn ekrany_koda_nazyvayutsya_po_raznomu() {
+    fn code_screens_are_named_differently() {
         let shown = Stage::Recovery {
-            code: SharedString::from("код"),
+            code: SharedString::from("code"),
             confirmed: false,
         };
         assert_ne!(shown.title(), Stage::UnlockWithCode.title());
     }
 
     #[test]
-    fn zakrytoe_hranilishche_obyasnyaet_chto_delat() {
+    fn locked_vault_explains_what_to_do() {
         let subtitle = Stage::Unlock.subtitle();
-        assert!(subtitle.contains("мастер-пароль"));
+        assert!(subtitle.contains("master password"));
         assert!(
-            subtitle.contains("Подключение по адресу"),
-            "замок закрывает список, а не терминал — это надо сказать"
+            subtitle.contains("Connecting by address"),
+            "the lock covers the list, not the terminal — this must be said"
         );
     }
 }

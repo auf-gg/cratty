@@ -1,0 +1,5 @@
+ui_settings:
+  no_dir: "无法确定设置目录。"
+  create_failed: "无法创建 %{path}：%{error}"
+  serialize_failed: "无法序列化设置：%{error}"
+  write_failed: "无法写入 %{path}：%{error}"

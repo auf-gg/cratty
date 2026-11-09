@@ -1,11 +1,11 @@
-//! Вход по файлу ключа в форме хоста: выбрать ключ из ~/.ssh, создать новый
-//! и добавить открытый ключ на сервер по паролю (как `ssh-copy-id`).
+//! Key file login in the host form: pick a key from ~/.ssh, create a new one
+//! and add the public key to the server using a password (like `ssh-copy-id`).
 
 use super::*;
 use crate::ssh::keygen;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 
-/// Каталог ~/.ssh или ~ сокращение пути для показа.
+/// The ~/.ssh directory, or ~ abbreviation of a path for display.
 pub(super) fn display_path(path: &std::path::Path) -> String {
     let text = path.display().to_string();
     match std::env::home_dir() {
@@ -53,7 +53,7 @@ impl AppView {
 
     fn generate_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dir) = crate::ssh::auth::ssh_dir() else {
-            self.key_notice = Some("Не найден домашний каталог.".into());
+            self.key_notice = Some(t!("keys.home_not_found").to_string().into());
             cx.notify();
             return;
         };
@@ -62,11 +62,9 @@ impl AppView {
             Ok(path) => {
                 self.set_key_path(&path, window, cx);
                 self.key_notice = Some(
-                    format!(
-                        "Создан ключ {} (Ed25519, без парольной фразы). Добавьте его на сервер кнопкой ниже.",
-                        display_path(&path)
-                    )
-                    .into(),
+                    t!("keys.created", path = display_path(&path))
+                        .to_string()
+                        .into(),
                 );
             }
             Err(error) => self.key_notice = Some(format!("{error:#}").into()),
@@ -74,12 +72,12 @@ impl AppView {
         cx.notify();
     }
 
-    /// Вкладка, которая входит на сервер по паролю и дописывает открытый ключ
-    /// в ~/.ssh/authorized_keys.
+    /// A tab that logs in to the server with a password and appends the public key
+    /// to ~/.ssh/authorized_keys.
     fn install_key(&mut self, cx: &mut Context<Self>) {
         let raw = self.form.key_path.read(cx).value().trim().to_string();
         if raw.is_empty() {
-            self.key_notice = Some("Сначала выберите или создайте ключ.".into());
+            self.key_notice = Some(t!("keys.select_first").to_string().into());
             cx.notify();
             return;
         }
@@ -114,12 +112,9 @@ impl AppView {
         let vault = Some(self.form.vault.clone()).filter(|id| !id.is_empty());
         self.spawn_tab(request, credentials, vault, cx);
         if let Some(tab) = self.tabs.last_mut() {
-            tab.title = format!("Ключ → {target}").into();
+            tab.title = t!("keys.tab_title", target = target).to_string().into();
         }
-        self.key_notice = Some(
-            "Открыта вкладка установки ключа: введите там пароль сервера. После этого вход пойдёт по ключу."
-                .into(),
-        );
+        self.key_notice = Some(t!("keys.install_open").to_string().into());
         cx.notify();
     }
 
@@ -130,14 +125,14 @@ impl AppView {
         let pick = Button::new("key-pick")
             .outline()
             .small()
-            .label("Выбрать")
-            .tooltip("Ключи из ~/.ssh")
+            .label(t!("keys.choose").to_string())
+            .tooltip(t!("keys.choose_tooltip").to_string())
             .dropdown_menu(move |menu, _window, _cx| {
                 let keys = crate::ssh::auth::ssh_dir()
                     .map(|dir| keygen::private_keys(&dir))
                     .unwrap_or_default();
                 if keys.is_empty() {
-                    return menu.item(PopupMenuItem::label("В ~/.ssh нет закрытых ключей"));
+                    return menu.item(PopupMenuItem::label(t!("keys.no_private_keys").to_string()));
                 }
                 keys.into_iter().fold(menu, |menu, path| {
                     let view = view.clone();
@@ -162,8 +157,8 @@ impl AppView {
                         Button::new("key-generate")
                             .outline()
                             .small()
-                            .label("Создать")
-                            .tooltip("Новый ключ Ed25519 в ~/.ssh")
+                            .label(t!("keys.create").to_string())
+                            .tooltip(t!("keys.create_tooltip").to_string())
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.generate_key(window, cx)),
                             ),
@@ -174,8 +169,8 @@ impl AppView {
                     .ghost()
                     .small()
                     .icon(Icon::empty().path("icons/upload.svg"))
-                    .label("Добавить ключ на сервер по паролю")
-                    .tooltip("Войти по паролю и дописать открытый ключ в ~/.ssh/authorized_keys")
+                    .label(t!("keys.add_to_server").to_string())
+                    .tooltip(t!("keys.add_tooltip").to_string())
                     .on_click(cx.listener(|this, _, _window, cx| this.install_key(cx))),
             )
             .children(self.key_notice.clone().map(|notice| {
@@ -184,7 +179,7 @@ impl AppView {
                     .text_color(theme.muted_foreground)
             }))
             .child(
-                Label::new("Парольная фраза зашифрованного ключа будет запрошена при подключении.")
+                Label::new(t!("keys.passphrase_note").to_string())
                     .text_xs()
                     .text_color(theme.muted_foreground),
             )

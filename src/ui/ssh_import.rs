@@ -1,8 +1,9 @@
-//! Импорт хостов из `~/.ssh/config` в хранилище.
+//! Import of hosts from `~/.ssh/config` into the vault.
 //!
-//! Работает с текстом конфигурации и абстрактной «книгой хостов», поэтому
-//! проверяется без настоящего домашнего каталога и без настоящего хранилища.
+//! Works with the config text and an abstract "host book", so it
+//! can be tested without a real home directory and without a real vault.
 
+use rust_i18n::t;
 use anyhow::Result;
 use proto::{HostAuth, HostRecord, RecordId};
 
@@ -24,14 +25,22 @@ pub struct Report {
 
 impl Report {
     pub fn summary(&self) -> String {
-        let mut text = format!(
-            "Импорт из ~/.ssh/config: добавлено хостов — {}, пропущено (уже есть) — {}",
-            self.imported, self.skipped
-        );
-        if !self.warnings.is_empty() {
-            text.push_str(&format!(", предупреждений — {}", self.warnings.len()));
-        }
-        text.push('.');
+        let mut text = if self.warnings.is_empty() {
+            t!(
+                "import.summary",
+                imported = self.imported,
+                skipped = self.skipped
+            )
+            .to_string()
+        } else {
+            t!(
+                "import.summary_warnings",
+                imported = self.imported,
+                skipped = self.skipped,
+                warnings = self.warnings.len()
+            )
+            .to_string()
+        };
         for warning in &self.warnings {
             text.push('\n');
             text.push_str(warning);
@@ -56,9 +65,9 @@ pub fn import(text: &str, book: &mut dyn HostBook) -> Report {
         }
 
         if settings.proxy_command.is_some() {
-            report.warnings.push(format!(
-                "{alias}: ProxyCommand не поддерживается, хост импортирован без него."
-            ));
+            report
+                .warnings
+                .push(t!("import.proxy_command", alias = alias).to_string());
         }
 
         if let Some(jump) = settings.proxy_jump.as_deref()
@@ -72,9 +81,10 @@ pub fn import(text: &str, book: &mut dyn HostBook) -> Report {
             };
             match context.resolve(jump, &mut vec![alias.clone()]) {
                 Ok(via) => host.via = via,
-                Err(message) => context.report.warnings.push(format!(
-                    "{alias}: {message} Хост импортирован без ProxyJump."
-                )),
+                Err(message) => context
+                    .report
+                    .warnings
+                    .push(t!("import.proxy_jump_dropped", alias = alias, message = message).to_string()),
             }
         }
 
@@ -82,7 +92,7 @@ pub fn import(text: &str, book: &mut dyn HostBook) -> Report {
             Ok(_) => report.imported += 1,
             Err(error) => report
                 .warnings
-                .push(format!("{alias}: не удалось сохранить: {error:#}")),
+                .push(t!("import.save_failed", alias = alias, error = format!("{error:#}")).to_string()),
         }
     }
 
@@ -99,18 +109,18 @@ struct Chain<'a> {
 impl Chain<'_> {
     fn resolve(&mut self, raw: &str, seen: &mut Vec<String>) -> Result<Vec<RecordId>, String> {
         if seen.len() > MAX_JUMP_DEPTH {
-            return Err("Цепочка ProxyJump слишком длинная или зациклена.".into());
+            return Err(t!("import.chain_too_long").into());
         }
 
         let mut ids = Vec::new();
         for item in raw.split(',').map(str::trim) {
             if item.is_empty() {
-                return Err(format!("В ProxyJump «{raw}» пустой элемент."));
+                return Err(t!("import.empty_element", raw = raw).to_string());
             }
             let item = item.strip_prefix("ssh://").unwrap_or(item);
             let request = connect::parse_target(item).map_err(|error| error.to_string())?;
             if seen.contains(&request.alias) {
-                return Err("Цепочка ProxyJump зациклена.".into());
+                return Err(t!("import.chain_cyclic").into());
             }
 
             let settings = connect::read_ssh_config_text(self.text, &request.alias);
@@ -141,7 +151,7 @@ impl Chain<'_> {
             let id = self
                 .book
                 .put(hop)
-                .map_err(|error| format!("не удалось сохранить промежуточный хост: {error:#}"))?;
+                .map_err(|error| t!("import.hop_save_failed", error = format!("{error:#}")).to_string())?;
             self.report.imported += 1;
             self.made_as_hop.push(target);
             ids.push(id);
@@ -202,13 +212,13 @@ mod tests {
                 .hosts
                 .iter()
                 .find(|(_, host)| host.label == label)
-                .expect("хост")
+                .expect("host")
                 .1
         }
     }
 
     #[test]
-    fn prostoy_host_perenosit_adres_polzovatelya_port_i_klyuch() {
+    fn simple_host_carries_address_user_port_and_key() {
         let mut book = MemBook::default();
         let report = import(
             "Host prod\n  HostName 10.0.0.5\n  User deploy\n  Port 2200\n  IdentityFile /keys/id_prod\n",
@@ -231,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn bez_hostname_adresom_stanovitsya_psevdonim() {
+    fn without_hostname_the_alias_becomes_the_address() {
         let mut book = MemBook::default();
         import("Host db.internal\n  User root\n", &mut book);
         let host = book.by_label("db.internal");
@@ -240,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn shablony_s_zvezdochkoy_ne_importiruyutsya() {
+    fn wildcard_patterns_are_not_imported() {
         let mut book = MemBook::default();
         let report = import(
             "Host *\n  ServerAliveInterval 30\nHost *.corp web\n  User ops\nHost real\n  HostName r.example.com\n",
@@ -252,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn sushchestvuyushchie_hosty_propuskayutsya() {
+    fn existing_hosts_are_skipped() {
         let mut book = MemBook::default();
         let text = "Host a\n  HostName a.example.com\nHost b\n  HostName b.example.com\n";
         let first = import(text, &mut book);
@@ -264,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn proxyjump_sozdaet_ili_nahodit_promezhutochnye_hosty() {
+    fn proxyjump_creates_or_finds_intermediate_hosts() {
         let mut book = MemBook::default();
         let report = import(
             "Host inner\n  HostName 10.1.1.1\n  ProxyJump bastion,jump2:2222\nHost bastion\n  HostName b.example.com\n  User gate\n",
@@ -273,7 +283,7 @@ mod tests {
 
         let inner = book.by_label("inner").clone();
         assert_eq!(inner.via.len(), 2);
-        let bastion = book.find("gate@b.example.com").expect("бастион");
+        let bastion = book.find("gate@b.example.com").expect("bastion");
         assert_eq!(inner.via[0], bastion);
         let jump2 = book.hosts.iter().find(|(id, _)| *id == inner.via[1]);
         assert_eq!(jump2.map(|(_, h)| h.target()), Some("jump2:2222".into()));
@@ -281,12 +291,12 @@ mod tests {
         assert_eq!(report.imported, 3, "inner + bastion + jump2");
         assert_eq!(
             report.skipped, 0,
-            "бастион из ProxyJump не считается пропущенным"
+            "a bastion from ProxyJump does not count as skipped"
         );
     }
 
     #[test]
-    fn proxyjump_ispolzuet_uzhe_sohranyonnyy_host() {
+    fn proxyjump_uses_already_saved_host() {
         let mut book = MemBook::default();
         let existing = book
             .put({
@@ -294,7 +304,7 @@ mod tests {
                 host.user = "gate".into();
                 host
             })
-            .expect("запись");
+            .expect("entry");
         import(
             "Host bastion\n  HostName b.example.com\n  User gate\nHost inner\n  ProxyJump bastion\n",
             &mut book,
@@ -304,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn proxycommand_importiruetsya_bez_nego_s_preduprezhdeniem() {
+    fn proxycommand_is_imported_without_it_with_a_warning() {
         let mut book = MemBook::default();
         let report = import(
             "Host tunneled\n  HostName t.example.com\n  ProxyCommand nc -X 5 -x proxy:1080 %h %p\n",
@@ -317,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn zacyklennyy_proxyjump_ne_zavisaet_a_preduprezhdaet() {
+    fn cyclic_proxyjump_does_not_hang_but_warns() {
         let mut book = MemBook::default();
         let report = import(
             "Host a\n  HostName a.example.com\n  ProxyJump b\nHost b\n  HostName b.example.com\n  ProxyJump a\n",
@@ -330,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn proxyjump_none_ne_sozdaet_cepochku() {
+    fn proxyjump_none_does_not_create_a_chain() {
         let mut book = MemBook::default();
         let report = import("Host direct\n  ProxyJump none\n", &mut book);
         assert_eq!(report.imported, 1);
@@ -338,16 +348,16 @@ mod tests {
     }
 
     #[test]
-    fn itog_perechislyaet_chisla_i_preduprezhdeniya() {
+    fn summary_lists_counts_and_warnings() {
         let report = Report {
             imported: 3,
             skipped: 1,
-            warnings: vec!["x: плохо".into()],
+            warnings: vec!["x: bad".into()],
         };
         let text = report.summary();
-        assert!(text.contains("добавлено хостов — 3"));
-        assert!(text.contains("пропущено (уже есть) — 1"));
-        assert!(text.contains("предупреждений — 1"));
-        assert!(text.ends_with("x: плохо"));
+        assert!(text.contains("hosts added — 3"));
+        assert!(text.contains("skipped (already present) — 1"));
+        assert!(text.contains("warnings — 1"));
+        assert!(text.ends_with("x: bad"));
     }
 }

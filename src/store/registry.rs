@@ -1,13 +1,14 @@
-//! Реестр хранилищ: какие хранилища известны приложению и где они лежат.
+//! Vault registry: which vaults the app knows about and where they live.
 //!
-//! В реестре нет секретов — только имя, каталог и папка синхронизации.
-//! Файл `vaults.json` лежит рядом с каталогом исходного хранилища
-//! (`<данные>/cratty/vaults.json`), новые хранилища создаются в
-//! `<данные>/cratty/vaults/<id>/`.
+//! The registry holds no secrets — only a name, a directory and a sync folder.
+//! The `vaults.json` file sits next to the original vault directory
+//! (`<data>/cratty/vaults.json`); new vaults are created in
+//! `<data>/cratty/vaults/<id>/`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rust_i18n::t;
 use anyhow::{Context, Result, anyhow};
 use proto::DeviceId;
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,10 @@ use serde::{Deserialize, Serialize};
 pub const FILE_NAME: &str = "vaults.json";
 pub const VAULTS_DIR: &str = "vaults";
 
-pub const FIRST_VAULT_NAME: &str = "Основное";
+/// Localized name of the first vault (creation-time default).
+pub fn first_vault_name() -> String {
+    t!("store.first_vault_name").into_owned()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultEntry {
@@ -39,20 +43,20 @@ pub struct Registry {
     pub vaults: Vec<VaultEntry>,
 }
 
-/// Результат загрузки: сам реестр и признак того, что его нужно записать.
+/// Load result: the registry itself and a flag saying it needs to be written.
 pub struct Loaded {
     pub registry: Registry,
     pub dirty: bool,
 }
 
 impl Registry {
-    /// Читает реестр. Если файла нет, переносит прежнее единственное
-    /// хранилище (`legacy_root`), когда оно существует, и его папку синхронизации.
+    /// Reads the registry. If the file is missing, carries over the former single
+    /// vault (`legacy_root`), when it exists, along with its sync folder.
     pub fn load(file: &Path, legacy_root: &Path, legacy_sync_folder: &str) -> Result<Loaded> {
         match fs::read(file) {
             Ok(bytes) => {
                 let registry: Registry = serde_json::from_slice(&bytes)
-                    .with_context(|| format!("реестр хранилищ {} повреждён", file.display()))?;
+                    .with_context(|| t!("store.registry_corrupted", path = file.display()).into_owned())?;
                 Ok(Loaded {
                     registry,
                     dirty: false,
@@ -63,7 +67,7 @@ impl Registry {
                 if legacy_root.join(proto::ACCOUNT_FILE).is_file() {
                     registry.vaults.push(VaultEntry {
                         id: new_id()?,
-                        name: FIRST_VAULT_NAME.to_owned(),
+                        name: first_vault_name(),
                         path: legacy_root.to_path_buf(),
                         sync_folder: legacy_sync_folder.trim().to_owned(),
                     });
@@ -72,21 +76,21 @@ impl Registry {
                 Ok(Loaded { registry, dirty })
             }
             Err(error) => Err(anyhow!(error))
-                .with_context(|| format!("не прочитать реестр хранилищ {}", file.display())),
+                .with_context(|| t!("store.registry_read_failed", path = file.display()).into_owned()),
         }
     }
 
     pub fn save(&self, file: &Path) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(self).context("не сериализовать реестр хранилищ")?;
+        let bytes = serde_json::to_vec_pretty(self).context(t!("store.registry_serialize_failed").into_owned())?;
         if let Some(parent) = file.parent() {
             fs::create_dir_all(parent)
-                .with_context(|| format!("не создать {}", parent.display()))?;
+                .with_context(|| t!("store.create_failed", path = parent.display()).into_owned())?;
         }
         super::write_atomic(file, &bytes)
     }
 
-    /// Описывает новое хранилище в каталоге `<base>/vaults/<id>`; в реестр
-    /// его добавляет вызывающий, когда хранилище действительно создано.
+    /// Describes a new vault in the `<base>/vaults/<id>` directory; the caller
+    /// adds it to the registry once the vault has actually been created.
     pub fn new_entry(base: &Path, name: &str) -> Result<VaultEntry> {
         let id = new_id()?;
         Ok(VaultEntry {
@@ -120,10 +124,10 @@ fn new_id() -> Result<String> {
         .map_err(|error| anyhow!("{error}"))
 }
 
-/// Имя по умолчанию для нового хранилища: «Хранилище N».
+/// Default name for a new vault: "Vault N".
 pub fn default_name(taken: &[String]) -> String {
     (1..)
-        .map(|number| format!("Хранилище {number}"))
+        .map(|number| t!("store.default_name", number = number).into_owned())
         .find(|name| !taken.iter().any(|known| known == name))
         .unwrap_or_default()
 }
@@ -136,43 +140,43 @@ mod tests {
         let unique = DeviceId::generate().expect("CSPRNG");
         let path = std::env::temp_dir().join(format!("cratty-registry-{name}-{unique}"));
         let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("каталог");
+        fs::create_dir_all(&path).expect("directory");
         path
     }
 
     #[test]
-    fn reestr_perezhivaet_zapis_i_chtenie() {
+    fn registry_survives_write_and_read() {
         let dir = temp_dir("roundtrip");
         let file = dir.join(FILE_NAME);
 
         let mut registry = Registry::default();
-        let mut entry = Registry::new_entry(&dir, "  Работа ").expect("запись");
+        let mut entry = Registry::new_entry(&dir, "  Work ").expect("write");
         entry.sync_folder = "/tmp/sync".into();
         registry.upsert(entry.clone());
-        registry.save(&file).expect("запись");
+        registry.save(&file).expect("write");
 
-        let loaded = Registry::load(&file, &dir.join("vault"), "").expect("чтение");
+        let loaded = Registry::load(&file, &dir.join("vault"), "").expect("read");
         assert!(!loaded.dirty);
         assert_eq!(loaded.registry, registry);
-        assert_eq!(entry.name, "Работа");
+        assert_eq!(entry.name, "Work");
         assert_eq!(entry.path, dir.join(VAULTS_DIR).join(&entry.id));
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn v_reestre_net_sekretov_tolko_imya_put_i_papka() {
+    fn registry_has_no_secrets_only_name_path_and_folder() {
         let dir = temp_dir("fields");
         let file = dir.join(FILE_NAME);
         let mut registry = Registry::default();
-        registry.upsert(Registry::new_entry(&dir, "Дом").expect("запись"));
-        registry.save(&file).expect("запись");
+        registry.upsert(Registry::new_entry(&dir, "Home").expect("write"));
+        registry.save(&file).expect("write");
 
-        let text = fs::read_to_string(&file).expect("чтение");
+        let text = fs::read_to_string(&file).expect("read");
         let value: serde_json::Value = serde_json::from_str(&text).expect("json");
         let keys: Vec<&String> = value["vaults"][0]
             .as_object()
-            .expect("объект")
+            .expect("object")
             .keys()
             .collect();
         assert_eq!(keys, ["id", "name", "path", "sync_folder"]);
@@ -181,28 +185,28 @@ mod tests {
     }
 
     #[test]
-    fn bez_fayla_i_bez_staroy_kopii_reestr_pust() {
+    fn without_file_and_old_copy_registry_is_empty() {
         let dir = temp_dir("empty");
         let loaded =
-            Registry::load(&dir.join(FILE_NAME), &dir.join("vault"), "/x").expect("чтение");
+            Registry::load(&dir.join(FILE_NAME), &dir.join("vault"), "/x").expect("read");
         assert!(loaded.registry.vaults.is_empty());
         assert!(!loaded.dirty);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn staroe_hranilishche_stanovitsya_osnovnym_vmeste_s_papkoy_sinhronizacii() {
+    fn old_vault_becomes_primary_along_with_sync_folder() {
         let dir = temp_dir("legacy");
         let legacy = dir.join("vault");
-        fs::create_dir_all(&legacy).expect("каталог");
-        fs::write(legacy.join(proto::ACCOUNT_FILE), b"x").expect("файл");
+        fs::create_dir_all(&legacy).expect("directory");
+        fs::write(legacy.join(proto::ACCOUNT_FILE), b"x").expect("file");
 
-        let loaded = Registry::load(&dir.join(FILE_NAME), &legacy, " /srv/sync ").expect("чтение");
+        let loaded = Registry::load(&dir.join(FILE_NAME), &legacy, " /srv/sync ").expect("read");
         assert!(loaded.dirty);
         let [entry] = loaded.registry.vaults.as_slice() else {
-            panic!("ожидалось одно хранилище");
+            panic!("expected exactly one vault");
         };
-        assert_eq!(entry.name, FIRST_VAULT_NAME);
+        assert_eq!(entry.name, "Main");
         assert_eq!(entry.path, legacy);
         assert_eq!(entry.sync_folder, "/srv/sync");
         assert_eq!(entry.sync_folder(), Some(PathBuf::from("/srv/sync")));
@@ -211,11 +215,11 @@ mod tests {
     }
 
     #[test]
-    fn udalenie_ubiraet_tolko_nuzhnuyu_zapis() {
+    fn removal_deletes_only_the_needed_entry() {
         let dir = temp_dir("remove");
         let mut registry = Registry::default();
-        let first = Registry::new_entry(&dir, "Первое").expect("запись");
-        let second = Registry::new_entry(&dir, "Второе").expect("запись");
+        let first = Registry::new_entry(&dir, "First").expect("write");
+        let second = Registry::new_entry(&dir, "Second").expect("write");
         registry.upsert(first.clone());
         registry.upsert(second.clone());
 
@@ -228,20 +232,20 @@ mod tests {
     }
 
     #[test]
-    fn povrezhdyonnyy_reestr_ne_zatiraetsya_molcha() {
+    fn damaged_registry_is_not_silently_overwritten() {
         let dir = temp_dir("broken");
         let file = dir.join(FILE_NAME);
-        fs::write(&file, b"{not json").expect("файл");
+        fs::write(&file, b"{not json").expect("file");
         assert!(Registry::load(&file, &dir.join("vault"), "").is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn imya_po_umolchaniyu_ne_povtoryaet_zanyatye() {
-        assert_eq!(default_name(&[]), "Хранилище 1");
+    fn default_name_does_not_repeat_taken_ones() {
+        assert_eq!(default_name(&[]), "Vault 1");
         assert_eq!(
-            default_name(&["Хранилище 1".into(), "Хранилище 3".into()]),
-            "Хранилище 2"
+            default_name(&["Vault 1".into(), "Vault 3".into()]),
+            "Vault 2"
         );
     }
 }

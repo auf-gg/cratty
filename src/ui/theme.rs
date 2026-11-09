@@ -1,11 +1,13 @@
 use std::rc::Rc;
 
+use rust_i18n::t;
+
 use gpui_kit::component::{Theme, ThemeColor, ThemeConfig, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Global, Hsla, Window, WindowAppearance, rgb, rgba};
 
 use crate::term::palette::{self, Palette, Rgb};
 
-/// Режим оформления: как ОС, всегда тёмный или всегда светлый.
+/// Appearance mode: follow the OS, always dark or always light.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Appearance {
     System,
@@ -30,15 +32,16 @@ impl Appearance {
         }
     }
 
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            Self::System => "Системная",
-            Self::Dark => "Тёмная",
-            Self::Light => "Светлая",
+            Self::System => t!("ui_theme.system"),
+            Self::Dark => t!("ui_theme.dark"),
+            Self::Light => t!("ui_theme.light"),
         }
+        .to_string()
     }
 
-    /// Тёмная ли сейчас тема с учётом оформления ОС.
+    /// Whether the theme is currently dark, taking the OS appearance into account.
     pub fn is_dark(self, os: WindowAppearance) -> bool {
         match self {
             Self::Dark => true,
@@ -51,15 +54,15 @@ impl Appearance {
 pub const DEFAULT_DARK: &str = "cratty";
 pub const DEFAULT_LIGHT: &str = "light";
 
-/// Свои темы cratty: id, название, тёмная ли.
+/// cratty's own themes: id, name, whether dark.
 const BUILTIN: &[(&str, &str, bool)] = &[
     ("cratty", "Cratty", true),
     ("synthwave", "SynthWave '84", true),
-    ("graphite", "Графит", true),
-    ("light", "Светлая", false),
+    ("graphite", "Graphite", true),
+    ("light", "Light", false),
 ];
 
-/// Темы gpui-kit, вшитые в программу (assets/themes).
+/// gpui-kit themes embedded in the program (assets/themes).
 const BUNDLED: &[&str] = &[
     include_str!("../../assets/themes/adventure.json"),
     include_str!("../../assets/themes/alduin.json"),
@@ -84,7 +87,7 @@ const BUNDLED: &[&str] = &[
     include_str!("../../assets/themes/twilight.json"),
 ];
 
-/// Одна тема в каталоге: всё, что нужно для выбора, превью и терминала.
+/// One theme in the catalog: everything needed for selection, preview and the terminal.
 #[derive(Clone)]
 pub struct ThemeEntry {
     pub id: String,
@@ -99,11 +102,11 @@ struct Catalog(Vec<ThemeEntry>);
 
 impl Global for Catalog {}
 
-/// Загружает вшитые темы и строит каталог. Вызывать после `gpui_kit::init`.
+/// Loads the embedded themes and builds the catalog. Call after `gpui_kit::init`.
 pub fn init(cx: &mut App) {
     for json in BUNDLED {
         if let Err(error) = ThemeRegistry::global_mut(cx).load_themes_from_str(json) {
-            eprintln!("не удалось загрузить тему: {error:#}");
+            eprintln!("failed to load the theme: {error:#}");
         }
     }
 
@@ -158,7 +161,7 @@ fn is_dux(id: &str) -> bool {
     id == crate::ui::dux::DARK_ID || id == crate::ui::dux::LIGHT_ID
 }
 
-/// Палитры Dux Shell, если оболочка установлена: её Material-цвета и dank16.
+/// Dux Shell palettes, if the shell is installed: its Material colors and dank16.
 fn dux_entries() -> Vec<ThemeEntry> {
     let Some(path) = crate::ui::dux::colors_file() else {
         return Vec::new();
@@ -166,7 +169,7 @@ fn dux_entries() -> Vec<ThemeEntry> {
     let themes = match crate::ui::dux::read(&path) {
         Ok(themes) => themes,
         Err(error) => {
-            eprintln!("цвета Dux Shell не прочитались: {error:#}");
+            eprintln!("failed to read Dux Shell colors: {error:#}");
             return Vec::new();
         }
     };
@@ -194,8 +197,8 @@ fn dux_entries() -> Vec<ThemeEntry> {
         .collect()
 }
 
-/// Перечитывает цвета Dux Shell (они меняются вместе с обоями).
-/// Возвращает `true`, если сейчас применена палитра Dux и её надо применить заново.
+/// Rereads the Dux Shell colors (they change along with the wallpaper).
+/// Returns `true` if the Dux palette is currently applied and must be applied again.
 pub fn refresh_dux(cx: &mut App, settings: &crate::ui::settings::Settings) -> bool {
     let fresh = dux_entries();
     let Some(catalog) = cx.try_global::<Catalog>() else {
@@ -222,7 +225,7 @@ pub fn refresh_dux(cx: &mut App, settings: &crate::ui::settings::Settings) -> bo
     is_dux(current)
 }
 
-/// Темы для режима: сначала свои, затем gpui-kit по алфавиту.
+/// Themes for a mode: our own first, then gpui-kit's alphabetically.
 pub fn catalog(cx: &App, dark: bool) -> Vec<ThemeEntry> {
     cx.try_global::<Catalog>()
         .map(|catalog| {
@@ -244,7 +247,7 @@ pub fn find(cx: &App, id: &str) -> Option<ThemeEntry> {
         .cloned()
 }
 
-/// Тема для режима: выбранная, если она есть и того же режима, иначе своя.
+/// Theme for a mode: the chosen one if it exists and has the same mode, otherwise our own.
 pub fn resolve(cx: &App, id: &str, dark: bool) -> Option<ThemeEntry> {
     find(cx, id)
         .filter(|entry| entry.dark == dark)
@@ -266,7 +269,7 @@ fn to_rgb(color: Hsla) -> Rgb {
     Rgb::new(channel(rgba.r), channel(rgba.g), channel(rgba.b))
 }
 
-/// ANSI-палитра из цветов темы: base.red/green/… и их светлые варианты.
+/// ANSI palette from theme colors: base.red/green/… and their light variants.
 fn palette_from(colors: &ThemeColor, dark: bool) -> Palette {
     let c = |color: Hsla| to_rgb(color);
     let (black, white, bright_black, bright_white) = if dark {
@@ -333,7 +336,7 @@ struct Active {
 
 impl Global for Active {}
 
-/// Тёмная ли тема сейчас применена.
+/// Whether a dark theme is currently applied.
 pub fn is_dark(cx: &App) -> bool {
     cx.try_global::<Active>().is_none_or(|active| active.dark)
 }
@@ -396,10 +399,10 @@ pub fn apply(settings: &crate::ui::settings::Settings, window: Option<&mut Windo
         None,
         cx,
     );
-    // Только через `Theme::update`: тема хранит цвета дважды (`colors` и
-    // `tokens`), а корень окна gpui-component красит `tokens.background`.
-    // Правка через `global_mut` оставляет токены от стандартной темы — под
-    // окном тогда лежит её непрозрачный фон, и прозрачность пропадает.
+    // Only through `Theme::update`: the theme stores colors twice (`colors` and
+    // `tokens`), and the gpui-component window root paints `tokens.background`.
+    // Editing through `global_mut` leaves the tokens from the default theme — under
+    // the window then lies its opaque background, and transparency is lost.
     if let Some(config) = entry.as_ref().and_then(|entry| entry.config.clone()) {
         Theme::update(cx, |theme| theme.apply_config(&config));
     }
@@ -619,7 +622,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rezhim_iz_nastroek_terpit_opechatki() {
+    fn mode_from_settings_tolerates_typos() {
         assert_eq!(Appearance::parse("dark"), Appearance::Dark);
         assert_eq!(Appearance::parse("light"), Appearance::Light);
         assert_eq!(Appearance::parse("darkk"), Appearance::System);
@@ -629,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn katalog_soderzhit_vse_temy_i_delit_po_rezhimam() {
+    fn catalog_contains_all_themes_and_splits_by_mode() {
         let cx = gpui_kit::TestAppContext::single();
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -638,60 +641,60 @@ mod tests {
             for name in ["Cratty", "Tokyo Night", "Gruvbox Dark", "Catppuccin Mocha"] {
                 assert!(
                     dark.iter().any(|e| e.title == name),
-                    "нет тёмной темы {name}"
+                    "missing dark theme {name}"
                 );
             }
-            for name in ["Светлая", "Ayu Light", "Solarized Light"] {
+            for name in ["Light", "Ayu Light", "Solarized Light"] {
                 assert!(
                     light.iter().any(|e| e.title == name),
-                    "нет светлой темы {name}"
+                    "missing light theme {name}"
                 );
             }
-            assert!(dark.len() + light.len() >= 39, "загрузились не все темы");
-            assert_eq!(dark[0].id, DEFAULT_DARK, "свои темы идут первыми");
+            assert!(dark.len() + light.len() >= 39, "not all themes loaded");
+            assert_eq!(dark[0].id, DEFAULT_DARK, "own themes come first");
 
-            // Светлая палитра в тёмном режиме не применяется — берётся своя.
+            // A light palette is not applied in dark mode — our own is used.
             assert_eq!(
-                resolve(cx, "Ayu Light", true).expect("тема").id,
+                resolve(cx, "Ayu Light", true).expect("theme").id,
                 DEFAULT_DARK
             );
             assert_eq!(
-                resolve(cx, "нет такой", false).expect("тема").id,
+                resolve(cx, "no such theme", false).expect("theme").id,
                 DEFAULT_LIGHT
             );
             assert_eq!(
-                resolve(cx, "Tokyo Night", true).expect("тема").id,
+                resolve(cx, "Tokyo Night", true).expect("theme").id,
                 "Tokyo Night"
             );
         });
     }
 
     #[test]
-    fn tema_gpui_kit_primenyaetsya_s_palitroy_terminala() {
+    fn gpui_kit_theme_is_applied_with_terminal_palette() {
         let cx = gpui_kit::TestAppContext::single();
         cx.update(|cx| {
             gpui_kit::init(cx);
             init(cx);
             let settings: crate::ui::settings::Settings =
                 serde_json::from_str(r#"{"appearance":"dark","dark_theme":"Gruvbox Dark"}"#)
-                    .expect("разбор");
+                    .expect("parse");
             apply(&settings, None, cx);
-            let entry = find(cx, "Gruvbox Dark").expect("тема");
+            let entry = find(cx, "Gruvbox Dark").expect("theme");
             assert_eq!(Theme::global(cx).colors.background, entry.colors.background);
             assert_eq!(terminal_base(cx).indexed(1), entry.palette.indexed(1));
             assert!(is_dark(cx));
         });
     }
 
-    // Корень окна gpui-component красит `tokens.background`, а не
-    // `colors.background`: без синхронизации окно остаётся непрозрачным.
+    // The gpui-component window root paints `tokens.background`, not
+    // `colors.background`: without syncing, the window stays opaque.
     #[test]
-    fn prozrachnost_dohodit_do_tokenov_kornya() {
+    fn opacity_reaches_root_tokens() {
         let cx = gpui_kit::TestAppContext::single();
         cx.update(|cx| {
             gpui_kit::init(cx);
             let settings: crate::ui::settings::Settings =
-                serde_json::from_str(r#"{"terminal_opacity":60}"#).expect("разбор");
+                serde_json::from_str(r#"{"terminal_opacity":60}"#).expect("parse");
             apply(&settings, None, cx);
 
             let theme = Theme::global(cx);
@@ -700,8 +703,8 @@ mod tests {
                 .background
                 .background
                 .as_solid()
-                .expect("сплошной фон");
-            assert!((token.a - 0.6).abs() < 0.01, "альфа токена: {}", token.a);
+                .expect("solid background");
+            assert!((token.a - 0.6).abs() < 0.01, "token alpha: {}", token.a);
             assert_eq!(token, theme.colors.background);
         });
     }

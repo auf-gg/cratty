@@ -16,14 +16,14 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Decrypt => {
-                f.write_str("не удалось расшифровать: неверный ключ или данные повреждены")
+                f.write_str("decryption failed: wrong key or corrupted data")
             }
-            Self::Rng => f.write_str("операционная система не выдала случайные байты"),
-            Self::Kdf(what) => write!(f, "вывод ключа из пароля не удался: {what}"),
-            Self::Params(what) => write!(f, "недопустимые параметры Argon2id: {what}"),
-            Self::Format(what) => write!(f, "формат не разобран: {what}"),
-            Self::RecoveryCode(what) => write!(f, "код восстановления не принят: {what}"),
-            Self::Signature => f.write_str("подпись неверна"),
+            Self::Rng => f.write_str("the operating system did not provide random bytes"),
+            Self::Kdf(what) => write!(f, "password key derivation failed: {what}"),
+            Self::Params(what) => write!(f, "invalid Argon2id parameters: {what}"),
+            Self::Format(what) => write!(f, "format could not be parsed: {what}"),
+            Self::RecoveryCode(what) => write!(f, "recovery code rejected: {what}"),
+            Self::Signature => f.write_str("invalid signature"),
         }
     }
 }

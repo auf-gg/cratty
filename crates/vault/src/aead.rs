@@ -75,7 +75,7 @@ mod tests {
     use secrecy::ExposeSecret;
 
     #[test]
-    fn xchacha20poly1305_izvestnyy_vektor() {
+    fn xchacha20poly1305_known_vector() {
         let key = Key32::from_bytes(hex!(
             "808182838485868788898a8b8c8d8e8f 909192939495969798999a9b9c9d9e9f"
         ));
@@ -95,45 +95,45 @@ mod tests {
         );
         let expected_tag = hex!("c0875924c1c7987947deafd8780acf49");
 
-        let sealed = seal_with_nonce(&key, &nonce, &aad, plaintext).expect("шифрование");
+        let sealed = seal_with_nonce(&key, &nonce, &aad, plaintext).expect("encryption");
 
         assert_eq!(
             &sealed[..NONCE_LEN],
             &nonce,
-            "nonce кладётся в начало блоба"
+            "the nonce is placed at the start of the blob"
         );
         let body = &sealed[NONCE_LEN..];
         assert_eq!(&body[..body.len() - TAG_LEN], &expected_ct[..]);
         assert_eq!(&body[body.len() - TAG_LEN..], &expected_tag[..]);
 
-        let opened = open(&key, &aad, &sealed).expect("расшифровка");
+        let opened = open(&key, &aad, &sealed).expect("decryption");
         assert_eq!(opened.expose_secret(), plaintext.as_slice());
     }
 
     fn fixture() -> (Key32, Vec<u8>, Vec<u8>) {
         let key = Key32::from_bytes([7u8; 32]);
         let aad = key_material_aad("test", 1);
-        let sealed = seal(&key, &aad, "секрет".as_bytes()).expect("шифрование");
+        let sealed = seal(&key, &aad, "secret".as_bytes()).expect("encryption");
         (key, aad, sealed)
     }
 
     #[test]
     fn roundtrip() {
         let (key, aad, sealed) = fixture();
-        let opened = open(&key, &aad, &sealed).expect("расшифровка");
-        assert_eq!(opened.expose_secret(), "секрет".as_bytes());
-        assert_eq!(sealed.len(), NONCE_LEN + "секрет".len() + TAG_LEN);
+        let opened = open(&key, &aad, &sealed).expect("decryption");
+        assert_eq!(opened.expose_secret(), "secret".as_bytes());
+        assert_eq!(sealed.len(), NONCE_LEN + "secret".len() + TAG_LEN);
     }
 
     #[test]
-    fn chuzhoy_kluch_ne_otkryvaet() {
+    fn foreign_key_does_not_open() {
         let (_, aad, sealed) = fixture();
         let alien = Key32::from_bytes([8u8; 32]);
         assert_eq!(open(&alien, &aad, &sealed).unwrap_err(), Error::Decrypt);
     }
 
     #[test]
-    fn izmenennyy_bayt_shifroteksta_ne_otkryvaet() {
+    fn modified_ciphertext_byte_does_not_open() {
         let (key, aad, sealed) = fixture();
         for i in 0..sealed.len() {
             let mut damaged = sealed.clone();
@@ -141,36 +141,36 @@ mod tests {
             assert_eq!(
                 open(&key, &aad, &damaged).unwrap_err(),
                 Error::Decrypt,
-                "байт {i} изменён, а блоб всё равно открылся"
+                "byte {i} was modified but the blob still opened"
             );
         }
     }
 
     #[test]
-    fn izmenennyy_aad_ne_otkryvaet() {
+    fn modified_aad_does_not_open() {
         let (key, _, sealed) = fixture();
         let other = key_material_aad("test", 2);
         assert_eq!(open(&key, &other, &sealed).unwrap_err(), Error::Decrypt);
     }
 
     #[test]
-    fn obrezannyy_blob_ne_otkryvaet() {
+    fn truncated_blob_does_not_open() {
         let (key, aad, sealed) = fixture();
         for cut in 0..sealed.len() {
             assert_eq!(
                 open(&key, &aad, &sealed[..cut]).unwrap_err(),
                 Error::Decrypt,
-                "блоб обрезан до {cut} байт и открылся"
+                "blob truncated to {cut} bytes and still opened"
             );
         }
     }
 
     #[test]
-    fn nonce_ne_povtoryaetsya() {
+    fn nonce_does_not_repeat() {
         let key = Key32::from_bytes([7u8; 32]);
         let aad = key_material_aad("test", 1);
-        let a = seal(&key, &aad, "одно и то же".as_bytes()).expect("шифрование");
-        let b = seal(&key, &aad, "одно и то же".as_bytes()).expect("шифрование");
+        let a = seal(&key, &aad, "the same thing".as_bytes()).expect("encryption");
+        let b = seal(&key, &aad, "the same thing".as_bytes()).expect("encryption");
         assert_ne!(a[..NONCE_LEN], b[..NONCE_LEN]);
         assert_ne!(a[NONCE_LEN..], b[NONCE_LEN..]);
     }

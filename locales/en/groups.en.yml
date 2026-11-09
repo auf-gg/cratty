@@ -1,0 +1,10 @@
+groups:
+  edit: "Edit…"
+  name_placeholder: "Group name"
+  dialog_title: "Group"
+  icon_and_name: "Icon and name"
+  save: "Save"
+  cancel: "Cancel"
+  field: "Group"
+  none_yet: "No groups yet: enter a new name"
+  choose: "Choose group"

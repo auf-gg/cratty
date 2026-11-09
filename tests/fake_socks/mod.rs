@@ -30,8 +30,8 @@ impl FakeSocks {
     async fn start(credentials: Option<(String, String)>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
-            .expect("не занять порт под тестовый SOCKS5");
-        let addr = listener.local_addr().expect("у слушателя нет адреса");
+            .expect("could not bind a port for the test SOCKS5");
+        let addr = listener.local_addr().expect("listener has no address");
         let observed = Arc::new(Mutex::new(Observed::default()));
 
         let shared = observed.clone();

@@ -142,19 +142,19 @@ mod tests {
     }
 
     #[test]
-    fn bez_rezhima_programma_mysh_ne_poluchaet() {
+    fn without_mode_program_gets_no_mouse() {
         assert_eq!(encode(TermMode::empty(), &press(Button::Left, 0, 0)), None);
     }
 
     #[test]
-    fn shift_ostavlyaet_vydelenie_terminalu() {
+    fn shift_leaves_selection_to_the_terminal() {
         let mut event = press(Button::Left, 3, 4);
         event.mods.shift = true;
         assert_eq!(encode(sgr(), &event), None);
     }
 
     #[test]
-    fn sgr_nazhatie_i_otpuskanie() {
+    fn sgr_press_and_release() {
         assert_eq!(
             encode(sgr(), &press(Button::Left, 9, 4)),
             Some(b"\x1b[<0;10;5M".to_vec())
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn sgr_dotyagivaetsya_do_dalnih_kolonok() {
+    fn sgr_reaches_far_columns() {
         assert_eq!(
             encode(sgr(), &press(Button::Left, 499, 0)),
             Some(b"\x1b[<0;500;1M".to_vec())
@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn klassicheskaya_kodirovka() {
+    fn classic_encoding() {
         assert_eq!(
             encode(CLICK, &press(Button::Left, 9, 4)),
             Some(vec![0x1b, b'[', b'M', 32, 42, 37])
@@ -191,15 +191,15 @@ mod tests {
     }
 
     #[test]
-    fn klassicheskaya_molchit_za_predelom() {
+    fn classic_stays_silent_beyond_the_limit() {
         assert_eq!(encode(CLICK, &press(Button::Left, 223, 0)), None);
         assert!(encode(CLICK, &press(Button::Left, 222, 0)).is_some());
     }
 
     #[test]
-    fn utf8_kodiruet_dalnie_kolonki_simvolami() {
+    fn utf8_encodes_far_columns_as_characters() {
         let mode = CLICK | TermMode::UTF8_MOUSE;
-        let bytes = encode(mode, &press(Button::Left, 299, 0)).expect("отчёт");
+        let bytes = encode(mode, &press(Button::Left, 299, 0)).expect("report");
         let mut expected = b"\x1b[M".to_vec();
         expected.push(32);
         expected.extend_from_slice('\u{14c}'.to_string().as_bytes());
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn modifikatory_i_koleso() {
+    fn modifiers_and_wheel() {
         let mut event = press(Button::WheelUp, 0, 0);
         event.mods.ctrl = true;
         assert_eq!(encode(sgr(), &event), Some(b"\x1b[<80;1;1M".to_vec()));
@@ -221,12 +221,12 @@ mod tests {
     }
 
     #[test]
-    fn protyagivanie_tolko_kogda_prosili() {
+    fn dragging_only_when_requested() {
         let drag = Event {
             action: Action::Motion,
             ..press(Button::Left, 1, 1)
         };
-        assert_eq!(encode(sgr(), &drag), None, "?1000 протягиваний не просит");
+        assert_eq!(encode(sgr(), &drag), None, "?1000 does not ask for drags");
 
         let mode = sgr() | TermMode::MOUSE_DRAG;
         assert_eq!(encode(mode, &drag), Some(b"\x1b[<32;2;2M".to_vec()));
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn koleso_v_less_prevrashchaetsya_v_strelki() {
+    fn wheel_in_less_turns_into_arrows() {
         let mode = TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL;
         assert_eq!(
             wheel_as_arrows(mode, true, 3),

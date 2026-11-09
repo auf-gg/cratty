@@ -1,5 +1,5 @@
-// На Windows релизная сборка — GUI-приложение без окна консоли.
-// В debug консоль остаётся, чтобы видеть eprintln и паники.
+// On Windows, the release build is a GUI application without a console window.
+// In debug builds the console stays so eprintln output and panics are visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use cratty::ui;
@@ -10,7 +10,7 @@ fn main() {
         .with_assets(ui::assets::Assets)
         .run(|cx: &mut App| {
             if let Err(err) = ui::open_main_window(cx) {
-                eprintln!("не удалось открыть окно: {err:#}");
+                eprintln!("failed to open window: {err:#}");
                 cx.quit();
                 return;
             }

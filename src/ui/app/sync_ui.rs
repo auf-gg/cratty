@@ -51,9 +51,9 @@ impl AppView {
                     outcome.records.extend(pulled.records);
                     outcome.broken.extend(pulled.broken);
                 }
-                Err(error) => outcome
-                    .errors
-                    .push(format!("Папка синхронизации: {error:#}")),
+                Err(error) => outcome.errors.push(
+                    t!("sync.folder_error", error = format!("{error:#}")).to_string(),
+                ),
             }
 
             outcome
@@ -85,7 +85,7 @@ impl AppView {
         let Some(unlocked) = self.vaults[ix].session.unlocked_mut() else {
             if ix == self.current {
                 self.sync_error = Some(SharedString::from(
-                    "Хранилище было заблокировано во время синхронизации.",
+                    t!("sync.locked_during").to_string(),
                 ));
             }
             cx.notify();
@@ -94,7 +94,7 @@ impl AppView {
 
         let report = unlocked.merge(&store, outcome.records);
         self.reconcile_vault_name(id);
-        // С другого устройства могли прийти ключи, которых здесь нет на диске.
+        // Keys that are not on disk here may have arrived from another device.
         self.sync_key_files(id);
 
         let mut troubles = outcome.errors;
@@ -102,15 +102,14 @@ impl AppView {
         troubles.extend(report.broken.iter().cloned());
 
         if ix == self.current {
-            self.sync_status = Some(SharedString::from(format!(
-                "Получено записей: {}, локальные новее: {}",
-                report.applied, report.kept
-            )));
+            self.sync_status = Some(SharedString::from(
+                t!("sync.received", applied = report.applied, kept = report.kept).to_string(),
+            ));
             self.sync_error = troubles.first().map(|first| {
                 SharedString::from(if troubles.len() == 1 {
                     first.clone()
                 } else {
-                    format!("{first} (и ещё {})", troubles.len() - 1)
+                    t!("sync.and_more", first = first, count = troubles.len() - 1).to_string()
                 })
             });
         }

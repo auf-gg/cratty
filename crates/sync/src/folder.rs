@@ -21,7 +21,7 @@ impl FolderBackend {
     pub fn open(root: impl Into<PathBuf>, vault_id: &VaultId) -> Result<Self> {
         let root = root.into();
         std::fs::create_dir_all(root.join(RECORDS_DIR))
-            .with_context(|| format!("не создать каталог синхронизации {}", root.display()))?;
+            .with_context(|| format!("could not create sync directory {}", root.display()))?;
 
         let marker = root.join(VAULT_FILE);
         match std::fs::read_to_string(&marker) {
@@ -29,7 +29,7 @@ impl FolderBackend {
                 let existing = existing.trim();
                 if existing != vault_id.as_str() {
                     bail!(
-                        "в папке {} лежит другое хранилище — синхронизировать их вместе нельзя",
+                        "folder {} holds a different vault; they cannot be synced together",
                         root.display()
                     );
                 }
@@ -38,7 +38,7 @@ impl FolderBackend {
                 write_atomic(&marker, vault_id.as_str().as_bytes())?;
             }
             Err(error) => {
-                return Err(error).with_context(|| format!("не прочитать {}", marker.display()));
+                return Err(error).with_context(|| format!("could not read {}", marker.display()));
             }
         }
 
@@ -68,7 +68,7 @@ impl FolderBackend {
                 return Ok(Pulled::default());
             }
             Err(error) => {
-                return Err(error).with_context(|| format!("не прочитать {}", dir.display()));
+                return Err(error).with_context(|| format!("could not read {}", dir.display()));
             }
         };
 
@@ -118,7 +118,7 @@ impl VaultBackend for FolderBackend {
     async fn push(&self, records: Vec<EncryptedRecord>) -> Result<Cursor> {
         let dir = self.records_dir();
         std::fs::create_dir_all(&dir)
-            .with_context(|| format!("не создать каталог {}", dir.display()))?;
+            .with_context(|| format!("could not create directory {}", dir.display()))?;
 
         let mut newest = 0u64;
         for record in records {
@@ -177,13 +177,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let temp = path.with_extension(TEMP_SUFFIX.trim_start_matches('.'));
     {
         let mut file = std::fs::File::create(&temp)
-            .with_context(|| format!("не создать {}", temp.display()))?;
+            .with_context(|| format!("could not create {}", temp.display()))?;
         file.write_all(bytes)
-            .with_context(|| format!("не записать {}", temp.display()))?;
+            .with_context(|| format!("could not write {}", temp.display()))?;
         file.sync_all()
-            .with_context(|| format!("не сбросить на диск {}", temp.display()))?;
+            .with_context(|| format!("could not flush {} to disk", temp.display()))?;
     }
-    std::fs::rename(&temp, path).with_context(|| format!("не заменить {}", path.display()))?;
+    std::fs::rename(&temp, path).with_context(|| format!("could not replace {}", path.display()))?;
     Ok(())
 }
 
@@ -211,10 +211,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zapisi_edut_tuda_i_obratno() {
+    async fn records_round_trip() {
         let root = temp_dir("roundtrip");
         let vault_id = VaultId::generate().expect("CSPRNG");
-        let backend = FolderBackend::open(&root, &vault_id).expect("папка");
+        let backend = FolderBackend::open(&root, &vault_id).expect("folder");
 
         let device = DeviceId::generate().expect("CSPRNG");
         let id = RecordId::generate().expect("CSPRNG");
@@ -231,10 +231,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn staraya_reviziya_ne_zatiraet_novuyu() {
+    async fn old_revision_does_not_overwrite_new_one() {
         let root = temp_dir("stale");
         let vault_id = VaultId::generate().expect("CSPRNG");
-        let backend = FolderBackend::open(&root, &vault_id).expect("папка");
+        let backend = FolderBackend::open(&root, &vault_id).expect("folder");
 
         let device = DeviceId::generate().expect("CSPRNG");
         let id = RecordId::generate().expect("CSPRNG");
@@ -251,10 +251,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn novaya_reviziya_zamenyaet_staruyu() {
+    async fn new_revision_replaces_old_one() {
         let root = temp_dir("fresh");
         let vault_id = VaultId::generate().expect("CSPRNG");
-        let backend = FolderBackend::open(&root, &vault_id).expect("папка");
+        let backend = FolderBackend::open(&root, &vault_id).expect("folder");
 
         let device = DeviceId::generate().expect("CSPRNG");
         let id = RecordId::generate().expect("CSPRNG");
@@ -272,47 +272,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chuzhoe_hranilishche_ne_prinimaetsya() {
+    async fn foreign_vault_is_not_accepted() {
         let root = temp_dir("alien");
         let mine = VaultId::generate().expect("CSPRNG");
         let alien = VaultId::generate().expect("CSPRNG");
 
-        FolderBackend::open(&root, &mine).expect("папка");
+        FolderBackend::open(&root, &mine).expect("folder");
         let Err(error) = FolderBackend::open(&root, &alien) else {
-            panic!("чужая папка принялась как своя");
+            panic!("a foreign folder was accepted as our own");
         };
-        assert!(format!("{error:#}").contains("другое хранилище"));
+        assert!(format!("{error:#}").contains("different vault"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
-    async fn musor_v_kataloge_ne_lomaet_sinhronizaciyu() {
+    async fn junk_in_directory_does_not_break_sync() {
         let root = temp_dir("garbage");
         let vault_id = VaultId::generate().expect("CSPRNG");
-        let backend = FolderBackend::open(&root, &vault_id).expect("папка");
+        let backend = FolderBackend::open(&root, &vault_id).expect("folder");
 
         let device = DeviceId::generate().expect("CSPRNG");
         let id = RecordId::generate().expect("CSPRNG");
         let good = record(&id, 1, 1_000, &device);
         backend.push(vec![good.clone()]).await.expect("push");
 
-        std::fs::write(root.join(RECORDS_DIR).join("мусор"), "не запись".as_bytes())
-            .expect("мусор");
-        std::fs::write(root.join(RECORDS_DIR).join("сосед.tmp"), b"half").expect("временный");
+        std::fs::write(root.join(RECORDS_DIR).join("junk"), "not a record".as_bytes())
+            .expect("junk");
+        std::fs::write(root.join(RECORDS_DIR).join("neighbor.tmp"), b"half").expect("temp");
 
         let pulled = backend.pull(Cursor::BEGINNING).await.expect("pull");
         assert_eq!(pulled.records, vec![good]);
-        assert_eq!(pulled.broken.len(), 1, "про мусор надо сказать один раз");
+        assert_eq!(pulled.broken.len(), 1, "junk must be reported exactly once");
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
-    async fn kursor_ne_teryaet_zapisi_toy_zhe_millisekundy() {
+    async fn cursor_does_not_lose_records_from_same_millisecond() {
         let root = temp_dir("cursor");
         let vault_id = VaultId::generate().expect("CSPRNG");
-        let backend = FolderBackend::open(&root, &vault_id).expect("папка");
+        let backend = FolderBackend::open(&root, &vault_id).expect("folder");
 
         let device = DeviceId::generate().expect("CSPRNG");
         let old = record(&RecordId::generate().expect("CSPRNG"), 1, 1_000, &device);

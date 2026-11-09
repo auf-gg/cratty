@@ -31,13 +31,13 @@ fn password_config(sshd: &FakeSshd) -> SshConfig {
 async fn next_event(session: &mut SshSession) -> Option<FromSsh> {
     tokio::time::timeout(DEADLINE, session.events.next())
         .await
-        .expect("сессия не прислала события в отведённое время")
+        .expect("session sent no events within the allotted time")
 }
 
 async fn wait_connected(session: &mut SshSession) -> String {
     match next_event(session).await {
         Some(FromSsh::Connected { fingerprint }) => fingerprint,
-        other => panic!("ожидали Connected, получили {other:?}"),
+        other => panic!("expected Connected, got {other:?}"),
     }
 }
 
@@ -52,7 +52,7 @@ async fn wait_for_output(session: &mut SshSession, needle: &str) -> String {
                 }
             }
             Some(FromSsh::Connected { .. }) => {}
-            other => panic!("ждали «{needle}» в выводе, получили {other:?}; накоплено: {seen:?}"),
+            other => panic!("expected '{needle}' in the output, got {other:?}; accumulated: {seen:?}"),
         }
     }
 }
@@ -62,7 +62,7 @@ async fn wait_closed(session: &mut SshSession) -> CloseReason {
         match next_event(session).await {
             Some(FromSsh::Closed(reason)) => return reason,
             Some(_) => {}
-            None => panic!("канал событий закрылся, не сказав почему"),
+            None => panic!("event channel closed without saying why"),
         }
     }
 }
@@ -70,14 +70,14 @@ async fn wait_closed(session: &mut SshSession) -> CloseReason {
 fn error_text(reason: &CloseReason) -> String {
     match reason {
         CloseReason::Error(text) => text.clone(),
-        other => panic!("ожидали CloseReason::Error, получили {other:?}"),
+        other => panic!("expected CloseReason::Error, got {other:?}"),
     }
 }
 
 #[tokio::test]
 async fn password_auth_pty_shell_and_echo_roundtrip() {
     let sshd = FakeSshd::start().await;
-    let mut session = spawn_ssh(password_config(&sshd)).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(password_config(&sshd)).expect("session thread failed to start");
 
     let fingerprint = wait_connected(&mut session).await;
     assert_eq!(fingerprint, sshd.fingerprint());
@@ -87,12 +87,12 @@ async fn password_auth_pty_shell_and_echo_roundtrip() {
     session
         .commands
         .unbounded_send(ToSsh::Input(Bytes::from_static(b"echo hello\n")))
-        .expect("сессия уже закрыта");
+        .expect("session already closed");
 
     let output = wait_for_output(&mut session, "hello\r\n").await;
     assert!(
         output.contains("echo hello"),
-        "в выводе нет эха команды: {output:?}"
+        "no command echo in the output: {output:?}"
     );
 }
 
@@ -103,11 +103,11 @@ async fn pty_request_carries_configured_size_and_term() {
     config.term = "xterm-256color".into();
     config.pty = PtySize::new(200, 50);
 
-    let mut session = spawn_ssh(config).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(config).expect("session thread failed to start");
     wait_connected(&mut session).await;
     wait_for_output(&mut session, "$ ").await;
 
-    let pty = sshd.pty_request().expect("сервер не увидел запроса PTY");
+    let pty = sshd.pty_request().expect("server did not see a PTY request");
     assert_eq!(pty.term, "xterm-256color");
     assert_eq!((pty.cols, pty.rows), (200, 50));
 }
@@ -115,19 +115,19 @@ async fn pty_request_carries_configured_size_and_term() {
 #[tokio::test]
 async fn resize_reaches_the_server() {
     let sshd = FakeSshd::start().await;
-    let mut session = spawn_ssh(password_config(&sshd)).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(password_config(&sshd)).expect("session thread failed to start");
     wait_connected(&mut session).await;
     wait_for_output(&mut session, "$ ").await;
 
     session
         .commands
         .unbounded_send(ToSsh::Resize(PtySize::new(100, 30)))
-        .expect("сессия уже закрыта");
+        .expect("session already closed");
 
     session
         .commands
         .unbounded_send(ToSsh::Input(Bytes::from_static(b"echo resized\n")))
-        .expect("сессия уже закрыта");
+        .expect("session already closed");
     wait_for_output(&mut session, "resized\r\n").await;
 
     assert_eq!(sshd.resizes(), vec![(100, 30)]);
@@ -136,14 +136,14 @@ async fn resize_reaches_the_server() {
 #[tokio::test]
 async fn disconnect_command_closes_session_locally() {
     let sshd = FakeSshd::start().await;
-    let mut session = spawn_ssh(password_config(&sshd)).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(password_config(&sshd)).expect("session thread failed to start");
     wait_connected(&mut session).await;
     wait_for_output(&mut session, "$ ").await;
 
     session
         .commands
         .unbounded_send(ToSsh::Disconnect)
-        .expect("сессия уже закрыта");
+        .expect("session already closed");
 
     assert!(matches!(
         wait_closed(&mut session).await,
@@ -155,36 +155,36 @@ async fn disconnect_command_closes_session_locally() {
 #[tokio::test]
 async fn remote_exit_is_reported_with_status() {
     let sshd = FakeSshd::start().await;
-    let mut session = spawn_ssh(password_config(&sshd)).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(password_config(&sshd)).expect("session thread failed to start");
     wait_connected(&mut session).await;
     wait_for_output(&mut session, "$ ").await;
 
     session
         .commands
         .unbounded_send(ToSsh::Input(Bytes::from_static(b"exit\n")))
-        .expect("сессия уже закрыта");
+        .expect("session already closed");
 
     match wait_closed(&mut session).await {
         CloseReason::Remote { exit_status } => assert_eq!(exit_status, Some(0)),
-        other => panic!("ожидали Remote, получили {other:?}"),
+        other => panic!("expected Remote, got {other:?}"),
     }
 }
 
 #[tokio::test]
 async fn wrong_password_is_an_error_not_a_panic() {
     let sshd = FakeSshd::start().await;
-    let config = config(&sshd, AuthMethod::Password("не тот".into()));
+    let config = config(&sshd, AuthMethod::Password("wrong".into()));
 
-    let mut session = spawn_ssh(config).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(config).expect("session thread failed to start");
     let text = error_text(&wait_closed(&mut session).await);
 
     assert!(
         text.contains(USER),
-        "в тексте ошибки нет имени пользователя: {text}"
+        "no user name in the error text: {text}"
     );
     assert!(
-        text.contains("не удалось войти"),
-        "текст ошибки не про аутентификацию: {text}"
+        text.contains("could not sign in"),
+        "error text is not about authentication: {text}"
     );
 }
 
@@ -194,16 +194,16 @@ async fn unknown_host_key_is_rejected_with_its_fingerprint() {
     let mut config = password_config(&sshd);
     config.host_key_policy = HostKeyPolicy::Fingerprints(Vec::new());
 
-    let mut session = spawn_ssh(config).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(config).expect("session thread failed to start");
     let text = error_text(&wait_closed(&mut session).await);
 
     assert!(
         text.contains(&sshd.fingerprint()),
-        "в тексте нет отпечатка предъявленного ключа: {text}"
+        "no fingerprint of the presented key in the text: {text}"
     );
     assert!(
         !sshd.saw_auth_attempt(),
-        "пароль ушёл на сервер, ключ которого мы не приняли"
+        "password was sent to a server whose key we did not accept"
     );
 }
 
@@ -211,31 +211,31 @@ async fn unknown_host_key_is_rejected_with_its_fingerprint() {
 async fn refused_connection_is_an_error_not_a_panic() {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
-        .expect("не удалось занять порт");
-    let port = listener.local_addr().expect("нет адреса").port();
+        .expect("could not bind a port");
+    let port = listener.local_addr().expect("no address").port();
     drop(listener);
 
     let mut config = SshConfig::new("127.0.0.1", port, USER, AuthMethod::Password("x".into()));
     config.host_key_policy = HostKeyPolicy::Fingerprints(Vec::new());
 
-    let mut session = spawn_ssh(config).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(config).expect("session thread failed to start");
     let text = error_text(&wait_closed(&mut session).await);
 
     assert!(
         text.contains(&port.to_string()),
-        "в тексте ошибки нет адреса: {text}"
+        "no address in the error text: {text}"
     );
 }
 
 #[tokio::test]
 async fn dropping_the_session_shuts_the_thread_down() {
     let sshd = FakeSshd::start().await;
-    let mut session = spawn_ssh(password_config(&sshd)).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(password_config(&sshd)).expect("session thread failed to start");
     wait_connected(&mut session).await;
     wait_for_output(&mut session, "$ ").await;
 
     tokio::time::timeout(DEADLINE, tokio::task::spawn_blocking(move || drop(session)))
         .await
-        .expect("поток сессии не завершился после drop")
-        .expect("поток паниковал при завершении");
+        .expect("session thread did not finish after drop")
+        .expect("thread panicked on shutdown");
 }

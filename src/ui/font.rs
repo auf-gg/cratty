@@ -28,13 +28,13 @@ const CANDIDATES: &[&str] = &[
 pub struct MonoFont {
     pub family: SharedString,
     pub is_monospace: bool,
-    /// Шрифт для значков (Nerd Font), если основной их не содержит.
+    /// Icon font (Nerd Font), if the main one does not contain them.
     pub icons: Option<SharedString>,
 }
 
 impl Global for MonoFont {}
 
-/// Все установленные семейства, по алфавиту, без повторов.
+/// All installed families, alphabetically, without duplicates.
 pub fn installed(cx: &App) -> Vec<String> {
     let mut names = cx.text_system().all_font_names();
     names.sort_by_key(|name| name.to_lowercase());
@@ -43,8 +43,8 @@ pub fn installed(cx: &App) -> Vec<String> {
     names
 }
 
-/// Похожие на моноширинные: по имени семейства. Точного признака текстовая
-/// система не даёт, а грузить две тысячи шрифтов ради замера долго.
+/// Likely monospace: judged by family name. The text system gives no exact
+/// indicator, and loading two thousand fonts to measure them takes too long.
 pub fn monospace(all: &[String]) -> Vec<String> {
     const HINTS: &[&str] = &[
         "mono",
@@ -72,14 +72,14 @@ pub fn monospace(all: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Шрифты со значками для промптов: Nerd Font и Symbols.
+/// Fonts with prompt icons: Nerd Font and Symbols.
 pub fn icon_fonts(all: &[String]) -> Vec<String> {
     let mut fonts: Vec<String> = all
         .iter()
         .filter(|name| name.contains("Nerd Font") || name.starts_with("Symbols"))
         .cloned()
         .collect();
-    // Сначала «Symbols Nerd Font», потом моноширинные варианты.
+    // First "Symbols Nerd Font", then the monospace variants.
     fonts.sort_by_key(|name| {
         (
             !name.starts_with("Symbols"),
@@ -90,12 +90,12 @@ pub fn icon_fonts(all: &[String]) -> Vec<String> {
     fonts
 }
 
-/// Значение настройки «иконки» без шрифта.
+/// Value of the "icons" setting meaning no font.
 pub const NO_ICONS: &str = "none";
 
-/// Вшитый шрифт значков: Symbols Nerd Font Mono (Nerd Fonts 3) с буквой «m»,
-/// без которой gpui шрифт не загружает (см. assets/fonts/README.md). У системных
-/// Nerd Font часто старая версия без значков Material.
+/// Embedded icon font: Symbols Nerd Font Mono (Nerd Fonts 3) with the letter "m",
+/// without which gpui does not load the font (see assets/fonts/README.md). System
+/// Nerd Fonts are often an old version without the Material icons.
 pub const BUNDLED_ICONS: &str = "Cratty Symbols";
 const BUNDLED_ICONS_TTF: &[u8] = include_bytes!("../../assets/fonts/CrattySymbols-Regular.ttf");
 
@@ -120,9 +120,9 @@ impl MonoFont {
         }
     }
 
-    /// Шрифт терминала по настройкам: выбранный, если установлен, иначе
-    /// найденный сам; значки — выбранный шрифт, сам основной (если он Nerd
-    /// Font) или первый найденный Nerd Font.
+    /// Terminal font from settings: the chosen one if installed, otherwise
+    /// one found automatically; icons — the chosen font, the main font itself (if it is a Nerd
+    /// Font) or the first Nerd Font found.
     pub fn from_settings(settings: &crate::ui::settings::Settings, cx: &App) -> Self {
         let all = installed(cx);
         let chosen = settings.terminal_font.trim();
@@ -139,8 +139,8 @@ impl MonoFont {
         let wanted = settings.terminal_icons.trim();
         font.icons = match wanted {
             NO_ICONS => None,
-            // Подстановка берётся только для символов, которых нет в основном
-            // шрифте, поэтому вшитый набор не мешает и Nerd Font в роли основного.
+            // The fallback is used only for symbols missing from the main
+            // font, so the embedded set does not interfere with a Nerd Font as the main one.
             "" => Some(SharedString::new_static(BUNDLED_ICONS)),
             name if all.iter().any(|known| known == name) => {
                 Some(SharedString::from(name.to_owned()))
@@ -155,12 +155,12 @@ impl MonoFont {
             .text_system()
             .add_fonts(vec![std::borrow::Cow::Borrowed(BUNDLED_ICONS_TTF)])
         {
-            eprintln!("не удалось загрузить шрифт значков: {error:#}");
+            eprintln!("failed to load the icon font: {error:#}");
         }
         let font = Self::detect(cx);
         if !font.is_monospace {
             eprintln!(
-                "моноширинный шрифт не найден (искали: {}), откат на {}",
+                "monospace font not found (looked for: {}), falling back to {}",
                 CANDIDATES.join(", "),
                 font.family
             );
@@ -177,7 +177,7 @@ impl MonoFont {
         cx.global::<Self>()
     }
 
-    /// Шрифт для текста терминала: основной плюс шрифт значков в подстановке.
+    /// Font for terminal text: the main one plus the icon font as a fallback.
     pub fn font(&self) -> gpui_kit::Font {
         let mut font = gpui_kit::font(self.family.clone());
         if let Some(icons) = &self.icons {
@@ -192,7 +192,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn otbor_monoshirinnyh_i_shriftov_znachkov() {
+    fn filtering_of_monospace_and_icon_fonts() {
         let all: Vec<String> = [
             "Inter",
             "JetBrains Mono",
@@ -217,13 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn v_ishodnikah_net_literalnyh_semeystv_shrifta() {
+    fn no_literal_font_families_in_sources() {
         let needle = format!(".font_family({}", '"');
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
 
         let mut offenders = Vec::new();
         for file in rust_files(&root) {
-            let text = std::fs::read_to_string(&file).expect("прочитать исходник");
+            let text = std::fs::read_to_string(&file).expect("read source file");
             for (index, line) in text.lines().enumerate() {
                 if line.trim_start().starts_with("//") {
                     continue;
@@ -244,14 +244,14 @@ mod tests {
 
         assert!(
             offenders.is_empty(),
-            "семейство шрифта задано литералом — берите его у MonoFont:\n{}",
+            "font family is given as a literal — take it from MonoFont:\n{}",
             offenders.join("\n")
         );
     }
 
     fn rust_files(dir: &Path) -> Vec<PathBuf> {
         let mut out = Vec::new();
-        let entries = std::fs::read_dir(dir).expect("обойти каталог исходников");
+        let entries = std::fs::read_dir(dir).expect("walk the source directory");
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {

@@ -3,19 +3,19 @@ name = "proto"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Типы записей, сериализация и версионирование формата хранилища"
+description = "Record types, serialization and versioning of the vault format"
 
-# Как и `vault`, не знает ни про UI, ни про сеть, ни про файловую систему:
-# здесь только байты и их смысл. Куда эти байты лягут — дело слоя приложения
-# (локальный каталог) и `sync` (папка или сервер).
+# Like `vault`, knows nothing about UI, network or filesystem:
+# only bytes and their meaning live here. Where those bytes land is up to the application layer
+# (local directory) and `sync` (folder or server).
 [dependencies]
 vault = { path = "../vault" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 getrandom = { version = "0.4.3", default-features = false }
-# Сравнение секретов за постоянное время и затирание открытого текста
-# записи после шифрования.
+# Constant-time secret comparison and zeroing of the record
+# plaintext after encryption.
 subtle = "2.6.1"
 zeroize = "1.9.0"
-# Байты значков в теле записи (JSON) — base64, а не массив чисел.
+# Icon bytes in the record body (JSON) are base64, not an array of numbers.
 base64 = "0.22"

@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn posle_podtverzhdeniya_simvoly_vidny_srazu() {
+    fn after_confirmation_characters_show_immediately() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         let t0 = Instant::now();
@@ -399,11 +399,11 @@ mod tests {
             .filter(|run| run.style.underline)
             .map(|run| run.text.as_str())
             .collect();
-        assert_eq!(underlined, "s", "предсказанное обязано быть отличимым");
+        assert_eq!(underlined, "s", "predicted text must be distinguishable");
     }
 
     #[test]
-    fn parol_ne_poyavlyaetsya_na_ekrane() {
+    fn password_does_not_appear_on_screen() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         let t0 = Instant::now();
@@ -419,7 +419,7 @@ mod tests {
         for (i, ch) in "hunter2".chars().enumerate() {
             let at = t0 + Duration::from_millis(100 + i as u64 * 10);
             type_char(&mut predictor, &term, ch, at);
-            assert!(predictor.overlay().0.is_empty(), "символ пароля на экране");
+            assert!(predictor.overlay().0.is_empty(), "password character on the screen");
             predictor.observe(&term, at);
         }
 
@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn probel_ne_podtverzhdaet_epohu() {
+    fn space_does_not_confirm_epoch() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         let t0 = Instant::now();
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn oshibka_snimaet_predskazaniya() {
+    fn error_clears_predictions() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         let t0 = Instant::now();
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn v_vim_ne_predskazyvaem() {
+    fn no_prediction_in_vim() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         let t0 = Instant::now();
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn poseredine_stroki_ne_predskazyvaem() {
+    fn no_prediction_mid_line() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         term.advance(b"echo hi\x1b[3D");
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn backspace_stiraet_podcherknuto() {
+    fn backspace_erases_underlined() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         let t0 = Instant::now();
@@ -520,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn probel_derzhit_mesto_kursora() {
+    fn space_holds_cursor_position() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         let t0 = Instant::now();
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptivnyy_rezhim_smotrit_na_zaderzhku() {
+    fn adaptive_mode_looks_at_latency() {
         let mut predictor = Predictor::new(Policy::Adaptive);
         predictor.sample(Duration::from_millis(5));
         assert!(!predictor.visible());
@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn nikogda_znachit_nikogda() {
+    fn never_means_never() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Never);
         let t0 = Instant::now();
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn u_pravogo_kraya_ne_predskazyvaem() {
+    fn no_prediction_at_right_edge() {
         let (mut term, _rx) = shell();
         let mut predictor = Predictor::new(Policy::Always);
         term.advance(&[b'x'; 37]);

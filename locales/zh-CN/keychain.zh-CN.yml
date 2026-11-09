@@ -1,0 +1,6 @@
+keychain:
+  unavailable: "系统密钥存储不可用：%{error}"
+  write_failed: "无法将密钥写入系统存储：%{error}"
+  bad_length: "系统存储中的条目不是 32 字节"
+  read_failed: "无法从系统存储读取密钥：%{error}"
+  remove_failed: "无法从系统存储移除密钥：%{error}"

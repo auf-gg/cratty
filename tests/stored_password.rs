@@ -3,7 +3,7 @@ mod fake_sshd;
 use std::time::Duration;
 
 use cratty::ssh::{
-    Answer, AuthMethod, CloseReason, FromSsh, HostKeyPolicy, PtySize, STORED_PASSWORD_REJECTED,
+    Answer, AuthMethod, CloseReason, FromSsh, HostKeyPolicy, PtySize, stored_password_rejected,
     SecretKind, SshConfig, spawn_ssh,
 };
 use fake_sshd::{AuthMode, FakeSshd, OTP};
@@ -42,7 +42,7 @@ async fn outcome(
     loop {
         let event = tokio::time::timeout_at(deadline, session.events.next())
             .await
-            .map_err(|_| "сессия не ответила за отведённое время".to_string())?;
+            .map_err(|_| "session did not answer in time".to_string())?;
 
         match event {
             Some(FromSsh::Connected { .. }) => return Ok(asked),
@@ -53,36 +53,36 @@ async fn outcome(
             Some(FromSsh::Closed(CloseReason::Error(text))) => return Err(text),
             Some(FromSsh::Closed(other)) => return Err(format!("{other:?}")),
             Some(_) => {}
-            None => return Err("поток сессии закончился молча".into()),
+            None => return Err("session thread ended silently".into()),
         }
     }
 }
 
 #[tokio::test]
-async fn sohranennyy_parol_prohodit_cherez_keyboard_interactive() {
+async fn stored_password_passes_through_keyboard_interactive() {
     let sshd = FakeSshd::start_with_auth(AuthMode::SinglePrompt).await;
     let password = sshd.password().to_string();
-    let session = spawn_ssh(config(&sshd, Some(&password))).expect("поток сессии");
+    let session = spawn_ssh(config(&sshd, Some(&password))).expect("session thread");
 
     let asked = outcome(session, |prompt, kind| {
-        panic!("человека не должны были спрашивать: {prompt} ({kind:?})")
+        panic!("the user must not be asked: {prompt} ({kind:?})")
     })
     .await
-    .expect("сессия должна была открыться");
+    .expect("session should have opened");
 
-    assert!(asked.is_empty(), "сохранённый пароль спрашивать незачем");
+    assert!(asked.is_empty(), "no need to ask for a stored password");
     assert_eq!(
         sshd.interactive_answers(),
         vec![password],
-        "в приглашение должен был уйти сохранённый пароль"
+        "the stored password should have been sent to the prompt"
     );
 }
 
 #[tokio::test]
-async fn dva_priglasheniya_eto_vtoroy_faktor_i_ego_sprashivayut() {
+async fn two_prompts_mean_second_factor_and_it_is_asked() {
     let sshd = FakeSshd::start_with_auth(AuthMode::TwoPrompts).await;
     let password = sshd.password().to_string();
-    let session = spawn_ssh(config(&sshd, Some(&password))).expect("поток сессии");
+    let session = spawn_ssh(config(&sshd, Some(&password))).expect("session thread");
 
     let typed = password.clone();
     let asked = outcome(session, move |prompt, _| {
@@ -93,55 +93,55 @@ async fn dva_priglasheniya_eto_vtoroy_faktor_i_ego_sprashivayut() {
         }
     })
     .await
-    .expect("сессия должна была открыться");
+    .expect("session should have opened");
 
     assert_eq!(
         asked.len(),
         2,
-        "оба поля второго фактора обязаны быть спрошены у человека"
+        "both second-factor fields must be asked of the user"
     );
     for (_, kind) in &asked {
         assert_eq!(
             *kind,
             SecretKind::Challenge,
-            "второй фактор не должен выглядеть как обычный пароль"
+            "the second factor must not look like a regular password"
         );
     }
     assert_eq!(sshd.interactive_answers(), vec![password, OTP.to_string()]);
 }
 
 #[tokio::test]
-async fn otvergnutyy_sohranennyy_parol_ostanavlivaet_perebor() {
+async fn rejected_stored_password_stops_the_retries() {
     let sshd = FakeSshd::start_with_auth(AuthMode::SinglePrompt).await;
-    let session = spawn_ssh(config(&sshd, Some("не тот пароль"))).expect("поток сессии");
+    let session = spawn_ssh(config(&sshd, Some("wrong password"))).expect("session thread");
 
     let error = outcome(session, |prompt, kind| {
-        panic!("после отказа сохранённым паролем спрашивать нельзя: {prompt} ({kind:?})")
+        panic!("must not ask after the stored password was rejected: {prompt} ({kind:?})")
     })
     .await
-    .expect_err("сессия не должна была открыться");
+    .expect_err("session should not have opened");
 
     assert!(
-        error.contains(STORED_PASSWORD_REJECTED),
-        "UI узнаёт этот случай по метке в тексте: {error}"
+        error.contains(&stored_password_rejected()),
+        "the UI recognises this case by the marker in the text: {error}"
     );
 }
 
 #[tokio::test]
-async fn sohranennyy_parol_prohodit_obychnym_metodom() {
+async fn stored_password_passes_through_regular_method() {
     let sshd = FakeSshd::start_with_auth(AuthMode::PasswordOnly).await;
     let password = sshd.password().to_string();
-    let session = spawn_ssh(config(&sshd, Some(&password))).expect("поток сессии");
+    let session = spawn_ssh(config(&sshd, Some(&password))).expect("session thread");
 
     let asked = outcome(session, |prompt, kind| {
-        panic!("человека не должны были спрашивать: {prompt} ({kind:?})")
+        panic!("the user must not be asked: {prompt} ({kind:?})")
     })
     .await
-    .expect("сессия должна была открыться");
+    .expect("session should have opened");
 
     assert!(asked.is_empty());
     assert!(
         sshd.interactive_answers().is_empty(),
-        "keyboard-interactive не понадобился"
+        "keyboard-interactive was not needed"
     );
 }

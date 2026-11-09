@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Собирает icons.tsv.gz из пакета Font Awesome Free.
+"""Builds icons.tsv.gz from the Font Awesome Free package.
 
     npm pack @fortawesome/fontawesome-free && tar -xzf fortawesome-*.tgz
     python3 generate.py package/metadata/icon-families.json
 
-Берутся наборы Brands и Classic (Solid, Regular). Строка файла:
-стиль, имя, ширина, высота, подпись, поисковые слова, контур — через табуляцию.
+The Brands and Classic (Solid, Regular) sets are used. File line:
+style, name, width, height, label, search terms, outline — tab-separated.
 """
 
 import gzip
@@ -38,7 +38,7 @@ def main(source):
             )
     out = Path(__file__).with_name("icons.tsv.gz")
     out.write_bytes(gzip.compress("\n".join(lines).encode(), 9, mtime=0))
-    print(f"{len(lines)} значков → {out}")
+    print(f"{len(lines)} icons → {out}")
 
 
 if __name__ == "__main__":

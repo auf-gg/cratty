@@ -35,7 +35,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn izvestnye_vektory() {
+    fn known_vectors() {
         let cases: [(&[u8], usize, usize, &str); 4] = [
             (&[0x00, 0x00], 3, 4, "000"),
             (&[0xFF, 0xFF], 3, 4, "ZZZ"),
@@ -51,7 +51,7 @@ mod tests {
     }
 
     #[test]
-    fn kodirovanie_i_razbor_shodyatsya() {
+    fn encoding_and_parsing_agree() {
         let mut out = Vec::new();
         encode_into(&[0xAB, 0xCD, 0xEF, 0x12, 0x34], 8, 4, &mut out);
 
@@ -60,17 +60,17 @@ mod tests {
         for symbol in symbols {
             assert!(
                 decode_symbol(symbol).is_some(),
-                "символ {symbol} не разобрался"
+                "symbol {symbol} was not parsed"
             );
         }
     }
 
     #[test]
-    fn pohozhie_znaki_svodyatsya_vmeste() {
+    fn lookalike_characters_are_folded_together() {
         assert_eq!(decode_symbol(b'I'), decode_symbol(b'1'));
         assert_eq!(decode_symbol(b'L'), decode_symbol(b'1'));
         assert_eq!(decode_symbol(b'O'), decode_symbol(b'0'));
-        assert_eq!(decode_symbol(b'U'), None, "U в алфавит не входит");
+        assert_eq!(decode_symbol(b'U'), None, "U is not in the alphabet");
         assert_eq!(decode_symbol(b'-'), None);
     }
 }

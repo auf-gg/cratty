@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -134,14 +135,14 @@ pub fn spawn_sftp(config: SshConfig) -> std::io::Result<SftpHandle> {
                 Err(err) => {
                     let mut event_tx = event_tx;
                     let _ = event_tx.try_send(FromSftp::Ssh(FromSsh::Closed(CloseReason::Error(
-                        format!("не удалось создать tokio-рантайм: {err}"),
+                        t!("ssh.runtime_failed", error = err).into_owned(),
                     ))));
                     return;
                 }
             };
             runtime.block_on(run(config, command_rx, answer_rx, event_tx));
-            // Не ждать фоновых потоков рантайма: там может висеть DNS-запрос
-            // без сети, а этот поток при закрытии вкладки ждёт интерфейс.
+            // Do not wait for the runtime's background threads: a DNS request may hang there
+            // without a network, and the UI waits on this thread when a tab is closed.
             runtime.shutdown_background();
         })?;
 
@@ -211,7 +212,7 @@ async fn serve(
         .session
         .channel_open_session()
         .await
-        .context("сервер не открыл канал")?;
+        .context(t!("ssh.sftp_ctx_channel"))?;
     let result = serve_channel(channel, commands, events).await;
     connected.disconnect().await;
     result
@@ -225,13 +226,13 @@ async fn serve_channel(
     channel
         .request_subsystem(true, "sftp")
         .await
-        .context("запрос подсистемы sftp")?;
+        .context(t!("ssh.sftp_ctx_subsystem"))?;
     loop {
         match channel.wait().await {
             Some(ChannelMsg::Success) => break,
-            Some(ChannelMsg::Failure) => bail!("сервер не поддерживает SFTP (нет подсистемы sftp)"),
+            Some(ChannelMsg::Failure) => bail!(t!("ssh.sftp_unsupported")),
             Some(ChannelMsg::Eof | ChannelMsg::Close) | None => {
-                bail!("канал закрыт, не ответив на запрос sftp")
+                bail!(t!("ssh.sftp_channel_closed"))
             }
             Some(_) => {}
         }
@@ -240,12 +241,12 @@ async fn serve_channel(
     let sftp = Arc::new(
         SftpSession::new(channel.into_stream())
             .await
-            .map_err(|error| anyhow!("SFTP не поднялся: {error}"))?,
+            .map_err(|error| anyhow!(t!("ssh.sftp_start_failed", error = error)))?,
     );
     let home = sftp
         .canonicalize(".")
         .await
-        .map_err(|error| anyhow!("домашний каталог: {error}"))?;
+        .map_err(|error| anyhow!(t!("ssh.sftp_home_dir", error = error)))?;
     events.send(FromSftp::Ready { home }).await?;
 
     let mut cancels: HashMap<TransferId, Arc<AtomicBool>> = HashMap::new();
@@ -393,20 +394,20 @@ async fn read_file(sftp: &SftpSession, path: &str) -> Result<Vec<u8>> {
         .await
         .map_err(|error| anyhow!("{error}"))?;
     if metadata.is_dir() {
-        bail!("это папка");
+        bail!(t!("ssh.sftp_is_folder"));
     }
     if metadata.len() > MAX_EDIT_BYTES {
-        bail!(
-            "файл больше {} МБ — для редактора велик, скачайте его",
-            MAX_EDIT_BYTES / 1024 / 1024
-        );
+        bail!(t!(
+            "ssh.sftp_too_large",
+            mb = MAX_EDIT_BYTES / 1024 / 1024
+        ));
     }
     let mut file = sftp
         .open(path.to_string())
         .await
         .map_err(|error| anyhow!("{error}"))?;
     let mut data = Vec::with_capacity(metadata.len() as usize);
-    file.read_to_end(&mut data).await.context("чтение")?;
+    file.read_to_end(&mut data).await.context(t!("ssh.sftp_ctx_reading"))?;
     Ok(data)
 }
 
@@ -415,8 +416,8 @@ async fn write_file(sftp: &SftpSession, path: &str, data: &[u8]) -> Result<()> {
         .create(path.to_string())
         .await
         .map_err(|error| anyhow!("{error}"))?;
-    file.write_all(data).await.context("запись")?;
-    file.shutdown().await.context("закрытие")?;
+    file.write_all(data).await.context(t!("ssh.sftp_ctx_writing"))?;
+    file.shutdown().await.context(t!("ssh.sftp_ctx_closing"))?;
     Ok(())
 }
 
@@ -512,7 +513,7 @@ impl Progress {
 
 fn check_cancel(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        bail!("отменено");
+        bail!(t!("ssh.sftp_cancelled"));
     }
     Ok(())
 }
@@ -557,7 +558,7 @@ async fn download(
     progress: &mut Progress,
 ) -> Result<()> {
     if !overwrite && tokio::fs::try_exists(local).await.unwrap_or(false) {
-        bail!("{} уже есть", local.display());
+        bail!(t!("ssh.sftp_local_exists", path = local.display()));
     }
 
     let mut dirs = Vec::new();
@@ -568,7 +569,7 @@ async fn download(
     for dir in &dirs {
         tokio::fs::create_dir_all(dir)
             .await
-            .with_context(|| format!("не создать {}", dir.display()))?;
+            .with_context(|| t!("ssh.sftp_create_failed", path = dir.display()))?;
     }
 
     let mut buffer = vec![0u8; CHUNK];
@@ -582,27 +583,27 @@ async fn download(
                 .map_err(|error| anyhow!("{remote}: {error}"))?;
             let mut target = tokio::fs::File::create(&partial)
                 .await
-                .with_context(|| format!("не создать {}", partial.display()))?;
+                .with_context(|| t!("ssh.sftp_create_failed", path = partial.display()))?;
             loop {
                 check_cancel(cancel)?;
                 let read = source
                     .read(&mut buffer)
                     .await
-                    .with_context(|| format!("чтение {remote}"))?;
+                    .with_context(|| t!("ssh.sftp_reading_path", path = remote))?;
                 if read == 0 {
                     break;
                 }
                 target
                     .write_all(&buffer[..read])
                     .await
-                    .with_context(|| format!("запись {}", partial.display()))?;
+                    .with_context(|| t!("ssh.sftp_writing_path", path = partial.display()))?;
                 progress.advance(read as u64).await;
             }
             target.flush().await?;
             drop(target);
             tokio::fs::rename(&partial, &local)
                 .await
-                .with_context(|| format!("не переименовать в {}", local.display()))?;
+                .with_context(|| t!("ssh.sftp_rename_failed", path = local.display()))?;
             Ok::<(), anyhow::Error>(())
         }
         .await;
@@ -660,7 +661,7 @@ async fn upload(
     progress: &mut Progress,
 ) -> Result<()> {
     if !overwrite && sftp.try_exists(remote.to_string()).await.unwrap_or(false) {
-        bail!("{remote} уже есть на сервере");
+        bail!(t!("ssh.sftp_remote_exists", path = remote));
     }
 
     let mut dirs = Vec::new();
@@ -672,7 +673,7 @@ async fn upload(
         if !sftp.try_exists(dir.clone()).await.unwrap_or(false) {
             sftp.create_dir(dir.clone())
                 .await
-                .map_err(|error| anyhow!("не создать {dir}: {error}"))?;
+                .map_err(|error| anyhow!(t!("ssh.sftp_create_dir_failed", dir = dir, error = error)))?;
         }
     }
 
@@ -692,20 +693,20 @@ async fn upload(
                 let read = source
                     .read(&mut buffer)
                     .await
-                    .with_context(|| format!("чтение {}", local.display()))?;
+                    .with_context(|| t!("ssh.sftp_reading_path", path = local.display()))?;
                 if read == 0 {
                     break;
                 }
                 target
                     .write_all(&buffer[..read])
                     .await
-                    .with_context(|| format!("запись {remote}"))?;
+                    .with_context(|| t!("ssh.sftp_writing_path", path = remote))?;
                 progress.advance(read as u64).await;
             }
             target
                 .shutdown()
                 .await
-                .with_context(|| format!("закрытие {remote}"))?;
+                .with_context(|| t!("ssh.sftp_closing_path", path = remote))?;
             Ok::<(), anyhow::Error>(())
         }
         .await;
@@ -746,7 +747,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn roditel_i_skleyka_putey() {
+    fn parent_and_path_joining() {
         assert_eq!(parent("/var/www/html"), "/var/www");
         assert_eq!(parent("/var"), "/");
         assert_eq!(parent("/var/www/"), "/var");
@@ -755,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn nedokachannoe_pishetsya_v_part() {
+    fn incomplete_download_is_written_to_part_file() {
         assert_eq!(
             partial_path(Path::new("/tmp/archive.tar.gz")),
             PathBuf::from("/tmp/archive.tar.gz.part")

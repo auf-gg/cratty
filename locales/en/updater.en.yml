@@ -1,0 +1,9 @@
+updater:
+  request_failed: "failed to request the latest release"
+  cut_off: "GitHub response was cut off"
+  unexpected: "unexpected GitHub response"
+  temp_failed: "failed to create a temporary folder"
+  download_failed: "failed to download the update"
+  save_failed: "failed to save the update"
+  interrupted: "download was interrupted"
+  launch_failed: "failed to launch the installer"

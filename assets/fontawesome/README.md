@@ -1,7 +1,7 @@
 # Font Awesome Free 7.3.1
 
-Значки наборов Brands и Classic (Solid, Regular) для хостов и групп.
-`icons.tsv.gz` собран скриптом `generate.py` из `metadata/icon-families.json`
-пакета `@fortawesome/fontawesome-free`.
+Brands and Classic (Solid, Regular) icon sets for hosts and groups.
+`icons.tsv.gz` is built by the `generate.py` script from `metadata/icon-families.json`
+of the `@fortawesome/fontawesome-free` package.
 
-Лицензия значков — CC BY 4.0, см. `LICENSE.txt`.
+Icon license: CC BY 4.0, see `LICENSE.txt`.

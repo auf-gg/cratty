@@ -71,16 +71,16 @@ impl AssetSource for Assets {
         if let Some((_, bytes)) = ICONS.iter().chain(BRAND).find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
-        // Значки Font Awesome собираются из встроенных контуров по запросу.
+        // Font Awesome icons are built on demand from the embedded outlines.
         if let Some(icon) = crate::ui::fontawesome::from_asset_path(path) {
             return Ok(Some(Cow::Owned(icon.svg())));
         }
-        // Иконки, которые рисуют сами компоненты (спиннер загрузки, стрелки
-        // меню и т.п.), — из набора gpui-kit: он ровно под них и собран.
+        // Icons drawn by the components themselves (loading spinner, menu
+        // arrows, etc.) come from the gpui-kit set, which is built for exactly that.
         if let Ok(Some(bytes)) = gpui_kit::assets::Assets.load(path) {
             return Ok(Some(bytes));
         }
-        eprintln!("нет ассета {path} — добавьте его в assets/icons");
+        eprintln!("missing asset {path} — add it to assets/icons");
         Ok(None)
     }
 
@@ -101,17 +101,17 @@ mod tests {
     #[test]
     fn every_embedded_icon_is_valid_svg() {
         for (name, bytes) in ICONS {
-            let text = std::str::from_utf8(bytes).unwrap_or_else(|_| panic!("{name} не UTF-8"));
-            assert!(text.contains("<svg"), "{name} не похож на SVG");
+            let text = std::str::from_utf8(bytes).unwrap_or_else(|_| panic!("{name} is not UTF-8"));
+            assert!(text.contains("<svg"), "{name} does not look like SVG");
             assert!(
                 text.contains("currentColor"),
-                "{name} не подхватит цвет темы: нет currentColor"
+                "{name} will not pick up the theme color: no currentColor"
             );
         }
     }
 
     #[test]
-    fn ikonki_komponentov_berutsya_iz_nabora_gpui_kit() {
+    fn component_icons_come_from_gpui_kit_set() {
         for path in [
             "icons/loader.svg",
             "icons/loader-circle.svg",
@@ -119,13 +119,13 @@ mod tests {
             "icons/triangle-alert.svg",
             "icons/copy.svg",
         ] {
-            let bytes = Assets.load(path).expect("загрузка").expect(path);
-            assert!(bytes.starts_with(b"<svg"), "{path} не svg");
+            let bytes = Assets.load(path).expect("load").expect(path);
+            assert!(bytes.starts_with(b"<svg"), "{path} is not svg");
         }
-        // Своя иконка не подменяется набором gpui-kit.
+        // A custom icon is not replaced by the gpui-kit set.
         let ours = Assets
             .load("icons/lock.svg")
-            .expect("загрузка")
+            .expect("load")
             .expect("lock");
         assert_eq!(ours.as_ref(), include_bytes!("../../assets/icons/lock.svg"));
     }
@@ -155,7 +155,7 @@ mod tests {
             let path = icon.path();
             assert!(
                 ICONS.iter().any(|(name, _)| *name == path.as_ref()),
-                "иконка {path} используется в UI, но не вшита"
+                "icon {path} is used in the UI but not embedded"
             );
         }
     }
@@ -170,7 +170,7 @@ mod tests {
         ] {
             assert!(
                 ICONS.iter().any(|(name, _)| *name == path),
-                "иконка {path} используется в UI, но не вшита"
+                "icon {path} is used in the UI but not embedded"
             );
         }
     }
@@ -185,7 +185,7 @@ mod tests {
         ] {
             assert!(
                 ICONS.iter().any(|(name, _)| *name == path),
-                "нет иконки кнопки окна: {path}"
+                "missing window button icon: {path}"
             );
         }
     }
@@ -195,7 +195,7 @@ mod tests {
         assert!(
             Assets
                 .load("brand/cratty.svg")
-                .expect("не ошибка")
+                .expect("not an error")
                 .is_some()
         );
     }
@@ -203,8 +203,8 @@ mod tests {
     #[test]
     fn unknown_asset_is_reported_as_missing_not_as_empty() {
         let loaded = Assets
-            .load("icons/такой-иконки-нет.svg")
-            .expect("не ошибка");
+            .load("icons/no-such-icon.svg")
+            .expect("not an error");
         assert!(loaded.is_none());
     }
 }

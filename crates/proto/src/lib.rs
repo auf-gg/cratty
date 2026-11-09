@@ -37,25 +37,25 @@ mod tests {
     use vault::{Argon2idParams, DataKey, SlotSet, WrapSlot};
 
     #[test]
-    fn zhizn_hranilishcha_ot_sozdaniya_do_udaleniya() {
+    fn vault_lifecycle_from_creation_to_deletion() {
         let device = DeviceId::generate().expect("CSPRNG");
         let data_key = DataKey::generate().expect("CSPRNG");
-        let params = Argon2idParams::new(1024, 1, 1, [0x51; vault::SALT_LEN]).expect("параметры");
+        let params = Argon2idParams::new(1024, 1, 1, [0x51; vault::SALT_LEN]).expect("params");
 
         let (slot, _) = WrapSlot::from_password(
             &data_key,
-            "мастер-пароль".as_bytes(),
+            "master password".as_bytes(),
             params,
-            "мастер-пароль",
+            "master password",
         )
-        .expect("обёртка");
+        .expect("wrap");
         let mut slots = SlotSet::new();
         slots.push(slot);
 
         let account = Account::new(VaultId::generate().expect("CSPRNG"), slots, Vec::new());
 
         let mut host = HostRecord::new("prod-01.example.com");
-        host.label = "боевой".into();
+        host.label = "production".into();
         let record = Record::new(
             RecordId::generate().expect("CSPRNG"),
             device.clone(),
@@ -64,37 +64,37 @@ mod tests {
         );
         let on_disk = record
             .seal(
-                &data_key.record_key().expect("подключ"),
+                &data_key.record_key().expect("subkey"),
                 &account.vault_id,
                 account.key_gen,
             )
-            .expect("шифрование")
+            .expect("encryption")
             .encode();
 
-        let account = Account::decode(&account.encode()).expect("разбор аккаунта");
-        let stored = EncryptedRecord::decode(&on_disk).expect("разбор записи");
+        let account = Account::decode(&account.encode()).expect("account parse");
+        let stored = EncryptedRecord::decode(&on_disk).expect("record parse");
 
         let (unlocked, _) = account
             .slots
             .iter()
             .next()
-            .expect("слот")
-            .unlock_with_password("мастер-пароль".as_bytes())
-            .expect("разблокировка");
-        let record_key = unlocked.record_key().expect("подключ");
+            .expect("slot")
+            .unlock_with_password("master password".as_bytes())
+            .expect("unlock");
+        let record_key = unlocked.record_key().expect("subkey");
 
-        let opened = stored.open(&record_key, &account.vault_id).expect("чтение");
+        let opened = stored.open(&record_key, &account.vault_id).expect("read");
         assert_eq!(opened.body.as_host(), Some(&host));
 
         let dead = opened.tombstone(device, 1_700_000_100_000);
         let dead_on_disk = dead
             .seal(&record_key, &account.vault_id, account.key_gen)
-            .expect("шифрование")
+            .expect("encryption")
             .encode();
         let dead = EncryptedRecord::decode(&dead_on_disk)
-            .expect("разбор")
+            .expect("parse")
             .open(&record_key, &account.vault_id)
-            .expect("чтение");
+            .expect("read");
 
         assert_eq!(dead.id, opened.id);
         assert_eq!(dead.rev, opened.rev + 1);
@@ -103,24 +103,24 @@ mod tests {
     }
 
     #[test]
-    fn neverny_parol_ne_otkryvaet_hranilishche() {
+    fn wrong_password_does_not_open_vault() {
         let data_key = DataKey::generate().expect("CSPRNG");
-        let params = Argon2idParams::new(1024, 1, 1, [0x52; vault::SALT_LEN]).expect("параметры");
+        let params = Argon2idParams::new(1024, 1, 1, [0x52; vault::SALT_LEN]).expect("params");
         let (slot, _) =
-            WrapSlot::from_password(&data_key, "правильный".as_bytes(), params, "пароль")
-                .expect("обёртка");
+            WrapSlot::from_password(&data_key, "correct".as_bytes(), params, "password")
+                .expect("wrap");
         let mut slots = SlotSet::new();
         slots.push(slot);
         let account = Account::new(VaultId::generate().expect("CSPRNG"), slots, Vec::new());
 
-        let restored = Account::decode(&account.encode()).expect("разбор");
+        let restored = Account::decode(&account.encode()).expect("parse");
         assert!(
             restored
                 .slots
                 .iter()
                 .next()
-                .expect("слот")
-                .unlock_with_password("неправильный".as_bytes())
+                .expect("slot")
+                .unlock_with_password("incorrect".as_bytes())
                 .is_err()
         );
     }

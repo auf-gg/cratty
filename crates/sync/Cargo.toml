@@ -3,7 +3,7 @@ name = "sync"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Перенос зашифрованных записей между устройствами"
+description = "Transfer of encrypted records between devices"
 
 [dependencies]
 anyhow = "1.0.104"

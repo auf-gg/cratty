@@ -1,0 +1,13 @@
+fonts:
+  auto: "Automatic"
+  no_icons: "No icons"
+  system: "System"
+  search: "Find font"
+  icons_bundled: "Icons from the built-in Nerd Fonts 3 set (as in kitty)."
+  icons_from: "Icons are taken from \"%{name}\"."
+  icons_in_font: "Icons are only those present in the terminal font."
+  icons_none: "No icons: Nerd Font prompts will show empty squares."
+  title: "Fonts"
+  terminal: "Terminal"
+  terminal_icons: "Terminal icons"
+  interface: "Interface"

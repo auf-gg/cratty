@@ -5,10 +5,10 @@ use crate::vault_session::{HostEntry, Unlocked};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use std::path::PathBuf;
 
-/// Хранилище, открытое в приложении: запись реестра и его сеанс.
+/// Vault open in the app: its registry entry and its session.
 ///
-/// `draft` — хранилище ещё не создано и в реестр не записано; оно живёт только
-/// пока открыт экран создания.
+/// `draft` — the vault has not been created yet and is not in the registry; it lives only
+/// while the creation screen is open.
 pub(super) struct VaultSlot {
     pub id: String,
     pub name: String,
@@ -36,9 +36,6 @@ impl VaultSlot {
     }
 }
 
-const RECOVERY_PENDING: &str =
-    "Сначала сохраните фразу восстановления и нажмите «Продолжить»: повторно он не показывается.";
-
 impl AppView {
     pub(super) fn load_registry(
         file: Option<&std::path::Path>,
@@ -54,15 +51,18 @@ impl AppView {
             let backup = file.with_extension("json.bad");
             match std::fs::rename(file, &backup) {
                 Ok(()) => {
-                    warnings.push(SharedString::from(format!(
-                        "Повреждённый список хранилищ сохранён как {}.",
-                        backup.display()
-                    )));
+                    warnings.push(SharedString::from(
+                        t!(
+                            "vaults.list_corrupted_saved",
+                            path = backup.display().to_string()
+                        )
+                        .to_string(),
+                    ));
                     attempt = Registry::load(path, legacy_root, &settings.sync_folder);
                 }
-                Err(error) => warnings.push(SharedString::from(format!(
-                    "Не удалось отложить повреждённый список хранилищ: {error}"
-                ))),
+                Err(error) => warnings.push(SharedString::from(
+                    t!("vaults.list_set_aside_failed", error = error.to_string()).to_string(),
+                )),
             }
         }
 
@@ -83,9 +83,9 @@ impl AppView {
                         }
                     }
                 }
-                Err(error) => warnings.push(SharedString::from(format!(
-                    "Не удалось записать список хранилищ: {error:#}"
-                ))),
+                Err(error) => warnings.push(SharedString::from(
+                    t!("vaults.list_write_failed", error = format!("{error:#}")).to_string(),
+                )),
             }
         }
         loaded.registry.vaults
@@ -148,8 +148,8 @@ impl AppView {
         }
     }
 
-    /// Ищет сохранённый хост. С `origin` — только в этом хранилище, без —
-    /// во всех открытых, начиная с выбранного.
+    /// Looks up a saved host. With `origin`, only in that vault; without it,
+    /// in all open ones, starting from the selected one.
     pub(super) fn find_host(
         &self,
         origin: Option<&str>,
@@ -173,7 +173,7 @@ impl AppView {
         })
     }
 
-    /// Хранилище, в которое нужно писать запись об этом хосте.
+    /// The vault where this host's entry should be written.
     pub(super) fn vault_for_write(&self, origin: Option<&str>, target: &str) -> Option<String> {
         if let Some((id, _)) = self.find_host(origin, target) {
             return Some(id);
@@ -201,14 +201,14 @@ impl AppView {
         F: FnOnce(&mut Unlocked, &VaultStore) -> anyhow::Result<()>,
     {
         let Some(ix) = self.vault_ix(id) else {
-            self.error = Some("Хранилище не найдено.".into());
+            self.error = Some(t!("vaults.not_found").to_string().into());
             cx.notify();
             return;
         };
         let store = VaultStore::new(self.vaults[ix].root());
         let slot = &mut self.vaults[ix];
         let Some(unlocked) = slot.session.unlocked_mut() else {
-            self.error = Some("Хранилище заблокировано.".into());
+            self.error = Some(t!("vaults.locked").to_string().into());
             cx.notify();
             return;
         };
@@ -244,7 +244,7 @@ impl AppView {
     }
 
     fn warn_recovery_pending(&mut self, cx: &mut Context<Self>) {
-        self.vault_error = Some(RECOVERY_PENDING.into());
+        self.vault_error = Some(t!("vaults.recovery_pending").to_string().into());
         self.showing_page = true;
         self.section = Section::Hosts;
         self.editor_open = false;
@@ -338,7 +338,7 @@ impl AppView {
             Some(id) => id,
             None => {
                 let name = if first {
-                    registry::FIRST_VAULT_NAME.to_owned()
+                    registry::first_vault_name()
                 } else {
                     let taken: Vec<String> =
                         self.vaults.iter().map(|slot| slot.name.clone()).collect();
@@ -376,8 +376,8 @@ impl AppView {
         self.select_vault(&id, window, cx);
     }
 
-    /// Предложение импорта прежнего hosts.json — только пока нет ни одного
-    /// созданного хранилища.
+    /// Offer to import the old hosts.json — only while there is no
+    /// created vault yet.
     pub(super) fn import_pending(&self) -> &[HostRecord] {
         if self.vaults.iter().all(|slot| slot.draft) {
             &self.pending_import
@@ -386,9 +386,9 @@ impl AppView {
         }
     }
 
-    /// Сводит имя из реестра с зашифрованной записью имени. Запись главнее:
-    /// она приходит с других устройств. Нет записи — создаём из реестра,
-    /// чтобы имя ушло на другие устройства.
+    /// Reconciles the name from the registry with the encrypted name entry. The entry wins:
+    /// it comes from other devices. No entry: create it from the registry,
+    /// so the name propagates to other devices.
     pub(super) fn reconcile_vault_name(&mut self, id: &str) {
         let Some(ix) = self.vault_ix(id) else {
             return;
@@ -406,9 +406,9 @@ impl AppView {
             Some(_) => {}
             None => {
                 if let Err(error) = unlocked.set_vault_name(&store, &local) {
-                    self.vault_error = Some(SharedString::from(format!(
-                        "Не удалось сохранить имя хранилища: {error:#}"
-                    )));
+                    self.vault_error = Some(SharedString::from(
+                        t!("vaults.name_save_failed", error = format!("{error:#}")).to_string(),
+                    ));
                 }
             }
         }
@@ -422,9 +422,9 @@ impl AppView {
             vaults: self.listed().map(|(_, slot)| slot.entry()).collect(),
         };
         if let Err(error) = registry.save(&file) {
-            self.vault_error = Some(SharedString::from(format!(
-                "Не удалось записать список хранилищ: {error:#}"
-            )));
+            self.vault_error = Some(SharedString::from(
+                t!("vaults.list_write_failed", error = format!("{error:#}")).to_string(),
+            ));
         }
     }
 
@@ -499,9 +499,9 @@ impl AppView {
         if let Some(keychain_id) = keychain_id {
             use crate::keychain::KeyStash as _;
             if let Err(error) = OsKeychain.delete(&keychain_id) {
-                leftover = Some(format!(
-                    "Хранилище удалено, но ключ в системном хранилище учётных данных остался: {error:#}"
-                ));
+                leftover = Some(
+                    t!("vaults.deleted_key_remains", error = format!("{error:#}")).to_string(),
+                );
             }
         }
 
@@ -510,7 +510,7 @@ impl AppView {
         self.save_registry();
 
         if self.vaults.is_empty() {
-            let draft = self.make_draft(registry::FIRST_VAULT_NAME);
+            let draft = self.make_draft(&registry::first_vault_name());
             self.vaults.push(draft);
         }
         if ix < self.current {
@@ -560,16 +560,24 @@ impl AppView {
         };
         let name = self.vaults[ix].name.clone();
         let text = connect::ssh_config_path()
-            .ok_or_else(|| "каталог ~/.ssh не определён".to_owned())
+            .ok_or_else(|| t!("vaults.ssh_dir_unknown").to_string())
             .and_then(|path| {
                 std::fs::read_to_string(&path)
-                    .map_err(|error| format!("не прочитать {}: {error}", path.display()))
+                    .map_err(|error| {
+                        t!(
+                            "vaults.read_failed",
+                            path = path.display().to_string(),
+                            error = error.to_string()
+                        )
+                        .to_string()
+                    })
             });
         let text = match text {
             Ok(text) => text,
             Err(error) => {
-                self.import_notice =
-                    Some(SharedString::from(format!("Импорт в «{name}»: {error}.")));
+                self.import_notice = Some(SharedString::from(
+                    t!("vaults.import_error", name = name, error = error).to_string(),
+                ));
                 cx.notify();
                 return;
             }
@@ -578,9 +586,9 @@ impl AppView {
         let store = VaultStore::new(self.vaults[ix].root());
         let slot = &mut self.vaults[ix];
         let Some(unlocked) = slot.session.unlocked_mut() else {
-            self.import_notice = Some(SharedString::from(format!(
-                "Импорт в «{name}»: хранилище заблокировано."
-            )));
+            self.import_notice = Some(SharedString::from(
+                t!("vaults.import_locked", name = name).to_string(),
+            ));
             cx.notify();
             return;
         };
@@ -593,10 +601,9 @@ impl AppView {
             },
         );
         slot.session.touch(std::time::Instant::now());
-        self.import_notice = Some(SharedString::from(format!(
-            "Хранилище «{name}». {}",
-            report.summary()
-        )));
+        self.import_notice = Some(SharedString::from(
+            t!("vaults.import_summary", name = name, summary = report.summary()).to_string(),
+        ));
         cx.notify();
     }
 
@@ -612,7 +619,7 @@ impl AppView {
                 .gap_1()
                 .flex_wrap()
                 .items_center()
-                .child(Label::new("Хранилище:").text_xs().text_color(muted))
+                .child(Label::new(t!("vaults.picker_label").to_string()).text_xs().text_color(muted))
                 .children(self.listed().map(|(ix, slot)| {
                     let id = slot.id.clone();
                     let unlocked = slot.session.state().is_unlocked();
@@ -669,9 +676,9 @@ impl AppView {
                             }),
                     )
                     .tooltip(if unlocked {
-                        "Заблокировать хранилище"
+                        t!("vaults.lock_tooltip").to_string()
                     } else {
-                        "Разблокировать хранилище"
+                        t!("vaults.unlock_tooltip").to_string()
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if unlocked {
@@ -709,11 +716,11 @@ impl AppView {
                     .ghost()
                     .xsmall()
                     .icon(Icon::empty().path("icons/ellipsis.svg"))
-                    .tooltip("Действия с хранилищем")
+                    .tooltip(t!("vaults.actions_tooltip").to_string())
                     .dropdown_menu(move |menu, _window, _cx| {
                         let import = {
                             let (view, id) = (view.clone(), menu_id.clone());
-                            PopupMenuItem::new("Импорт из ~/.ssh/config")
+                            PopupMenuItem::new(t!("vaults.menu_import").to_string())
                                 .disabled(!unlocked)
                                 .on_click(move |_, _window, cx| {
                                     view.update(cx, |this, cx| this.import_ssh_config(&id, cx));
@@ -722,9 +729,9 @@ impl AppView {
                         let toggle = {
                             let (view, id) = (view.clone(), menu_id.clone());
                             PopupMenuItem::new(if unlocked {
-                                "Заблокировать"
+                                t!("vaults.menu_lock").to_string()
                             } else {
-                                "Разблокировать"
+                                t!("vaults.menu_unlock").to_string()
                             })
                             .on_click(move |_, window, cx| {
                                 view.update(cx, |this, cx| {
@@ -738,7 +745,7 @@ impl AppView {
                         };
                         let edit = {
                             let (view, id) = (view.clone(), menu_id.clone());
-                            PopupMenuItem::new("Настройки хранилища…").on_click(
+                            PopupMenuItem::new(t!("vaults.menu_settings").to_string()).on_click(
                                 move |_, window, cx| {
                                     view.update(cx, |this, cx| {
                                         this.open_vault_editor(&id, window, cx)
@@ -748,7 +755,7 @@ impl AppView {
                         };
                         let delete = {
                             let (view, id) = (view.clone(), menu_id.clone());
-                            PopupMenuItem::new("Удалить хранилище…").on_click(
+                            PopupMenuItem::new(t!("vaults.menu_delete").to_string()).on_click(
                                 move |_, _window, cx| {
                                     view.update(cx, |this, cx| this.ask_delete_vault(&id, cx));
                                 },
@@ -773,7 +780,7 @@ impl AppView {
                     .small()
                     .text_color(theme.muted_foreground),
             )
-            .child(Label::new("Новое хранилище").text_sm())
+            .child(Label::new(t!("vaults.new_vault").to_string()).text_sm())
             .on_click(cx.listener(|this, _, window, cx| this.begin_new_vault(window, cx)))
             .into_any_element()
     }
@@ -798,7 +805,7 @@ impl AppView {
                         Button::new("import-notice-close")
                             .ghost()
                             .xsmall()
-                            .label("Закрыть")
+                            .label(t!("vaults.close").to_string())
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.import_notice = None;
                                 cx.notify();
@@ -836,20 +843,18 @@ impl AppView {
                         .border_1()
                         .border_color(theme.danger)
                         .child(
-                            Label::new(SharedString::from(format!(
-                                "Удалить хранилище «{name}»?"
-                            )))
+                            Label::new(SharedString::from(
+                                t!("vaults.delete_title", name = name).to_string(),
+                            ))
                             .font_semibold(),
                         )
                         .child(
-                            Label::new(
-                                "Все записи хранилища — хосты, ключи, прокси и сниппеты — будут стёрты безвозвратно. Восстановить их по паролю или коду восстановления будет невозможно. Копии в папке синхронизации не удаляются.",
-                            )
+                            Label::new(t!("vaults.delete_warning").to_string())
                             .text_sm()
                             .text_color(theme.danger),
                         )
                         .child(
-                            Label::new("Открытые сеансы останутся подключёнными.")
+                            Label::new(t!("vaults.delete_sessions").to_string())
                                 .text_xs()
                                 .text_color(theme.muted_foreground),
                         )
@@ -859,7 +864,7 @@ impl AppView {
                                 .child(
                                     Button::new("vault-delete-confirm")
                                         .danger()
-                                        .label("Удалить хранилище")
+                                        .label(t!("vaults.delete_confirm").to_string())
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.delete_vault(window, cx)
                                         })),
@@ -867,7 +872,7 @@ impl AppView {
                                 .child(
                                     Button::new("vault-delete-cancel")
                                         .outline()
-                                        .label("Отмена")
+                                        .label(t!("vaults.cancel").to_string())
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.cancel_delete_vault(cx)
                                         })),

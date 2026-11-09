@@ -12,7 +12,7 @@ name = "cratty"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Нативный SSH-клиент с GPU-рендерингом"
+description = "Native SSH client with GPU rendering"
 
 [dependencies]
 agent = { path = "crates/agent" }
@@ -20,43 +20,47 @@ alacritty_terminal = "0.26.0"
 anyhow = "1.0.104"
 bytes = "1.12.1"
 futures = "0.3.34"
-# `syntect` — подсветка синтаксиса в редакторе файлов: ~200 языков за несколько
-# мегабайт (tree-sitter обошёлся бы в десятки), цвета берутся из темы.
+# `syntect` — syntax highlighting in the file editor: ~200 languages for a few
+# megabytes (tree-sitter would cost tens), colors come from the theme.
 gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets", "syntect"] }
-# Хранилище секретов операционной системы: Keychain на macOS, Credential
-# Manager на Windows, Secret Service на остальных unix. Фича `v1` (она же
-# default) сама выбирает нужную реализацию под целевую платформу, и лишние
-# бэкенды при этом не собираются — они объявлены у `keyring` по-таргетно.
+# Operating system secret store: Keychain on macOS, Credential
+# Manager on Windows, Secret Service on other unix. The `v1` feature (also
+# the default) picks the right implementation for the target platform, and the extra
+# backends are not built — `keyring` declares them per target.
 keyring = "4.2"
 proto = { path = "crates/proto" }
-# `aws-lc-rs` (включён у russh по умолчанию) требует NASM на Windows — лишняя
-# системная зависимость на ровном месте. `ring` уже приходит с gpui через rustls,
-# так что криптобэкенд берём его.
+# `aws-lc-rs` (enabled in russh by default) requires NASM on Windows — an unnecessary
+# system dependency for nothing. `ring` already comes with gpui via rustls,
+# so we use it as the crypto backend.
 russh = { version = "0.63.1", default-features = false, features = ["flate2", "rsa", "ring"] }
 russh-config = "0.58.0"
-# Случайные байты для новых ключей SSH (та же версия, что у proto и vault).
+# Interface translations (same crate and version as gpui-component, so its
+# widgets follow our locale) and detection of the system language.
+rust-i18n = "4.2.4"
+sys-locale = "0.3.2"
+# Random bytes for new SSH keys (same version as proto and vault).
 getrandom = { version = "0.4.3", default-features = false }
-# SFTP поверх канала russh: работает с любым потоком, в том числе за прокси.
+# SFTP over a russh channel: works with any stream, including behind a proxy.
 russh-sftp = "3.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sync = { path = "crates/sync" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time", "fs"] }
-# SOCKS5-звено цепочки прокси. Уже приходит транзитивно через reqwest.
+# SOCKS5 link of the proxy chain. Already comes in transitively via reqwest.
 tokio-socks = "0.5.3"
-# HTTP для каталога значков selfh.st: простой блокирующий клиент на rustls
-# с ring (он уже есть) и встроенными корневыми сертификатами.
+# HTTP for the selfh.st icon catalog: a simple blocking client on rustls
+# with ring (already present) and built-in root certificates.
 ureq = "3.5"
-# Уменьшение PNG-значков под размер на экране (уже приходит с gpui).
+# Downscaling PNG icons to their on-screen size (already comes with gpui).
 image = { version = "0.25", default-features = false, features = ["png"] }
-# Распаковка встроенных значков Font Awesome (уже приходит с russh).
+# Unpacking the bundled Font Awesome icons (already comes with russh).
 flate2 = "1"
 unicode-width = "0.2"
 vault = { path = "crates/vault" }
 zeroize = "1.9.0"
 
-# Обе уже приходят транзитивно через gpui-kit; здесь они нужны прямо — ради
-# `mlock`/`VirtualLock` и запрета дампов в `src/platform.rs`.
+# Both already come in transitively via gpui-kit; here they are needed directly — for
+# `mlock`/`VirtualLock` and disabling dumps in `src/platform.rs`.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -66,15 +70,15 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_ErrorReporting",
     "Win32_System_Diagnostics_Debug",
-    # QueryUnbiasedInterruptTime — время без сна, для автолока.
+    # QueryUnbiasedInterruptTime — time excluding sleep, for auto-lock.
     "Win32_System_WindowsProgramming",
     "Win32_System_SystemInformation",
     "Wdk_System_SystemServices",
 ] }
 
 [profile.dev]
-# Зависимости (gpui-kit, blade, шейпинг) собираем с оптимизацией: дебажим свой код,
-# а не чужой, а нам важна отзывчивость даже в дебажной сборке.
+# Dependencies (gpui-kit, blade, shaping) are built with optimizations: we debug our own code,
+# not others', and responsiveness matters even in debug builds.
 opt-level = 0
 debug = "line-tables-only"
 
@@ -90,7 +94,7 @@ codegen-units = 1
 embed-resource = "3.0.11"
 
 [dev-dependencies]
-# Генератор с интерфейсом rand_core — для теста зашифрованного ключа.
+# A generator with the rand_core interface — for the encrypted key test.
 getrandom = { version = "0.4.3", default-features = false, features = ["sys_rng"] }
 alacritty_terminal = "0.26.0"
 gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets", "syntect", "test-support"] }

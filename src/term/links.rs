@@ -69,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn adres_nahoditsya_pod_kursorom() {
+    fn url_is_found_under_cursor() {
         let line = "see https://example.com/path?q=1 now";
         assert_eq!(at(line, 4).as_deref(), Some("https://example.com/path?q=1"));
         assert_eq!(
@@ -81,9 +81,9 @@ mod tests {
     }
 
     #[test]
-    fn hvostovaya_punktuaciya_otrezaetsya() {
+    fn trailing_punctuation_is_trimmed() {
         assert_eq!(
-            at("см. https://x.org.", 6).as_deref(),
+            at("see https://x.org.", 6).as_deref(),
             Some("https://x.org")
         );
         assert_eq!(at("(https://x.org)", 3).as_deref(), Some("https://x.org"));
@@ -94,14 +94,14 @@ mod tests {
     }
 
     #[test]
-    fn neskolko_adresov_v_stroke() {
-        let line = "http://a.org и https://b.org";
+    fn several_urls_in_a_line() {
+        let line = "http://a.org and https://b.org";
         assert_eq!(at(line, 2).as_deref(), Some("http://a.org"));
         assert_eq!(at(line, 18).as_deref(), Some("https://b.org"));
     }
 
     #[test]
-    fn tolko_http() {
+    fn http_only() {
         assert!(is_openable("https://x.org"));
         assert!(is_openable("HTTP://x.org"));
         assert!(!is_openable("file:///etc/passwd"));

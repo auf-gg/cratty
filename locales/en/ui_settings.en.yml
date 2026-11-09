@@ -1,0 +1,5 @@
+ui_settings:
+  no_dir: "Failed to determine the settings directory."
+  create_failed: "Failed to create %{path}: %{error}"
+  serialize_failed: "Failed to serialize settings: %{error}"
+  write_failed: "Failed to write %{path}: %{error}"

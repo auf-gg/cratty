@@ -1,0 +1,13 @@
+fonts:
+  auto: "自动"
+  no_icons: "无图标"
+  system: "系统默认"
+  search: "查找字体"
+  icons_bundled: "图标来自内置的 Nerd Fonts 3 图标集（与 kitty 相同）。"
+  icons_from: "图标取自“%{name}”。"
+  icons_in_font: "仅使用终端字体中已有的图标。"
+  icons_none: "无图标：使用 Nerd Font 的提示符会显示空方框。"
+  title: "字体"
+  terminal: "终端"
+  terminal_icons: "终端图标"
+  interface: "界面"

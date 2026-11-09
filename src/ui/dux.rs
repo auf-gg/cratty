@@ -1,6 +1,6 @@
-//! Палитры Dux Shell (DankMaterialShell): Material-цвета, которые оболочка
-//! генерирует из обоев, плюс её 16 цветов терминала (`dank16`).
-//! Файл: `~/.cache/dms/dms-colors.json`.
+//! Dux Shell (DankMaterialShell) palettes: the Material colors the shell
+//! generates from the wallpaper, plus its 16 terminal colors (`dank16`).
+//! File: `~/.cache/dms/dms-colors.json`.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,7 @@ pub struct DuxTheme {
     pub dark: bool,
 }
 
-/// Файл цветов Dux Shell, если оболочка установлена.
+/// Dux Shell colors file, if the shell is installed.
 pub fn colors_file() -> Option<PathBuf> {
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -39,7 +39,7 @@ pub fn modified(path: &Path) -> Option<std::time::SystemTime> {
 
 pub fn read(path: &Path) -> Result<Vec<DuxTheme>> {
     let text = std::fs::read_to_string(path)
-        .with_context(|| format!("не прочитать {}", path.display()))?;
+        .with_context(|| format!("failed to read {}", path.display()))?;
     parse(&text)
 }
 
@@ -52,7 +52,7 @@ pub fn parse(text: &str) -> Result<Vec<DuxTheme>> {
         };
         let ansi = dank16(&root["dank16"], mode)?;
         let config = serde_json::from_value(theme_json(id, mode, colors, &ansi))
-            .with_context(|| format!("тема {id}"))?;
+            .with_context(|| format!("theme {id}"))?;
         themes.push(DuxTheme {
             config,
             ansi: ansi.map(|hex| hex_rgb(&hex).unwrap_or(Rgb::new(0, 0, 0))),
@@ -60,7 +60,7 @@ pub fn parse(text: &str) -> Result<Vec<DuxTheme>> {
         });
     }
     if themes.is_empty() {
-        return Err(anyhow!("в файле нет цветов Dux Shell"));
+        return Err(anyhow!("no Dux Shell colors in the file"));
     }
     Ok(themes)
 }
@@ -72,14 +72,14 @@ fn dank16(table: &Value, mode: &str) -> Result<[String; 16]> {
         let hex = entry[mode]
             .as_str()
             .or_else(|| entry["default"].as_str())
-            .ok_or_else(|| anyhow!("нет цвета color{index}"))?;
-        hex_rgb(hex).ok_or_else(|| anyhow!("цвет color{index} не hex: {hex}"))?;
+            .ok_or_else(|| anyhow!("missing color{index}"))?;
+        hex_rgb(hex).ok_or_else(|| anyhow!("color{index} is not hex: {hex}"))?;
         *slot = hex.to_owned();
     }
     Ok(out)
 }
 
-/// Material-роли → ключи темы gpui-kit.
+/// Material roles → gpui-kit theme keys.
 fn theme_json(id: &str, mode: &str, m: &Map<String, Value>, ansi: &[String; 16]) -> Value {
     let get = |role: &str| m.get(role).and_then(Value::as_str).unwrap_or("#808080");
     let pairs: &[(&str, &str)] = &[
@@ -191,19 +191,19 @@ mod tests {
     }"##;
 
     #[test]
-    fn obe_temy_i_terminal_iz_dank16() {
-        let themes = parse(SAMPLE).expect("разбор");
+    fn both_themes_and_terminal_from_dank16() {
+        let themes = parse(SAMPLE).expect("parse");
         assert_eq!(themes.len(), 2);
-        let dark = themes.iter().find(|theme| theme.dark).expect("тёмная");
+        let dark = themes.iter().find(|theme| theme.dark).expect("dark");
         assert_eq!(dark.config.name.as_ref(), DARK_ID);
         assert_eq!(dark.ansi[1], Rgb::new(0xee, 0x83, 0x6b));
-        let light = themes.iter().find(|theme| !theme.dark).expect("светлая");
+        let light = themes.iter().find(|theme| !theme.dark).expect("light");
         assert_eq!(light.ansi[1], Rgb::new(0x79, 0x3e, 0x30));
     }
 
     #[test]
-    fn bityy_fayl_ne_valit() {
+    fn corrupted_file_does_not_crash() {
         assert!(parse("{}").is_err());
-        assert!(parse("не json").is_err());
+        assert!(parse("not json").is_err());
     }
 }

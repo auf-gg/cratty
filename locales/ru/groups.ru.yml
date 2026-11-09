@@ -1,0 +1,10 @@
+groups:
+  edit: "Изменить…"
+  name_placeholder: "Имя группы"
+  dialog_title: "Группа"
+  icon_and_name: "Значок и имя"
+  save: "Сохранить"
+  cancel: "Отмена"
+  field: "Группа"
+  none_yet: "Групп пока нет: введите имя новой"
+  choose: "Выбрать группу"

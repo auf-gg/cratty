@@ -1,0 +1,10 @@
+groups:
+  edit: "编辑…"
+  name_placeholder: "分组名称"
+  dialog_title: "分组"
+  icon_and_name: "图标和名称"
+  save: "保存"
+  cancel: "取消"
+  field: "分组"
+  none_yet: "暂无分组：请输入新名称"
+  choose: "选择分组"

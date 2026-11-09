@@ -50,12 +50,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pustoy_spisok_izvestnyy_vektor() {
+    fn empty_list_known_vector() {
         assert_eq!(identities_answer(&[]), vec![0, 0, 0, 5, 12, 0, 0, 0, 0]);
     }
 
     #[test]
-    fn spisok_iz_odnogo_klyucha_izvestnyy_vektor() {
+    fn single_key_list_known_vector() {
         let identity = Identity::new(b"blob".to_vec(), "dan@laptop");
         assert_eq!(
             identities_answer(&[identity]),
@@ -73,14 +73,14 @@ mod tests {
     }
 
     #[test]
-    fn otkazy_izvestnye_vektory() {
+    fn failure_known_vectors() {
         assert_eq!(failure(), vec![0, 0, 0, 1, 5]);
         assert_eq!(success(), vec![0, 0, 0, 1, 6]);
         assert_eq!(extension_failure(), vec![0, 0, 0, 1, 28]);
     }
 
     #[test]
-    fn podpis_zavorachivaetsya_v_stroku() {
+    fn signature_is_wrapped_in_a_string() {
         assert_eq!(
             sign_response(b"sig"),
             vec![0, 0, 0, 8, 14, 0, 0, 0, 3, b's', b'i', b'g']
@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn dlina_v_zagolovke_sovpadaet_s_telom() {
+    fn header_length_matches_body() {
         for frame in [
             failure(),
             identities_answer(&[Identity::new(vec![7; 300], "x".repeat(100))]),

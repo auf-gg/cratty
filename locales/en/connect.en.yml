@@ -1,0 +1,11 @@
+connect:
+  no_address: "No connection address specified."
+  empty_user: "The address \"%{raw}\" has an empty username."
+  unclosed_bracket: "The address \"%{raw}\" has an unclosed IPv6 bracket."
+  no_host: "The address \"%{raw}\" has no host."
+  invalid_port: "The address \"%{raw}\" has an invalid port: %{port}."
+  jump_empty: "ProxyJump \"%{raw}\" has an empty element."
+  jump_error: "ProxyJump: %{error}"
+  jump_cyclic: "The ProxyJump chain is cyclic or too long: %{chain} → %{alias}."
+  proxy_unsupported: "Proxy \"%{title}\" has an unknown type and is not supported by this version."
+  proxy_command: "This host has a ProxyCommand (%{command}) in ~/.ssh/config; running external commands is not supported. Use ProxyJump or a proxy server from the vault."

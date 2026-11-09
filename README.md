@@ -96,7 +96,7 @@ cratty user@host:2222   # open the window and connect immediately
 | Vaults | `%APPDATA%\cratty\vaults.json` (list), `%APPDATA%\cratty\vault` (first), `%APPDATA%\cratty\vaults\<id>` (others) | `$XDG_DATA_HOME/cratty/vaults.json` (list), `…/cratty/vault` (first), `…/cratty/vaults/<id>` (others)<br>(`~/.local/share/cratty/…`) | `~/.local/share/cratty/vaults.json`, `…/vault`, `…/vaults/<id>` |
 | Settings | `%APPDATA%\cratty\settings.json` | `$XDG_CONFIG_HOME/cratty/settings.json`<br>(`~/.config/cratty/settings.json`) | `~/.config/cratty/settings.json` |
 
-The exact paths are shown in the app under Settings → General → Data locations («Настройки → Общие → Расположение данных»).
+The exact paths are shown in the app under Settings → General → Data locations.
 
 ## Project layout
 

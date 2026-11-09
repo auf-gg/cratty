@@ -6,6 +6,7 @@ use gpui_kit::component::{
     label::Label,
     v_flex,
 };
+use rust_i18n::t;
 use gpui_kit::{AnyElement, Context, Entity, SharedString, Window, prelude::*};
 use proto::{ForwardKind, PortForward};
 
@@ -22,8 +23,8 @@ impl ForwardDraft {
     pub fn new(window: &mut Window, cx: &mut Context<AppView>) -> Self {
         Self {
             kind: ForwardKind::Local,
-            listen: cx.new(|cx| InputState::new(window, cx).placeholder("Порт")),
-            target: cx.new(|cx| InputState::new(window, cx).placeholder("хост:порт")),
+            listen: cx.new(|cx| InputState::new(window, cx).placeholder(t!("ports.port_placeholder"))),
+            target: cx.new(|cx| InputState::new(window, cx).placeholder(t!("ports.target_placeholder"))),
         }
     }
 }
@@ -32,10 +33,7 @@ fn parse_rule(kind: ForwardKind, listen: &str, target: &str) -> Result<PortForwa
     let listen_port = match listen.trim().parse::<u16>() {
         Ok(port) if port != 0 => port,
         _ => {
-            return Err(format!(
-                "Порт «{}» должен быть числом от 1 до 65535.",
-                listen.trim()
-            ));
+            return Err(t!("ports.err_port", port = listen.trim()).to_string());
         }
     };
     let mut rule = PortForward {
@@ -46,14 +44,14 @@ fn parse_rule(kind: ForwardKind, listen: &str, target: &str) -> Result<PortForwa
     };
     if kind != ForwardKind::Dynamic {
         let request = connect::parse_target(target.trim())
-            .map_err(|error| format!("Адрес назначения: {error}"))?;
+            .map_err(|error| t!("ports.err_target", error = error.to_string()).to_string())?;
         if request.user.is_some() {
-            return Err("Адрес назначения указывается без имени пользователя.".into());
+            return Err(t!("ports.err_user").to_string());
         }
         rule.target_host = request.alias;
         rule.target_port = request
             .port
-            .ok_or("Укажите порт назначения в формате хост:порт.")?;
+            .ok_or_else(|| t!("ports.err_target_port").to_string())?;
     }
     Ok(rule)
 }
@@ -117,10 +115,8 @@ impl AppView {
                                     .ghost()
                                     .xsmall()
                                     .selected(rule.enabled)
-                                    .label("Автозапуск")
-                                    .tooltip(
-                                        "Включать при подключении. Иначе правило включается вручную в панели сеанса.",
-                                    )
+                                    .label(t!("ports.autostart"))
+                                    .tooltip(t!("ports.autostart_tooltip"))
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         if let Some(rule) = this.form.forwards.get_mut(index) {
                                             rule.enabled = !rule.enabled;
@@ -133,7 +129,7 @@ impl AppView {
                                     .ghost()
                                     .xsmall()
                                     .icon(Icon::new(IconName::Close))
-                                    .tooltip("Удалить правило")
+                                    .tooltip(t!("ports.delete"))
                                     .on_click(cx.listener(move |this, _, _window, cx| {
                                         if index < this.form.forwards.len() {
                                             this.form.forwards.remove(index);
@@ -163,13 +159,9 @@ impl AppView {
                 }))
         };
         let hint = match kind {
-            ForwardKind::Local => {
-                "Доступ с этого компьютера к сервису в сети сервера: базе данных, панели управления, внутреннему API."
-            }
-            ForwardKind::Remote => {
-                "Доступ с сервера к сервису, запущенному на этом компьютере, например к локальному веб-серверу."
-            }
-            _ => "SOCKS-прокси на этом компьютере: трафик приложений передаётся через сервер.",
+            ForwardKind::Local => t!("ports.hint_local"),
+            ForwardKind::Remote => t!("ports.hint_remote"),
+            _ => t!("ports.hint_dynamic"),
         };
 
         let draft = &self.form.forward_draft;
@@ -179,9 +171,9 @@ impl AppView {
             draft.target.read(cx).value().as_ref(),
         );
         let (preview_title, preview) = match typed {
-            Ok(rule) => ("Предпросмотр", rule),
+            Ok(rule) => (t!("ports.preview"), rule),
             Err(_) => (
-                "Пример",
+                t!("ports.example"),
                 PortForward {
                     kind,
                     listen_port: 8080,
@@ -201,7 +193,7 @@ impl AppView {
                 .gap_2()
                 .when(rows.is_empty(), |this| {
                     this.child(
-                        Label::new("Правила переадресации не заданы.")
+                        Label::new(t!("ports.empty"))
                             .text_xs()
                             .text_color(muted),
                     )
@@ -246,7 +238,7 @@ impl AppView {
                                         .outline()
                                         .small()
                                         .icon(Icon::new(IconName::Plus))
-                                        .label("Добавить")
+                                        .label(t!("ports.add"))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.forward_add(window, cx)
                                         })),
@@ -265,17 +257,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pravilo_iz_poley_formy() {
-        let rule = parse_rule(ForwardKind::Local, " 8080 ", "db.internal:5432").expect("правило");
+    fn rule_from_form_fields() {
+        let rule = parse_rule(ForwardKind::Local, " 8080 ", "db.internal:5432").expect("rule");
         assert_eq!(rule.summary(), "-L 8080 → db.internal:5432");
-        let rule = parse_rule(ForwardKind::Remote, "9000", "[::1]:3000").expect("правило");
+        let rule = parse_rule(ForwardKind::Remote, "9000", "[::1]:3000").expect("rule");
         assert_eq!((rule.target_host.as_str(), rule.target_port), ("::1", 3000));
-        assert!(parse_rule(ForwardKind::Dynamic, "1080", "мусор").is_ok());
+        assert!(parse_rule(ForwardKind::Dynamic, "1080", "junk").is_ok());
 
         assert!(parse_rule(ForwardKind::Local, "0", "db:1").is_err());
         assert!(
             parse_rule(ForwardKind::Local, "80", "db").is_err(),
-            "без порта цели"
+            "without a target port"
         );
         assert!(parse_rule(ForwardKind::Local, "80", "root@db:22").is_err());
     }

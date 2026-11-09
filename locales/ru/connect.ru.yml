@@ -1,0 +1,11 @@
+connect:
+  no_address: "Не указан адрес подключения."
+  empty_user: "В адресе «%{raw}» пустое имя пользователя."
+  unclosed_bracket: "В адресе «%{raw}» не закрыта скобка IPv6-адреса."
+  no_host: "В адресе «%{raw}» не указан хост."
+  invalid_port: "В адресе «%{raw}» некорректный порт: %{port}."
+  jump_empty: "В ProxyJump «%{raw}» пустой элемент."
+  jump_error: "ProxyJump: %{error}"
+  jump_cyclic: "Цепочка ProxyJump зациклена или слишком длинная: %{chain} → %{alias}."
+  proxy_unsupported: "Прокси «%{title}» неизвестного типа не поддерживается этой версией."
+  proxy_command: "Для этого хоста в ~/.ssh/config задан ProxyCommand (%{command}); выполнение внешних команд не поддерживается. Используйте ProxyJump или прокси-сервер из хранилища."

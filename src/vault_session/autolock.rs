@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::time::{Duration, Instant};
 
 const SLEEP_THRESHOLD: Duration = Duration::from_secs(1);
@@ -19,11 +20,11 @@ impl Verdict {
         !matches!(self, Self::Keep)
     }
 
-    pub fn reason(self) -> Option<&'static str> {
+    pub fn reason(self) -> Option<std::borrow::Cow<'static, str>> {
         match self {
             Self::Keep => None,
-            Self::Idle => Some("хранилище закрыто: не было действий"),
-            Self::Slept => Some("хранилище закрыто: компьютер уходил спать"),
+            Self::Idle => Some(t!("vault.lock_idle")),
+            Self::Slept => Some(t!("vault.lock_slept")),
         }
     }
 }
@@ -58,8 +59,8 @@ impl AutoLock {
         self.last_activity = now;
     }
 
-    /// Начать отсчёт заново, забыв прошедшее время и сон. Нужен, когда
-    /// автоблокировку снова включают: иначе она сработала бы сразу.
+    /// Restart the countdown, forgetting elapsed time and sleep. Needed when
+    /// auto-lock is re-enabled: otherwise it would fire immediately.
     pub fn rearm(&mut self, now: Instant, wall_ms: u64, awake: Duration) {
         self.last_activity = now;
         self.checked_wall_ms = wall_ms;
@@ -110,10 +111,10 @@ mod tests {
     }
 
     #[test]
-    fn rearm_zabyvaet_bezdeystvie_i_son() {
+    fn rearm_forgets_inactivity_and_sleep() {
         let (mut lock, now, wall) = start();
 
-        // Час прошёл, из него 50 минут компьютер спал: автоблокировка была выключена.
+        // An hour passed, 50 minutes of it asleep: auto-lock was disabled.
         let later = now + Duration::from_secs(3_600);
         let wall_later = wall + 3_600_000;
         let awake_later = Duration::from_secs(600);
@@ -126,19 +127,19 @@ mod tests {
                 awake_later + Duration::from_secs(1)
             ),
             Verdict::Keep,
-            "после включения отсчёт должен начаться заново"
+            "the countdown must restart after enabling"
         );
     }
 
     #[test]
-    fn bezdeystvie_zakryvaet_hranilishche() {
+    fn inactivity_locks_the_vault() {
         let (mut lock, now, wall) = start();
 
         let step = Duration::from_secs(60);
         assert_eq!(
             lock.check(now + step, wall + 60_000, awake(now, now + step)),
             Verdict::Keep,
-            "минута бездействия — ещё рано"
+            "one minute of inactivity — too early"
         );
         assert_eq!(
             lock.check(
@@ -151,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn deystvie_otodvigaet_zakrytie() {
+    fn activity_postpones_locking() {
         let (mut lock, now, wall) = start();
 
         for minute in 1..=9 {
@@ -171,19 +172,19 @@ mod tests {
     }
 
     #[test]
-    fn son_zakryvaet_hranilishche_srazu() {
+    fn sleep_locks_the_vault_immediately() {
         let (mut lock, now, wall) = start();
 
         let after = now + Duration::from_millis(500);
         assert_eq!(
             lock.check(after, wall + 3_600_000, awake(now, after)),
             Verdict::Slept,
-            "настенные часы ушли на час вперёд при стоящих монотонных"
+            "the wall clock jumped an hour ahead while the monotonic clock stood still"
         );
     }
 
     #[test]
-    fn son_viden_dazhe_kogda_instant_shel() {
+    fn sleep_is_seen_even_when_instant_kept_running() {
         let (mut lock, now, wall) = start();
 
         let after = now + Duration::from_secs(3600);
@@ -194,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn son_s_iduschimi_monotonnymi_chasami_lovitsya_taymautom() {
+    fn sleep_with_running_monotonic_clock_is_caught_by_timeout() {
         let (mut lock, now, wall) = start();
 
         let after = now + Duration::from_secs(3600);
@@ -205,19 +206,19 @@ mod tests {
     }
 
     #[test]
-    fn perevod_chasov_nazad_ne_schitaetsya_snom() {
+    fn clock_set_back_is_not_counted_as_sleep() {
         let (mut lock, now, wall) = start();
 
         let after = now + Duration::from_secs(1);
         assert_eq!(
             lock.check(after, wall - 3_600_000, awake(now, after)),
             Verdict::Keep,
-            "часы ушли назад — закрывать хранилище незачем"
+            "the clock went backwards — no reason to lock the vault"
         );
     }
 
     #[test]
-    fn drozhanie_taymera_ne_schitaetsya_snom() {
+    fn timer_jitter_is_not_counted_as_sleep() {
         let (mut lock, now, wall) = start();
 
         let after = now + Duration::from_millis(500);
@@ -228,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn taymaut_zazhat_v_granicy() {
+    fn timeout_is_clamped_to_bounds() {
         let now = Instant::now();
         let too_small = AutoLock::new(Duration::from_secs(1), now, 0, Duration::ZERO);
         assert_eq!(too_small.timeout(), MIN_TIMEOUT);
@@ -242,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn ostatok_vremeni_ubyvaet_i_ne_uhodit_v_minus() {
+    fn remaining_time_decreases_and_never_goes_negative() {
         let (mut lock, now, _) = start();
         assert_eq!(lock.remaining(now), Duration::from_secs(600));
         assert_eq!(
@@ -262,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn prichina_zakrytiya_est_u_kazhdogo_verdikta() {
+    fn every_verdict_has_a_lock_reason() {
         assert!(Verdict::Keep.reason().is_none());
         assert!(!Verdict::Keep.locks());
         for verdict in [Verdict::Idle, Verdict::Slept] {

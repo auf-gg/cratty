@@ -3,19 +3,19 @@ name = "vault"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Криптоядро: иерархия ключей, обёртки Data Key, шифрование записей"
+description = "Crypto core: key hierarchy, Data Key wrappers, record encryption"
 
-# Зависимостей от UI, сети и файловой системы здесь нет и не должно появиться:
-# это условие того, что крейт тестируется без единого мока. Из std берётся
-# только `std::time` (калибровка Argon2id) и `alloc`.
+# There are no dependencies on UI, network or filesystem here, and there must not be:
+# that is what lets the crate be tested without a single mock. From std only
+# `std::time` (Argon2id calibration) and `alloc` are used.
 [dependencies]
 bip39 = { version = "2", features = ["zeroize"] }
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 hkdf = "0.13.0"
 sha2 = { version = "0.11.0", default-features = false }
-# Единственный источник случайности в крейте — CSPRNG операционной системы.
-# `rand_core` 0.10 больше не поставляет `OsRng`; его место занял `getrandom`.
+# The only source of randomness in the crate is the operating system CSPRNG.
+# `rand_core` 0.10 no longer ships `OsRng`; `getrandom` took its place.
 getrandom = { version = "0.4.3", default-features = false }
 secrecy = "0.10.3"
 subtle = "2.6.1"

@@ -1,0 +1,2 @@
+term:
+  search_build_failed: "не собрать поиск: %{error}"

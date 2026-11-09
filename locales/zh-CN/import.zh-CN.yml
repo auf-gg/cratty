@@ -1,0 +1,10 @@
+import:
+  summary: "从 ~/.ssh/config 导入：已添加主机 — %{imported}，已跳过（已存在）— %{skipped}。"
+  summary_warnings: "从 ~/.ssh/config 导入：已添加主机 — %{imported}，已跳过（已存在）— %{skipped}，警告 — %{warnings}。"
+  proxy_command: "%{alias}：不支持 ProxyCommand，该主机已在不含它的情况下导入。"
+  proxy_jump_dropped: "%{alias}：%{message} 该主机已在不含 ProxyJump 的情况下导入。"
+  save_failed: "%{alias}：保存失败：%{error}"
+  chain_too_long: "ProxyJump 链过长或存在循环。"
+  empty_element: "ProxyJump“%{raw}”包含空元素。"
+  chain_cyclic: "ProxyJump 链存在循环。"
+  hop_save_failed: "无法保存跳板主机：%{error}"

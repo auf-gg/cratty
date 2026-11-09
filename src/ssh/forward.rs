@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -87,14 +88,14 @@ impl Forwards {
 
     async fn start(&self, rule: &PortForward) -> Result<Running> {
         if !rule.is_usable() {
-            bail!("правило не заполнено или незнакомого вида");
+            bail!(t!("ssh.forward_rule_incomplete"));
         }
         match rule.kind {
             ForwardKind::Local | ForwardKind::Dynamic => {
                 let listener = TcpListener::bind((LISTEN_HOST, rule.listen_port))
                     .await
                     .with_context(|| {
-                        format!("порт {} у нас занят или недоступен", rule.listen_port)
+                        t!("ssh.forward_port_in_use", port = rule.listen_port).into_owned()
                     })?;
                 let session = self.session.clone();
                 let target = (rule.kind == ForwardKind::Local)
@@ -108,7 +109,7 @@ impl Forwards {
                     .tcpip_forward("localhost", u32::from(rule.listen_port))
                     .await
                     .map_err(|error| {
-                        anyhow!("сервер не открыл порт {}: {error}", rule.listen_port)
+                        anyhow!(t!("ssh.forward_server_refused", port = rule.listen_port, error = error))
                     })?;
                 let port = if port == 0 {
                     u32::from(rule.listen_port)
@@ -120,7 +121,7 @@ impl Forwards {
                 }
                 Ok(Running::Remote(port))
             }
-            ForwardKind::Unsupported => bail!("правило незнакомого вида"),
+            ForwardKind::Unsupported => bail!(t!("ssh.forward_rule_unknown_kind")),
         }
     }
 
@@ -193,13 +194,13 @@ async fn socks5(
     let mut head = [0u8; 2];
     stream.read_exact(&mut head).await?;
     if head[0] != 5 {
-        bail!("не SOCKS5");
+        bail!("not SOCKS5");
     }
     let mut methods = vec![0u8; usize::from(head[1])];
     stream.read_exact(&mut methods).await?;
     if !methods.contains(&0) {
         stream.write_all(&[5, 0xFF]).await?;
-        bail!("клиенту нужна аутентификация");
+        bail!("the client requires authentication");
     }
     stream.write_all(&[5, 0]).await?;
 
@@ -215,7 +216,7 @@ async fn socks5(
             let len = stream.read_u8().await?;
             let mut name = vec![0u8; usize::from(len)];
             stream.read_exact(&mut name).await?;
-            String::from_utf8(name).map_err(|_| anyhow!("имя не UTF-8"))?
+            String::from_utf8(name).map_err(|_| anyhow!("name is not UTF-8"))?
         }
         4 => {
             let mut ip = [0u8; 16];
@@ -224,13 +225,13 @@ async fn socks5(
         }
         _ => {
             reply(&mut stream, 8).await?;
-            bail!("незнакомый тип адреса");
+            bail!("unknown address type");
         }
     };
     let port = stream.read_u16().await?;
     if request[1] != 1 {
         reply(&mut stream, 7).await?;
-        bail!("команда SOCKS не поддерживается");
+        bail!("SOCKS command is not supported");
     }
 
     let channel = match session

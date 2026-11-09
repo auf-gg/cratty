@@ -52,7 +52,7 @@ fn jump(sshd: &FakeSshd, auth: AuthMethod) -> Hop {
 async fn next_event(session: &mut SshSession) -> Option<FromSsh> {
     tokio::time::timeout(DEADLINE, session.events.next())
         .await
-        .expect("сессия не прислала события в отведённое время")
+        .expect("session sent no events within the allotted time")
 }
 
 async fn wait_shell(session: &mut SshSession) {
@@ -67,7 +67,7 @@ async fn wait_shell(session: &mut SshSession) {
                     return;
                 }
             }
-            other => panic!("ждали оболочку, получили {other:?}; вывод: {seen:?}"),
+            other => panic!("expected a shell, got {other:?}; output: {seen:?}"),
         }
     }
 }
@@ -76,19 +76,19 @@ async fn wait_error(session: &mut SshSession) -> String {
     loop {
         match next_event(session).await {
             Some(FromSsh::Closed(CloseReason::Error(text))) => return text,
-            Some(FromSsh::Closed(other)) => panic!("ждали ошибку, закрылось так: {other:?}"),
+            Some(FromSsh::Closed(other)) => panic!("expected an error, closed like this instead: {other:?}"),
             Some(_) => {}
-            None => panic!("канал событий закрылся, не сказав почему"),
+            None => panic!("event channel closed without saying why"),
         }
     }
 }
 
 #[tokio::test]
-async fn cherez_socks5_bez_vhoda() {
+async fn via_socks5_without_auth() {
     let sshd = FakeSshd::start().await;
     let proxy = FakeSocks::open().await;
 
-    let mut session = spawn_ssh(target(&sshd, Ok(vec![socks(&proxy, None)]))).expect("поток");
+    let mut session = spawn_ssh(target(&sshd, Ok(vec![socks(&proxy, None)]))).expect("thread");
     wait_shell(&mut session).await;
 
     assert_eq!(
@@ -99,36 +99,36 @@ async fn cherez_socks5_bez_vhoda() {
 }
 
 #[tokio::test]
-async fn cherez_socks5_s_parolem() {
+async fn via_socks5_with_password() {
     let sshd = FakeSshd::start().await;
     let proxy = FakeSocks::with_password("dan", "hunter2").await;
 
     let config = target(&sshd, Ok(vec![socks(&proxy, Some(("dan", "hunter2")))]));
-    let mut session = spawn_ssh(config).expect("поток");
+    let mut session = spawn_ssh(config).expect("thread");
     wait_shell(&mut session).await;
 
     assert_eq!(proxy.users(), vec!["dan".to_string()]);
 }
 
 #[tokio::test]
-async fn nevernyy_parol_proksi_ne_vedet_napryamuyu() {
+async fn wrong_proxy_password_does_not_fall_back_to_direct() {
     let sshd = FakeSshd::start().await;
     let proxy = FakeSocks::with_password("dan", "hunter2").await;
 
     let config = target(&sshd, Ok(vec![socks(&proxy, Some(("dan", "wrong")))]));
-    let mut session = spawn_ssh(config).expect("поток");
+    let mut session = spawn_ssh(config).expect("thread");
     let error = wait_error(&mut session).await;
 
-    assert!(error.contains("прокси SOCKS5"), "{error}");
-    assert_eq!(sshd.connections(), 0, "клиент пошёл к цели мимо прокси");
+    assert!(error.contains("SOCKS5 proxy"), "{error}");
+    assert_eq!(sshd.connections(), 0, "client went to the target bypassing the proxy");
 }
 
 #[tokio::test]
-async fn mertvyy_proksi_ne_vedet_napryamuyu() {
+async fn dead_proxy_does_not_fall_back_to_direct() {
     let sshd = FakeSshd::start().await;
     let dead = {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("порт");
-        listener.local_addr().expect("адрес").port()
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("port");
+        listener.local_addr().expect("address").port()
     };
     let hop = Hop::Socks5(Socks5Hop {
         host: "127.0.0.1".into(),
@@ -137,33 +137,33 @@ async fn mertvyy_proksi_ne_vedet_napryamuyu() {
         password: None,
     });
 
-    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("поток");
+    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("thread");
     let error = wait_error(&mut session).await;
 
-    assert!(error.contains("прокси SOCKS5"), "{error}");
-    assert_eq!(sshd.connections(), 0, "клиент пошёл к цели мимо прокси");
+    assert!(error.contains("SOCKS5 proxy"), "{error}");
+    assert_eq!(sshd.connections(), 0, "client went to the target bypassing the proxy");
 }
 
 #[tokio::test]
-async fn nesobrannyy_marshrut_ne_podklyuchaetsya() {
+async fn unresolved_route_does_not_connect() {
     let sshd = FakeSshd::start().await;
-    let config = target(&sshd, Err("прокси №1 из цепочки нет в хранилище".into()));
+    let config = target(&sshd, Err("proxy #1 in the chain is not in the vault".into()));
 
-    let mut session = spawn_ssh(config).expect("поток");
+    let mut session = spawn_ssh(config).expect("thread");
     let error = wait_error(&mut session).await;
 
-    assert!(error.contains("нет в хранилище"), "{error}");
+    assert!(error.contains("not in the vault"), "{error}");
     assert_eq!(sshd.connections(), 0);
 }
 
 #[tokio::test]
-async fn cepochka_iz_dvuh_socks5() {
+async fn chain_of_two_socks5() {
     let sshd = FakeSshd::start().await;
     let near = FakeSocks::open().await;
     let far = FakeSocks::open().await;
 
     let config = target(&sshd, Ok(vec![socks(&near, None), socks(&far, None)]));
-    let mut session = spawn_ssh(config).expect("поток");
+    let mut session = spawn_ssh(config).expect("thread");
     wait_shell(&mut session).await;
 
     assert_eq!(
@@ -177,12 +177,12 @@ async fn cepochka_iz_dvuh_socks5() {
 }
 
 #[tokio::test]
-async fn cherez_promezhutochnyy_host() {
+async fn via_intermediate_host() {
     let bastion = FakeSshd::start().await;
     let sshd = FakeSshd::start().await;
 
     let hop = jump(&bastion, AuthMethod::Password(PASSWORD.into()));
-    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("поток");
+    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("thread");
     wait_shell(&mut session).await;
 
     assert_eq!(
@@ -192,7 +192,7 @@ async fn cherez_promezhutochnyy_host() {
 }
 
 #[tokio::test]
-async fn socks5_potom_promezhutochnyy_host() {
+async fn socks5_then_intermediate_host() {
     let proxy = FakeSocks::open().await;
     let bastion = FakeSshd::start().await;
     let sshd = FakeSshd::start().await;
@@ -201,7 +201,7 @@ async fn socks5_potom_promezhutochnyy_host() {
         socks(&proxy, None),
         jump(&bastion, AuthMethod::Password(PASSWORD.into())),
     ];
-    let mut session = spawn_ssh(target(&sshd, Ok(via))).expect("поток");
+    let mut session = spawn_ssh(target(&sshd, Ok(via))).expect("thread");
     wait_shell(&mut session).await;
 
     assert_eq!(
@@ -215,31 +215,31 @@ async fn socks5_potom_promezhutochnyy_host() {
 }
 
 #[tokio::test]
-async fn parol_promezhutochnogo_hosta_sprashivaetsya_s_adresom() {
+async fn intermediate_host_password_is_asked_with_address() {
     let bastion = FakeSshd::start().await;
     let sshd = FakeSshd::start().await;
 
     let hop = jump(&bastion, AuthMethod::Plan(AuthPlan::password_only()));
-    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("поток");
+    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("thread");
 
     match next_event(&mut session).await {
         Some(FromSsh::NeedSecret { prompt, kind, .. }) => {
             assert_eq!(kind, SecretKind::Password);
             let address = format!("127.0.0.1:{}", bastion.addr().port());
-            assert!(prompt.contains(&address), "в вопросе нет адреса: {prompt}");
+            assert!(prompt.contains(&address), "no address in the prompt: {prompt}");
         }
-        other => panic!("ждали вопрос о пароле, получили {other:?}"),
+        other => panic!("expected a password prompt, got {other:?}"),
     }
     session
         .answers
         .unbounded_send(Answer::Secret(Some(PASSWORD.into())))
-        .expect("сессия закрыта");
+        .expect("session closed");
 
     wait_shell(&mut session).await;
 }
 
 #[tokio::test]
-async fn chuzhoy_klyuch_promezhutochnogo_hosta_ostanavlivaet_marshrut() {
+async fn foreign_key_of_intermediate_host_stops_the_route() {
     let bastion = FakeSshd::start().await;
     let sshd = FakeSshd::start().await;
 
@@ -251,16 +251,16 @@ async fn chuzhoy_klyuch_promezhutochnogo_hosta_ostanavlivaet_marshrut() {
         host_key_policy: HostKeyPolicy::Fingerprints(vec![sshd.fingerprint()]),
         stored_password: None,
     });
-    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("поток");
+    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("thread");
     let error = wait_error(&mut session).await;
 
-    assert!(error.contains("промежуточный хост"), "{error}");
+    assert!(error.contains("jump host"), "{error}");
     assert!(bastion.tunnels().is_empty());
     assert_eq!(sshd.connections(), 0);
 }
 
 #[tokio::test]
-async fn promezhutochnyy_khost_vkhodit_sokhranyonnym_parolem() {
+async fn intermediate_host_logs_in_with_stored_password() {
     let bastion = FakeSshd::start().await;
     let sshd = FakeSshd::start().await;
 
@@ -272,7 +272,7 @@ async fn promezhutochnyy_khost_vkhodit_sokhranyonnym_parolem() {
         host_key_policy: HostKeyPolicy::Fingerprints(vec![bastion.fingerprint()]),
         stored_password: Some(proto::Secret::new(PASSWORD.as_bytes().to_vec())),
     });
-    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("поток");
+    let mut session = spawn_ssh(target(&sshd, Ok(vec![hop]))).expect("thread");
     wait_shell(&mut session).await;
 
     assert_eq!(bastion.connections(), 1);

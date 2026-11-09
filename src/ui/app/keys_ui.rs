@@ -151,9 +151,7 @@ impl AppView {
 
         let answer = self.sign_with_vault(&pending);
         if answer.is_none() {
-            self.error = Some(SharedString::from(
-                "Не удалось выполнить подпись ключом из хранилища.",
-            ));
+            self.error = Some(SharedString::from(t!("keys.sign_failed").to_string()));
         }
         let _ = pending.ask.reply.send(answer);
 
@@ -227,13 +225,15 @@ impl AppView {
         use anyhow::Context as _;
 
         let text = std::fs::read_to_string(&pending.path)
-            .with_context(|| format!("Не удалось прочитать {}.", pending.path.display()))?;
+            .with_context(|| {
+                t!("keys.read_failed", path = pending.path.display().to_string()).to_string()
+            })?;
         let passphrase = if passphrase.is_empty() {
             None
         } else {
             Some(
                 std::str::from_utf8(passphrase)
-                    .context("Парольная фраза содержит недопустимые символы.")?,
+                    .with_context(|| t!("keys.passphrase_invalid").to_string())?,
             )
         };
 
@@ -253,7 +253,7 @@ impl AppView {
         let unlocked = self.vaults[current]
             .session
             .unlocked_mut()
-            .ok_or_else(|| anyhow::anyhow!("Хранилище заблокировано."))?;
+            .ok_or_else(|| anyhow::anyhow!(t!("keys.vault_locked").to_string()))?;
         unlocked.upsert_key(&store, record)?;
         Ok(())
     }
@@ -270,7 +270,7 @@ impl AppView {
         let result = self.vaults[current]
             .session
             .unlocked_mut()
-            .ok_or_else(|| anyhow::anyhow!("Хранилище заблокировано."))
+            .ok_or_else(|| anyhow::anyhow!(t!("keys.vault_locked").to_string()))
             .and_then(|unlocked| unlocked.remove_key(&store, id));
         if let Err(error) = result {
             self.error = Some(SharedString::from(format!("{error:#}")));
@@ -292,17 +292,13 @@ impl AppView {
                 .border_1()
                 .border_color(border)
                 .child(
-                    Label::new(SharedString::from(format!(
-                        "Импорт ключа {}",
-                        pending.name
-                    )))
+                    Label::new(SharedString::from(
+                        t!("keys.import_title", name = pending.name).to_string(),
+                    ))
                     .text_sm(),
                 )
                 .child(
-                    Label::new(concat!(
-                        "Ключ будет зашифрован и сохранён в хранилище. Исходный файл не изменяется, парольная фраза ключа больше не потребуется.",
-                        ""
-                    ))
+                    Label::new(t!("keys.import_note").to_string())
                     .text_xs()
                     .text_color(muted),
                 )
@@ -315,7 +311,7 @@ impl AppView {
                         .child(
                             Button::new("import-do")
                                 .primary()
-                                .label("Импортировать")
+                                .label(t!("keys.import").to_string())
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.finish_import(window, cx)
                                 })),
@@ -323,7 +319,7 @@ impl AppView {
                         .child(
                             Button::new("import-cancel")
                                 .ghost()
-                                .label("Отмена")
+                                .label(t!("keys.cancel").to_string())
                                 .on_click(
                                     cx.listener(|this, _, _window, cx| this.cancel_import(cx)),
                                 ),
@@ -350,8 +346,10 @@ impl AppView {
                 .gap_1()
                 .child(
                     Label::new(match name {
-                        Some(name) => SharedString::from(format!("Сервер: {name}")),
-                        None => SharedString::from("Сервер отсутствует в списке хостов"),
+                        Some(name) => SharedString::from(
+                            t!("keys.server_named", name = name).to_string(),
+                        ),
+                        None => SharedString::from(t!("keys.server_not_listed").to_string()),
                     })
                     .text_sm(),
                 )
@@ -363,10 +361,7 @@ impl AppView {
                 )
                 .when(*forwarding, |this| {
                     this.child(
-                        Label::new(concat!(
-                            "Соединение переадресовано: подпись будет использована не тем сервером, к которому выполнено подключение, а следующим за ним.",
-                            ""
-                        ))
+                        Label::new(t!("keys.forwarded_warning").to_string())
                         .text_xs()
                         .text_color(warning),
                     )
@@ -374,12 +369,9 @@ impl AppView {
                 .into_any_element(),
             SignTarget::Unknown => v_flex()
                 .gap_1()
-                .child(Label::new("Сервер не определён").text_sm())
+                .child(Label::new(t!("keys.server_unknown").to_string()).text_sm())
                 .child(
-                    Label::new(concat!(
-                        "Клиент не передал расширение session-bind, поэтому сервер в запросе не указан.",
-                        ""
-                    ))
+                    Label::new(t!("keys.no_session_bind").to_string())
                     .text_xs()
                     .text_color(warning),
                 )
@@ -407,26 +399,24 @@ impl AppView {
                         .bg(background)
                         .border_1()
                         .border_color(border)
-                        .child(Label::new("Запрос подписи").font_semibold())
+                        .child(Label::new(t!("keys.sign_title").to_string()).font_semibold())
                         .child(
-                            Label::new(SharedString::from(format!("Ключ: {}", pending.key_title)))
+                            Label::new(SharedString::from(
+                                t!("keys.key_named", title = pending.key_title).to_string(),
+                            ))
                                 .text_sm(),
                         )
                         .child(target)
                         .child(
-                            Label::new(concat!(
-                                "Подпись подтверждает вход на сервер от вашего имени. Закрытый ключ расшифровывается только на время выполнения подписи.",
-                                "",
-                                ""
-                            ))
+                            Label::new(t!("keys.sign_note").to_string())
                             .text_xs()
                             .text_color(muted),
                         )
                         .when(waiting > 0, |this| {
                             this.child(
-                                Label::new(SharedString::from(format!(
-                                    "Ожидают обработки: {waiting}"
-                                )))
+                                Label::new(SharedString::from(
+                                    t!("keys.pending", count = waiting).to_string(),
+                                ))
                                 .text_xs()
                                 .text_color(warning),
                             )
@@ -437,7 +427,7 @@ impl AppView {
                                 .child(
                                     Button::new("sign-approve")
                                         .primary()
-                                        .label("Подписать")
+                                        .label(t!("keys.sign").to_string())
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.approve_sign(cx)
                                         })),
@@ -445,7 +435,7 @@ impl AppView {
                                 .child(
                                     Button::new("sign-refuse")
                                         .outline()
-                                        .label("Отклонить")
+                                        .label(t!("keys.deny").to_string())
                                         .on_click(
                                             cx.listener(|this, _, _window, cx| {
                                                 this.refuse_sign(cx)
@@ -459,8 +449,8 @@ impl AppView {
     }
 
     fn key_card(
-        title: &'static str,
-        hint: Option<&'static str>,
+        title: impl Into<SharedString>,
+        hint: Option<SharedString>,
         body: AnyElement,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -473,7 +463,7 @@ impl AppView {
             .border_1()
             .border_color(theme.border)
             .bg(theme.secondary)
-            .child(Label::new(title).font_semibold())
+            .child(Label::new(title.into()).font_semibold())
             .children(hint.map(|hint| {
                 Label::new(hint)
                     .text_xs()
@@ -505,14 +495,22 @@ impl AppView {
                             .rounded_full()
                             .bg(if running { theme.success } else { muted }),
                     )
-                    .child(Label::new(if running { "Работает" } else { "Остановлен" }).text_sm())
+                    .child(Label::new(if running {
+                        t!("keys.running").to_string()
+                    } else {
+                        t!("keys.stopped").to_string()
+                    }).text_sm())
                     .child(div().flex_grow_1())
                     .child(
                         Button::new("agent-toggle")
                             .when(running, |button| button.outline())
                             .when(!running, |button| button.primary())
                             .small()
-                            .label(if running { "Остановить" } else { "Запустить" })
+                            .label(if running {
+                                t!("keys.stop").to_string()
+                            } else {
+                                t!("keys.start").to_string()
+                            })
                             .on_click(cx.listener(|this, _, _window, cx| this.toggle_agent(cx))),
                     ),
             )
@@ -540,8 +538,8 @@ impl AppView {
                         Button::new("agent-copy")
                             .ghost()
                             .small()
-                            .label("Копировать")
-                            .tooltip("Команда для оболочки: ssh и git будут использовать этот агент")
+                            .label(t!("keys.copy").to_string())
+                            .tooltip(t!("keys.copy_tooltip").to_string())
                             .on_click(cx.listener(move |_, _, _window, cx| {
                                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
                             })),
@@ -549,9 +547,7 @@ impl AppView {
             }))
             .when(running && cfg!(windows), |this| {
                 this.child(
-                    Label::new(
-                        "В Windows ssh и git не используют эту переменную; агент доступен только Cratty.",
-                    )
+                    Label::new(t!("keys.windows_note").to_string())
                     .text_xs()
                     .text_color(theme.warning),
                 )
@@ -567,9 +563,9 @@ impl AppView {
             .when(stored.is_empty(), |this| {
                 this.child(
                     Label::new(if unlocked {
-                        "Ключей нет. Импортируйте ключ из ~/.ssh."
+                        t!("keys.no_keys").to_string()
                     } else {
-                        "Хранилище заблокировано."
+                        t!("keys.no_keys_locked").to_string()
                     })
                     .text_sm()
                     .text_color(muted),
@@ -606,7 +602,7 @@ impl AppView {
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(IconName::Delete))
-                            .tooltip("Удалить из хранилища. Файл в ~/.ssh сохранится.")
+                            .tooltip(t!("keys.forget_tooltip").to_string())
                             .on_click(
                                 cx.listener(move |this, _, _window, cx| this.forget_key(&id, cx)),
                             ),
@@ -617,7 +613,11 @@ impl AppView {
         let files_body = v_flex()
             .gap_1()
             .when(self.keys.is_empty(), |this| {
-                this.child(Label::new("Ключей не найдено.").text_sm().text_color(muted))
+                this.child(
+                    Label::new(t!("keys.none_found").to_string())
+                        .text_sm()
+                        .text_color(muted),
+                )
             })
             .children(self.keys.iter().map(|key| {
                 let key = key.clone();
@@ -641,7 +641,7 @@ impl AppView {
                             .child(Label::new(SharedString::from(key.name.clone())).text_sm())
                             .when(key.encrypted, |this| {
                                 this.child(
-                                    Label::new("Зашифрован парольной фразой")
+                                    Label::new(t!("keys.encrypted").to_string())
                                         .text_xs()
                                         .text_color(theme.warning),
                                 )
@@ -651,8 +651,8 @@ impl AppView {
                         Button::new(SharedString::from(format!("key-import-{}", key.name)))
                             .outline()
                             .xsmall()
-                            .label("Импортировать")
-                            .tooltip("Зашифровать ключ и сохранить в хранилище")
+                            .label(t!("keys.import").to_string())
+                            .tooltip(t!("keys.import_tooltip").to_string())
                             .selected(importing)
                             .disabled(!unlocked)
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -675,7 +675,7 @@ impl AppView {
                     .px_6()
                     .pt_5()
                     .pb_3()
-                    .child(Label::new("Ключи").text_xl().font_semibold()),
+                    .child(Label::new(t!("keys.page_title").to_string()).text_xl().font_semibold()),
             )
             .children(self.vault_picker(cx))
             .child(
@@ -690,20 +690,20 @@ impl AppView {
                         v_flex()
                             .gap_3()
                             .child(Self::key_card(
-                        "SSH-агент",
-                        Some("Предоставляет ключи из хранилища. Каждая подпись требует подтверждения."),
+                        t!("keys.agent_title").to_string(),
+                        Some(t!("keys.agent_hint").to_string().into()),
                         agent_body,
                         cx,
                     ))
                     .child(Self::key_card(
-                        "Ключи в хранилище",
-                        Some("Хранятся в зашифрованном виде, синхронизируются и используются агентом."),
+                        t!("keys.vault_title").to_string(),
+                        Some(t!("keys.vault_hint").to_string().into()),
                         stored_body,
                         cx,
                     ))
                     .child(Self::key_card(
-                        "Ключи в ~/.ssh",
-                        Some("Файлы на диске. Используются при входе; в хранилище добавляются через импорт."),
+                        t!("keys.files_title").to_string(),
+                        Some(t!("keys.files_hint").to_string().into()),
                         files_body,
                         cx,
                     )),

@@ -52,7 +52,7 @@ impl PortForward {
     pub fn summary(&self) -> String {
         match self.kind {
             ForwardKind::Dynamic => format!("-D {} (SOCKS5)", self.listen_port),
-            ForwardKind::Unsupported => "правило незнакомого вида".into(),
+            ForwardKind::Unsupported => "rule of an unknown kind".into(),
             kind => format!(
                 "{} {} → {}",
                 kind.flag(),
@@ -92,7 +92,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pravila_chitayutsya_kak_u_ssh() {
+    fn rules_are_parsed_like_ssh() {
         let local = PortForward {
             kind: ForwardKind::Local,
             listen_port: 8080,
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn format_zapisi() {
+    fn record_format() {
         let rule = PortForward {
             kind: ForwardKind::Remote,
             listen_port: 9000,
@@ -120,19 +120,19 @@ mod tests {
             target_port: 3000,
             enabled: true,
         };
-        let json = serde_json::to_string(&rule).expect("сериализация");
+        let json = serde_json::to_string(&rule).expect("serialization");
         assert_eq!(
             json,
             r#"{"kind":"remote","listen_port":9000,"target_host":"localhost","target_port":3000}"#
         );
         assert_eq!(
-            serde_json::from_str::<PortForward>(&json).expect("разбор"),
+            serde_json::from_str::<PortForward>(&json).expect("parse"),
             rule
         );
 
         let future: PortForward =
             serde_json::from_str(r#"{"kind":"udp","listen_port":53,"enabled":false}"#)
-                .expect("разбор");
+                .expect("parse");
         assert_eq!(future.kind, ForwardKind::Unsupported);
         assert!(!future.enabled);
         assert!(!future.is_usable());

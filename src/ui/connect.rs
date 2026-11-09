@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::path::PathBuf;
 
 use crate::ssh::auth::{self, AuthPlan};
@@ -34,19 +35,19 @@ pub struct Request {
 pub fn parse_target(raw: &str) -> Result<Request, String> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return Err("Не указан адрес подключения.".into());
+        return Err(t!("connect.no_address").into());
     }
 
     let (user, rest) = match raw.rsplit_once('@') {
         Some((user, rest)) if !user.is_empty() => (Some(user.to_string()), rest),
-        Some(_) => return Err(format!("В адресе «{raw}» пустое имя пользователя.")),
+        Some(_) => return Err(t!("connect.empty_user", raw = raw).to_string()),
         None => (None, raw),
     };
 
     let (alias, port) = if let Some(rest) = rest.strip_prefix('[') {
         let (host, tail) = rest
             .split_once(']')
-            .ok_or_else(|| format!("В адресе «{raw}» не закрыта скобка IPv6-адреса."))?;
+            .ok_or_else(|| t!("connect.unclosed_bracket", raw = raw).to_string())?;
         (host.to_string(), parse_port(tail.strip_prefix(':'), raw)?)
     } else {
         match rest.rsplit_once(':') {
@@ -57,7 +58,7 @@ pub fn parse_target(raw: &str) -> Result<Request, String> {
     };
 
     if alias.is_empty() {
-        return Err(format!("В адресе «{raw}» не указан хост."));
+        return Err(t!("connect.no_host", raw = raw).to_string());
     }
 
     Ok(Request { alias, user, port })
@@ -69,7 +70,7 @@ fn parse_port(raw: Option<&str>, whole: &str) -> Result<Option<u16>, String> {
         Some(text) => text
             .parse()
             .map(Some)
-            .map_err(|_| format!("В адресе «{whole}» некорректный порт: {text}.")),
+            .map_err(|_| t!("connect.invalid_port", raw = whole, port = text).to_string()),
     }
 }
 
@@ -146,21 +147,22 @@ fn jumps_inner(
     let mut hops = Vec::new();
     for (index, item) in raw.split(',').map(str::trim).enumerate() {
         if item.is_empty() {
-            return Err(format!("В ProxyJump «{raw}» пустой элемент."));
+            return Err(t!("connect.jump_empty", raw = raw).to_string());
         }
         let item = item.strip_prefix("ssh://").unwrap_or(item);
-        let request = parse_target(item).map_err(|error| format!("ProxyJump: {error}"))?;
+        let request = parse_target(item).map_err(|error| t!("connect.jump_error", error = error).to_string())?;
         let settings = lookup(&request.alias);
 
         if index == 0
             && let Some(own) = settings.proxy_jump.as_deref().filter(|own| !is_none(own))
         {
             if seen.contains(&request.alias) || seen.len() >= MAX_JUMP_DEPTH {
-                return Err(format!(
-                    "Цепочка ProxyJump зациклена или слишком длинная: {} → {}.",
-                    seen.join(" → "),
-                    request.alias
-                ));
+                return Err(t!(
+                    "connect.jump_cyclic",
+                    chain = seen.join(" → "),
+                    alias = request.alias
+                )
+                .to_string());
             }
             seen.push(request.alias.clone());
             hops.extend(jumps_inner(own, lookup, seen)?);
@@ -261,10 +263,7 @@ pub fn route_for(
                 password: proxy.password().cloned(),
             })),
             proto::ProxyKind::Unsupported => {
-                return Err(format!(
-                    "Прокси «{}» неизвестного типа не поддерживается этой версией.",
-                    proxy.title()
-                ));
+                return Err(t!("connect.proxy_unsupported", title = proxy.title()).to_string());
             }
         }
     }
@@ -277,9 +276,7 @@ pub fn route_for(
     match (jump, command) {
         (Some(raw), _) => hops.extend(jumps_from(raw, lookup)?.into_iter().map(Hop::Jump)),
         (None, Some(command)) => {
-            return Err(format!(
-                "Для этого хоста в ~/.ssh/config задан ProxyCommand ({command}); выполнение внешних команд не поддерживается. Используйте ProxyJump или прокси-сервер из хранилища."
-            ));
+            return Err(t!("connect.proxy_command", command = command).to_string());
         }
         (None, None) => {}
     }
@@ -311,7 +308,7 @@ pub struct Credentials {
     pub proxy_error: Option<String>,
     pub forward_agent: bool,
     pub forwards: Vec<proto::PortForward>,
-    /// Команда вместо оболочки (например, установка ключа на сервер).
+    /// Command instead of a shell (for example, installing a key on the server).
     pub command: Option<String>,
 }
 
@@ -319,8 +316,8 @@ impl std::fmt::Debug for Credentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Credentials")
             .field("auth", &self.auth)
-            .field("password", &self.password.as_ref().map(|_| "<скрыт>"))
-            .field("stored", &self.stored.as_ref().map(|_| "<скрыт>"))
+            .field("password", &self.password.as_ref().map(|_| "<hidden>"))
+            .field("stored", &self.stored.as_ref().map(|_| "<hidden>"))
             .field("via", &self.via.len())
             .field("proxy_error", &self.proxy_error)
             .field("forward_agent", &self.forward_agent)
@@ -516,8 +513,8 @@ mod tests {
 
     #[test]
     fn bad_port_is_reported_not_ignored() {
-        let error = parse_target("host:не-число").expect_err("должна быть ошибка");
-        assert!(error.contains("порт"), "невнятная ошибка: {error}");
+        let error = parse_target("host:not-a-number").expect_err("should be an error");
+        assert!(error.contains("port"), "unclear error: {error}");
     }
 
     #[test]
@@ -533,30 +530,30 @@ mod tests {
     #[test]
     fn ssh_config_fills_in_what_the_command_line_left_out() {
         let settings = HostSettings {
-            hostname: Some("настоящий.example.com".into()),
-            user: Some("из-конфига".into()),
+            hostname: Some("real.example.com".into()),
+            user: Some("from-config".into()),
             port: Some(2222),
             ..Default::default()
         };
-        let target = resolve(&request("алиас", None, None), &settings);
+        let target = resolve(&request("alias", None, None), &settings);
 
-        assert_eq!(target.host, "настоящий.example.com");
-        assert_eq!(target.user, "из-конфига");
+        assert_eq!(target.host, "real.example.com");
+        assert_eq!(target.user, "from-config");
         assert_eq!(target.port, 2222);
     }
 
     #[test]
     fn command_line_wins_over_ssh_config() {
         let settings = HostSettings {
-            hostname: Some("настоящий.example.com".into()),
-            user: Some("из-конфига".into()),
+            hostname: Some("real.example.com".into()),
+            user: Some("from-config".into()),
             port: Some(2222),
             ..Default::default()
         };
-        let target = resolve(&request("алиас", Some("явный"), Some(2022)), &settings);
+        let target = resolve(&request("alias", Some("explicit"), Some(2022)), &settings);
 
-        assert_eq!(target.host, "настоящий.example.com");
-        assert_eq!(target.user, "явный");
+        assert_eq!(target.host, "real.example.com");
+        assert_eq!(target.user, "explicit");
         assert_eq!(target.port, 2022);
     }
 
@@ -588,32 +585,32 @@ mod tests {
     #[test]
     fn host_aliases_are_collected_in_order_without_duplicates() {
         let config = "\
-# комментарий
-Host рабочий
+# comment
+Host work
     HostName 10.0.0.1
 
-Host сервер запасной
+Host server backup
     User dan
 
-Host рабочий
+Host work
     Port 2222
 ";
         assert_eq!(
             parse_host_aliases(config),
-            vec!["рабочий", "сервер", "запасной"]
+            vec!["work", "server", "backup"]
         );
     }
 
     #[test]
     fn patterns_are_not_offered_as_connection_targets() {
-        let config = "Host *\n    User dan\n\nHost *.example.com\n\nHost !плохой хороший\n";
-        assert_eq!(parse_host_aliases(config), vec!["хороший"]);
+        let config = "Host *\n    User dan\n\nHost *.example.com\n\nHost !bad good\n";
+        assert_eq!(parse_host_aliases(config), vec!["good"]);
     }
 
     #[test]
     fn keyword_case_and_equals_separator_are_accepted() {
-        let config = "HOST=первый\nhost   второй\n";
-        assert_eq!(parse_host_aliases(config), vec!["первый", "второй"]);
+        let config = "HOST=first\nhost   second\n";
+        assert_eq!(parse_host_aliases(config), vec!["first", "second"]);
     }
 
     fn fake_config(entries: &[(&str, HostSettings)]) -> impl Fn(&str) -> HostSettings + use<> {
@@ -631,9 +628,9 @@ Host рабочий
     }
 
     #[test]
-    fn proxyjump_spisok_razbiraetsya_po_poryadku() {
+    fn proxyjump_list_is_parsed_in_order() {
         let lookup = fake_config(&[]);
-        let hops = jumps_from("alice@bastion:2222, ssh://bob@inner", &lookup).expect("разбор");
+        let hops = jumps_from("alice@bastion:2222, ssh://bob@inner", &lookup).expect("parse");
         assert_eq!(
             jump_addresses(&hops),
             vec!["alice@bastion:2222", "bob@inner:22"]
@@ -641,7 +638,7 @@ Host рабочий
     }
 
     #[test]
-    fn proxyjump_beret_nastroyki_hosta_iz_konfiga() {
+    fn proxyjump_takes_host_settings_from_config() {
         let lookup = fake_config(&[(
             "bastion",
             HostSettings {
@@ -651,12 +648,12 @@ Host рабочий
                 ..Default::default()
             },
         )]);
-        let hops = jumps_from("bastion", &lookup).expect("разбор");
+        let hops = jumps_from("bastion", &lookup).expect("parse");
         assert_eq!(jump_addresses(&hops), vec!["ops@10.0.0.1:2200"]);
     }
 
     #[test]
-    fn proxyjump_pervogo_hosta_idet_pered_nim() {
+    fn proxyjump_of_first_host_goes_before_it() {
         let lookup = fake_config(&[(
             "inner",
             HostSettings {
@@ -664,12 +661,12 @@ Host рабочий
                 ..Default::default()
             },
         )]);
-        let hops = jumps_from("me@inner", &lookup).expect("разбор");
+        let hops = jumps_from("me@inner", &lookup).expect("parse");
         assert_eq!(jump_addresses(&hops), vec!["outer@edge:22", "me@inner:22"]);
     }
 
     #[test]
-    fn zaciklennyy_proxyjump_ne_krutitsya_vechno() {
+    fn cyclic_proxyjump_does_not_loop_forever() {
         let lookup = fake_config(&[
             (
                 "a",
@@ -686,19 +683,19 @@ Host рабочий
                 },
             ),
         ]);
-        let error = jumps_from("a", &lookup).expect_err("цикл обязан быть ошибкой");
-        assert!(error.contains("зациклена"), "{error}");
+        let error = jumps_from("a", &lookup).expect_err("a cycle must be an error");
+        assert!(error.contains("cyclic"), "{error}");
     }
 
     #[test]
-    fn proxyjump_none_znachit_napryamuyu() {
+    fn proxyjump_none_means_direct() {
         let lookup = fake_config(&[]);
-        assert!(jumps_from("none", &lookup).expect("разбор").is_empty());
-        assert!(jumps_from("None", &lookup).expect("разбор").is_empty());
+        assert!(jumps_from("none", &lookup).expect("parse").is_empty());
+        assert!(jumps_from("None", &lookup).expect("parse").is_empty());
     }
 
     #[test]
-    fn plohoy_proxyjump_eto_oshibka_a_ne_propusk() {
+    fn bad_proxyjump_is_an_error_not_a_skip() {
         let lookup = fake_config(&[]);
         assert!(jumps_from("a,,b", &lookup).is_err());
         assert!(jumps_from("host:notaport", &lookup).is_err());
@@ -709,7 +706,7 @@ Host рабочий
     }
 
     #[test]
-    fn marshrut_snachala_proksi_potom_proxyjump() {
+    fn route_is_proxy_first_then_proxyjump() {
         let lookup = fake_config(&[]);
         let credentials = Credentials {
             via: vec![socks("office-proxy").into()],
@@ -720,37 +717,37 @@ Host рабочий
             ..Default::default()
         };
 
-        let hops = route_for(&credentials, &settings, &lookup).expect("маршрут");
+        let hops = route_for(&credentials, &settings, &lookup).expect("route");
         let names: Vec<String> = hops.iter().map(Hop::describe).collect();
         assert_eq!(names.len(), 2);
         assert!(
-            names[0].starts_with("прокси SOCKS5 office-proxy"),
+            names[0].starts_with("SOCKS5 proxy office-proxy"),
             "{names:?}"
         );
-        assert!(names[1].starts_with("промежуточный хост"), "{names:?}");
+        assert!(names[1].starts_with("jump host"), "{names:?}");
     }
 
     #[test]
-    fn nesobrannaya_cepochka_ne_prevrashchaetsya_v_pryamoe_podklyuchenie() {
+    fn unresolved_chain_does_not_turn_into_direct_connection() {
         let lookup = fake_config(&[]);
         let credentials = Credentials {
-            proxy_error: Some("прокси №1 из цепочки нет в хранилище".into()),
+            proxy_error: Some("proxy #1 in the chain is not in the vault".into()),
             ..Default::default()
         };
         let error = route_for(&credentials, &HostSettings::default(), &lookup)
-            .expect_err("маршрут обязан не собраться");
-        assert!(error.contains("нет в хранилище"), "{error}");
+            .expect_err("the route must fail to build");
+        assert!(error.contains("not in the vault"), "{error}");
     }
 
     #[test]
-    fn proxycommand_bez_proxyjump_otkazyvaet() {
+    fn proxycommand_without_proxyjump_is_refused() {
         let lookup = fake_config(&[]);
         let settings = HostSettings {
             proxy_command: Some("cloudflared access ssh --hostname %h".into()),
             ..Default::default()
         };
         let error = route_for(&Credentials::default(), &settings, &lookup)
-            .expect_err("ProxyCommand не запускаем — и напрямую не идём");
+            .expect_err("we do not run ProxyCommand and do not connect directly either");
         assert!(error.contains("ProxyCommand"), "{error}");
 
         let settings = HostSettings {
@@ -759,13 +756,13 @@ Host рабочий
         };
         assert!(
             route_for(&Credentials::default(), &settings, &lookup)
-                .expect("маршрут")
+                .expect("route")
                 .is_empty()
         );
     }
 
     #[test]
-    fn neznakomyy_vid_proksi_ne_propuskaetsya() {
+    fn unknown_proxy_kind_is_not_skipped() {
         let lookup = fake_config(&[]);
         let mut proxy = socks("future");
         proxy.kind = proto::ProxyKind::Unsupported;
@@ -777,7 +774,7 @@ Host рабочий
     }
 
     #[test]
-    fn parol_proksi_doezhaet_do_zvena() {
+    fn proxy_password_reaches_the_hop() {
         let lookup = fake_config(&[]);
         let mut proxy = socks("p");
         proxy.user = "dan".into();
@@ -786,7 +783,7 @@ Host рабочий
             via: vec![proxy.into()],
             ..Default::default()
         };
-        let hops = route_for(&credentials, &HostSettings::default(), &lookup).expect("маршрут");
+        let hops = route_for(&credentials, &HostSettings::default(), &lookup).expect("route");
         match &hops[0] {
             Hop::Socks5(hop) => {
                 assert_eq!(hop.user, "dan");
@@ -795,12 +792,12 @@ Host рабочий
                     Some(&b"pw"[..])
                 );
             }
-            other => panic!("ждали SOCKS5, пришло {other:?}"),
+            other => panic!("expected SOCKS5, got {other:?}"),
         }
     }
 
     #[test]
-    fn sokhranyonnyy_khost_v_cepochke_eto_jump_so_svoim_parolem() {
+    fn saved_host_in_chain_is_a_jump_with_its_own_password() {
         let lookup = fake_config(&[(
             "bastion",
             HostSettings {
@@ -817,7 +814,7 @@ Host рабочий
             via: vec![crate::vault_session::ViaItem::Host(host)],
             ..Default::default()
         };
-        let hops = route_for(&credentials, &HostSettings::default(), &lookup).expect("маршрут");
+        let hops = route_for(&credentials, &HostSettings::default(), &lookup).expect("route");
         match hops.as_slice() {
             [Hop::Jump(jump)] => {
                 assert_eq!(
@@ -834,7 +831,7 @@ Host рабочий
                     jump.auth
                 );
             }
-            other => panic!("ждали один jump, пришло {other:?}"),
+            other => panic!("expected a single jump, got {other:?}"),
         }
     }
 }

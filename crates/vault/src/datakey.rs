@@ -65,10 +65,10 @@ impl DataKey {
 
 pub(crate) fn expand(root: &Key32, purpose: Purpose) -> Result<Key32> {
     let hkdf = Hkdf::<Sha256>::from_prk(root.as_bytes())
-        .map_err(|_| Error::Kdf("корневой ключ не годится как PRK"))?;
+        .map_err(|_| Error::Kdf("root key is not usable as a PRK"))?;
     let mut out = Zeroizing::new([0u8; KEY_LEN]);
     hkdf.expand(&purpose.info(), out.as_mut())
-        .map_err(|_| Error::Kdf("HKDF отказал на длине вывода"))?;
+        .map_err(|_| Error::Kdf("HKDF rejected the output length"))?;
     Ok(Key32::from_bytes(*out))
 }
 
@@ -87,9 +87,9 @@ macro_rules! purpose_key {
     };
 }
 
-purpose_key!(RecordKey, "Ключ шифрования записей.");
-purpose_key!(IdentityKey, "Ключ обёртки пар ключей участника.");
-purpose_key!(SshKeysKey, "Ключ обёртки приватных SSH-ключей.");
+purpose_key!(RecordKey, "Record encryption key.");
+purpose_key!(IdentityKey, "Key for wrapping the member's key pairs.");
+purpose_key!(SshKeysKey, "Key for wrapping private SSH keys.");
 
 #[cfg(test)]
 mod tests {
@@ -97,7 +97,7 @@ mod tests {
     use hex_literal::hex;
 
     #[test]
-    fn hkdf_sha256_rfc5869_izvestnyy_vektor() {
+    fn hkdf_sha256_rfc5869_known_vector() {
         let ikm = hex!("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
         let salt = hex!("000102030405060708090a0b0c");
         let info = hex!("f0f1f2f3f4f5f6f7f8f9");
@@ -125,28 +125,28 @@ mod tests {
     }
 
     #[test]
-    fn podklyuchi_izvestnyy_vektor() {
+    fn subkeys_known_vector() {
         let dk = fixed();
         assert_eq!(
-            dk.record_key().expect("подключ").as_key().as_bytes(),
+            dk.record_key().expect("subkey").as_key().as_bytes(),
             &hex!("570eef53b1acbada981f420cfff12901a7dd65fc6a4598355ceb5664e48e2f30")
         );
         assert_eq!(
-            dk.identity_key().expect("подключ").as_key().as_bytes(),
+            dk.identity_key().expect("subkey").as_key().as_bytes(),
             &hex!("cfdf689c7f6ea832d43bd1424587a91c70c1519a45b01508cf7aa76a6525da7d")
         );
         assert_eq!(
-            dk.ssh_keys_key().expect("подключ").as_key().as_bytes(),
+            dk.ssh_keys_key().expect("subkey").as_key().as_bytes(),
             &hex!("e5515c2ad706d7b1135a839131b4fcc132b5653e747421f3c4217f78395ec934")
         );
     }
 
     #[test]
-    fn naznacheniya_ne_peresekayutsya() {
+    fn purposes_do_not_overlap() {
         let dk = fixed();
-        let r = dk.record_key().expect("подключ");
-        let i = dk.identity_key().expect("подключ");
-        let s = dk.ssh_keys_key().expect("подключ");
+        let r = dk.record_key().expect("subkey");
+        let i = dk.identity_key().expect("subkey");
+        let s = dk.ssh_keys_key().expect("subkey");
 
         assert_ne!(r.as_key(), i.as_key());
         assert_ne!(r.as_key(), s.as_key());
@@ -155,31 +155,31 @@ mod tests {
     }
 
     #[test]
-    fn podklyuchi_determinirovany() {
-        let a = fixed().record_key().expect("подключ");
-        let b = fixed().record_key().expect("подключ");
+    fn subkeys_are_deterministic() {
+        let a = fixed().record_key().expect("subkey");
+        let b = fixed().record_key().expect("subkey");
         assert_eq!(a.as_key(), b.as_key());
     }
 
     #[test]
-    fn drugoy_data_key_drugie_podklyuchi() {
-        let a = fixed().record_key().expect("подключ");
+    fn different_data_key_gives_different_subkeys() {
+        let a = fixed().record_key().expect("subkey");
         let other = DataKey::from_key(Key32::from_bytes([0x43; KEY_LEN]));
-        let b = other.record_key().expect("подключ");
+        let b = other.record_key().expect("subkey");
         assert_ne!(a.as_key(), b.as_key());
     }
 
     #[test]
-    fn generate_ne_povtoryaetsya() {
+    fn generate_does_not_repeat() {
         let a = DataKey::generate().expect("CSPRNG");
         let b = DataKey::generate().expect("CSPRNG");
         assert_ne!(a.as_key(), b.as_key());
     }
 
     #[test]
-    fn debug_ne_pechataet_klyuchi() {
+    fn debug_does_not_print_keys() {
         let dk = fixed();
-        assert!(format!("{dk:?}").contains("<скрыт>"));
-        assert!(format!("{:?}", dk.record_key().expect("подключ")).contains("<скрыт>"));
+        assert!(format!("{dk:?}").contains("<hidden>"));
+        assert!(format!("{:?}", dk.record_key().expect("subkey")).contains("<hidden>"));
     }
 }

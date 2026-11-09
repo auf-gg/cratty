@@ -1,13 +1,13 @@
-CrattySymbols-Regular.ttf — Symbols Nerd Font Mono из Nerd Fonts v3.5.1
+CrattySymbols-Regular.ttf — Symbols Nerd Font Mono from Nerd Fonts v3.5.1
 (https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1, NerdFontsSymbolsOnly)
-с двумя изменениями:
+with two changes:
 
-- букве «m» сопоставлен пустой глиф: gpui не загружает шрифт без «m»
-  (меряет по ней ширину), а шрифт только со значками её не содержит;
-- семейство переименовано в «Cratty Symbols», чтобы изменённая копия не
-  выдавала себя за оригинал (часть наборов значков — OFL 1.1 с
-  зарезервированными именами).
+- the letter "m" is mapped to an empty glyph: gpui won't load a font without "m"
+  (it measures width by it), and an icons-only font doesn't contain it;
+- the family is renamed to "Cratty Symbols" so the modified copy does not
+  pass itself off as the original (some icon sets are OFL 1.1 with
+  reserved names).
 
-Вшит в программу как шрифт значков терминала по умолчанию — как это делает kitty.
-Лицензия Nerd Fonts: MIT, см. LICENSE-nerd-fonts; лицензии отдельных наборов
-значков перечислены в README проекта Nerd Fonts.
+Embedded in the program as the default terminal icon font — as kitty does.
+Nerd Fonts license: MIT, see LICENSE-nerd-fonts; the licenses of individual icon
+sets are listed in the Nerd Fonts project README.

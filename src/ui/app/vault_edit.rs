@@ -1,4 +1,4 @@
-//! Окно «Хранилище»: имя, смена мастер-пароля, расположение и перенос.
+//! "Vault" window: name, master password change, location and move.
 
 use super::*;
 
@@ -25,7 +25,7 @@ impl AppView {
             return;
         };
         let name = self.vaults[ix].name.clone();
-        let masked = |placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>| {
+        let masked = |placeholder: String, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
@@ -35,9 +35,9 @@ impl AppView {
         self.vault_editor = Some(VaultEditor {
             id: id.to_owned(),
             name: cx.new(|cx| InputState::new(window, cx).default_value(name)),
-            current: masked("Текущий пароль", window, cx),
-            password: masked("Новый пароль", window, cx),
-            repeat: masked("Новый пароль ещё раз", window, cx),
+            current: masked(t!("vaults.ph_current").to_string(), window, cx),
+            password: masked(t!("vaults.ph_new").to_string(), window, cx),
+            repeat: masked(t!("vaults.ph_repeat").to_string(), window, cx),
             busy: false,
             error: None,
             notice: None,
@@ -74,16 +74,16 @@ impl AppView {
         let result = (|| {
             let ix = self
                 .vault_ix(&id)
-                .ok_or_else(|| anyhow::anyhow!("хранилище пропало"))?;
+                .ok_or_else(|| anyhow::anyhow!(t!("vaults.vault_disappeared").to_string()))?;
             let store = VaultStore::new(self.vaults[ix].root());
             let unlocked = self.vaults[ix]
                 .session
                 .unlocked_mut()
-                .ok_or_else(|| anyhow::anyhow!("сначала разблокируйте хранилище"))?;
+                .ok_or_else(|| anyhow::anyhow!(t!("vaults.unlock_first").to_string()))?;
             unlocked.set_vault_name(&store, &name)?;
             self.vaults[ix].name = name.clone();
             self.save_registry();
-            anyhow::Ok(SharedString::from("Имя сохранено"))
+            anyhow::Ok(SharedString::from(t!("vaults.name_saved").to_string()))
         })();
         self.editor_result(result, cx);
         if self
@@ -115,11 +115,10 @@ impl AppView {
         );
         let problem = match verdict {
             vault_ui::PasswordVerdict::Ok => None,
-            vault_ui::PasswordVerdict::TooShort => Some(format!(
-                "Новый пароль короче {} символов",
-                vault_ui::MIN_PASSWORD_LEN
-            )),
-            vault_ui::PasswordVerdict::Mismatch => Some("Новые пароли не совпадают".into()),
+            vault_ui::PasswordVerdict::TooShort => Some(
+                t!("vaults.new_too_short", min = vault_ui::MIN_PASSWORD_LEN).to_string(),
+            ),
+            vault_ui::PasswordVerdict::Mismatch => Some(t!("vaults.new_mismatch").to_string()),
         };
         if let Some(problem) = problem {
             self.editor_result(Err(anyhow::anyhow!(problem)), cx);
@@ -156,11 +155,9 @@ impl AppView {
                 let result = slot.and_then(|slot| {
                     let ix = this
                         .vault_ix(&id)
-                        .ok_or_else(|| anyhow::anyhow!("хранилище пропало"))?;
+                        .ok_or_else(|| anyhow::anyhow!(t!("vaults.vault_disappeared").to_string()))?;
                     this.vaults[ix].session.replace_password_slot(slot)?;
-                    Ok(SharedString::from(
-                        "Пароль изменён. Код восстановления и вход без пароля на этом компьютере работают как прежде.",
-                    ))
+                    Ok(SharedString::from(t!("vaults.password_changed").to_string()))
                 });
                 this.editor_result(result, cx);
             })
@@ -170,7 +167,7 @@ impl AppView {
         if let Some(editor) = &mut self.vault_editor {
             editor.busy = true;
             editor.error = None;
-            editor.notice = Some("Проверяем пароль…".into());
+            editor.notice = Some(t!("vaults.checking").to_string().into());
             editor._task = Some(task);
         }
         cx.notify();
@@ -185,7 +182,7 @@ impl AppView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Перенести сюда".into()),
+            prompt: Some(t!("vaults.move_here").to_string().into()),
         });
         cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -204,14 +201,13 @@ impl AppView {
         let result = (|| {
             let ix = self
                 .vault_ix(id)
-                .ok_or_else(|| anyhow::anyhow!("хранилище пропало"))?;
+                .ok_or_else(|| anyhow::anyhow!(t!("vaults.vault_disappeared").to_string()))?;
             let moved = crate::store::move_vault(&self.vaults[ix].root(), target)?;
             self.vaults[ix].session.relocate(moved.clone());
             self.save_registry();
-            anyhow::Ok(SharedString::from(format!(
-                "Хранилище перенесено в {}",
-                moved.display()
-            )))
+            anyhow::Ok(SharedString::from(
+                t!("vaults.moved", path = moved.display().to_string()).to_string(),
+            ))
         })();
         self.editor_result(result, cx);
     }
@@ -224,13 +220,13 @@ impl AppView {
         let theme = cx.theme().clone();
         let root = slot.root();
 
-        let field = |title: &'static str| {
-            Label::new(title)
+        let field = |title: String| {
+            Label::new(SharedString::from(title))
                 .text_xs()
                 .text_color(theme.muted_foreground)
         };
         let locked_hint = (!unlocked).then(|| {
-            Label::new("Разблокируйте хранилище, чтобы менять имя и пароль.")
+            Label::new(t!("vaults.editor_locked_hint").to_string())
                 .text_xs()
                 .text_color(theme.warning)
         });
@@ -260,11 +256,13 @@ impl AppView {
                         .border_1()
                         .border_color(theme.border)
                         .child(
-                            Label::new(SharedString::from(format!("Хранилище «{}»", slot.name)))
+                            Label::new(SharedString::from(
+                                t!("vaults.editor_title", name = slot.name).to_string(),
+                            ))
                                 .font_semibold(),
                         )
                         .children(locked_hint)
-                        .child(field("Имя"))
+                        .child(field(t!("vaults.editor_name").to_string()))
                         .child(
                             h_flex()
                                 .gap_2()
@@ -273,18 +271,15 @@ impl AppView {
                                     Button::new("vault-rename")
                                         .outline()
                                         .small()
-                                        .label("Сохранить")
+                                        .label(t!("vaults.save").to_string())
                                         .disabled(!unlocked)
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.rename_vault(cx)
                                         })),
                                 ),
                         )
-                        .child(Self::hint(
-                            "Имя хранится в самом хранилище и меняется на всех устройствах после синхронизации.",
-                            cx,
-                        ))
-                        .child(field("Мастер-пароль"))
+                        .child(Self::hint(t!("vaults.name_hint").to_string(), cx))
+                        .child(field(t!("vaults.master_password").to_string()))
                         .child(Input::new(&editor.current).small())
                         .child(Input::new(&editor.password).small())
                         .child(Input::new(&editor.repeat).small())
@@ -293,16 +288,16 @@ impl AppView {
                                 .outline()
                                 .small()
                                 .label(if editor.busy {
-                                    "Меняем пароль…"
+                                    t!("vaults.changing").to_string()
                                 } else {
-                                    "Сменить пароль"
+                                    t!("vaults.change_password").to_string()
                                 })
                                 .disabled(!unlocked || editor.busy)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.change_vault_password(window, cx)
                                 })),
                         )
-                        .child(field("Расположение"))
+                        .child(field(t!("vaults.location").to_string()))
                         .child(
                             div()
                                 .px_2()
@@ -317,16 +312,13 @@ impl AppView {
                             Button::new("vault-move")
                                 .outline()
                                 .small()
-                                .label("Перенести в другую папку…")
+                                .label(t!("vaults.move_button").to_string())
                                 .disabled(editor.busy)
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.pick_vault_location(cx)
                                 })),
                         )
-                        .child(Self::hint(
-                            "В пустую папку хранилище переносится целиком, в непустую — отдельным подкаталогом.",
-                            cx,
-                        ))
+                        .child(Self::hint(t!("vaults.move_hint").to_string(), cx))
                         .children(
                             editor
                                 .error
@@ -343,7 +335,7 @@ impl AppView {
                             h_flex().justify_end().child(
                                 Button::new("vault-editor-close")
                                     .ghost()
-                                    .label("Закрыть")
+                                    .label(t!("vaults.close").to_string())
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.vault_editor = None;
                                         cx.notify();

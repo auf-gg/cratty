@@ -36,7 +36,7 @@ impl Screen {
         config.term = "xterm-256color".into();
         config.pty = GRID;
 
-        let session = cratty::ssh::spawn_ssh(config).expect("не поднялся поток сессии");
+        let session = cratty::ssh::spawn_ssh(config).expect("session thread failed to start");
         let terminal = Terminal::new(GRID, Responder::new(session.commands.clone()));
 
         Self { session, terminal }
@@ -46,7 +46,7 @@ impl Screen {
         self.session
             .commands
             .unbounded_send(ToSsh::Input(Bytes::from(text.to_owned().into_bytes())))
-            .expect("сессия уже закрыта");
+            .expect("session already closed");
     }
 
     async fn wait_until(
@@ -68,17 +68,17 @@ impl Screen {
                 {
                     Ok(Some(event)) => event,
                     Err(_) => continue,
-                    Ok(None) => panic!("сессия закрылась, пока ждали: {what}"),
+                    Ok(None) => panic!("session closed while waiting for: {what}"),
                 };
 
             match event {
                 FromSsh::Output(data) => self.terminal.advance(&data),
                 FromSsh::Connected { .. } | FromSsh::Forward { .. } => {}
                 other @ (FromSsh::NeedSecret { .. } | FromSsh::NeedHostKey { .. }) => {
-                    panic!("неожиданный диалог {other:?}, пока ждали: {what}")
+                    panic!("unexpected dialog {other:?} while waiting for: {what}")
                 }
                 FromSsh::Closed(reason) => {
-                    panic!("сессия закрылась ({reason:?}), пока ждали: {what}")
+                    panic!("session closed ({reason:?}) while waiting for: {what}")
                 }
             }
 
@@ -89,7 +89,7 @@ impl Screen {
         }
 
         panic!(
-            "не дождались «{what}» за {DEADLINE:?}\nэкран сейчас:\n{}",
+            "timed out waiting for '{what}' after {DEADLINE:?}\nscreen now:\n{}",
             dump(&self.terminal)
         );
     }
@@ -116,7 +116,7 @@ fn contains(snapshot: &Snapshot, needle: &str) -> bool {
 #[tokio::test]
 async fn ls_color_paints_the_directory() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка ls --color пропущена");
+        eprintln!("docker unavailable — ls --color check skipped");
         return;
     };
 
@@ -124,25 +124,25 @@ async fn ls_color_paints_the_directory() {
     screen.send("ls --color=always -1 ~\r");
 
     let snapshot = screen
-        .wait_until("вывод ls", |snapshot| contains(snapshot, "файл.txt"))
+        .wait_until("ls output", |snapshot| contains(snapshot, "file.txt"))
         .await;
 
     let directory = snapshot
         .lines
         .iter()
         .flat_map(|line| &line.runs)
-        .find(|run| run.text.contains("каталог"))
-        .expect("в выводе нет каталога");
+        .find(|run| run.text.contains("folder"))
+        .expect("no directory in the output");
 
     assert_ne!(
         directory.style.fg, snapshot.lines[0].runs[0].style.fg,
-        "каталог не выделен цветом: {:?}",
+        "directory is not highlighted: {:?}",
         directory.style
     );
     assert_eq!(
         directory.style.fg,
         cratty::term::palette::DEFAULT.indexed(4),
-        "каталог раскрашен не синим: {:?}",
+        "directory is not colored blue: {:?}",
         directory.style
     );
 
@@ -150,31 +150,31 @@ async fn ls_color_paints_the_directory() {
         .lines
         .iter()
         .flat_map(|line| &line.runs)
-        .find(|run| run.text.contains("файл.txt"))
-        .expect("в выводе нет файла");
+        .find(|run| run.text.contains("file.txt"))
+        .expect("no file in the output");
     assert_eq!(file.style.fg, cratty::term::palette::DEFAULT.foreground);
 }
 
 #[tokio::test]
 async fn vim_draws_on_the_alternate_screen_and_leaves_it_clean() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка vim пропущена");
+        eprintln!("docker unavailable — vim check skipped");
         return;
     };
 
     let mut screen = Screen::connect(&sshd);
 
-    screen.send("echo МЕТКА-ДО-VIM\r");
+    screen.send("echo MARK-BEFORE-VIM\r");
     screen
-        .wait_until("метку до запуска", |snapshot| {
-            contains(snapshot, "МЕТКА-ДО-VIM")
+        .wait_until("the marker before launch", |snapshot| {
+            contains(snapshot, "MARK-BEFORE-VIM")
         })
         .await;
 
-    screen.send("vim -u NONE /tmp/проба.txt\r");
+    screen.send("vim -u NONE /tmp/probe.txt\r");
 
     let snapshot = screen
-        .wait_until("экран vim", |snapshot| {
+        .wait_until("vim screen", |snapshot| {
             snapshot
                 .lines
                 .iter()
@@ -185,23 +185,23 @@ async fn vim_draws_on_the_alternate_screen_and_leaves_it_clean() {
         .await;
 
     assert!(
-        !contains(&snapshot, "МЕТКА-ДО-VIM"),
-        "vim рисует поверх основного экрана, а не в альтернативном:\n{}",
+        !contains(&snapshot, "MARK-BEFORE-VIM"),
+        "vim draws over the main screen instead of the alternate one:\n{}",
         dump(&screen.terminal)
     );
 
-    screen.send("iпривет\x1b");
+    screen.send("ihello\x1b");
     screen
-        .wait_until("вставленный текст", |snapshot| {
-            contains(snapshot, "привет")
+        .wait_until("inserted text", |snapshot| {
+            contains(snapshot, "hello")
         })
         .await;
     screen.send(":q!\r");
 
     screen
         .wait_until(
-            "восстановленный основной экран",
-            |snapshot| contains(snapshot, "МЕТКА-ДО-VIM"),
+            "restored main screen",
+            |snapshot| contains(snapshot, "MARK-BEFORE-VIM"),
         )
         .await;
 }
@@ -209,7 +209,7 @@ async fn vim_draws_on_the_alternate_screen_and_leaves_it_clean() {
 #[tokio::test]
 async fn htop_paints_a_full_width_header() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка htop пропущена");
+        eprintln!("docker unavailable — htop check skipped");
         return;
     };
 
@@ -217,7 +217,7 @@ async fn htop_paints_a_full_width_header() {
     screen.send("htop\r");
 
     let snapshot = screen
-        .wait_until("экран htop", |snapshot| {
+        .wait_until("htop screen", |snapshot| {
             contains(snapshot, "Help") && contains(snapshot, "Quit")
         })
         .await;
@@ -237,7 +237,7 @@ async fn htop_paints_a_full_width_header() {
 
     assert!(
         painted >= snapshot.columns / 2,
-        "ни одна строка htop не закрашена хотя бы наполовину (максимум {painted} из {}):\n{}",
+        "no htop row is at least half painted (maximum {painted} of {}):\n{}",
         snapshot.columns,
         dump(&screen.terminal)
     );

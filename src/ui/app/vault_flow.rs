@@ -35,7 +35,7 @@ impl AppView {
 
         let name = self.vault_form.name.read(cx).value().trim().to_string();
         if name.is_empty() {
-            self.vault_error = Some("Укажите название хранилища.".into());
+            self.vault_error = Some(t!("vaults.name_required").to_string().into());
             cx.notify();
             return;
         }
@@ -87,7 +87,7 @@ impl AppView {
                     Some(ix) => prepared
                         .and_then(|prepared| this.vaults[ix].session.install(prepared, import))
                         .map(|code| (ix, code)),
-                    None => Err(anyhow::anyhow!("хранилище было удалено при создании")),
+                    None => Err(anyhow::anyhow!(t!("vaults.deleted_during_creation").to_string())),
                 };
                 match installed {
                     Ok((ix, code)) => {
@@ -125,13 +125,13 @@ impl AppView {
         {
             match migrate::remove_legacy(&path) {
                 Ok(()) => {
-                    self.vault_form.notice = Some(vault_ui::MIGRATION_WARNING.into());
+                    self.vault_form.notice = Some(vault_ui::migration_warning().into());
                     self.pending_import.clear();
                 }
                 Err(error) => {
-                    self.vault_error = Some(SharedString::from(format!(
-                        "Записи перенесены, но произошла ошибка: {error:#}"
-                    )));
+                    self.vault_error = Some(SharedString::from(
+                        t!("vaults.import_transfer_error", error = format!("{error:#}")).to_string(),
+                    ));
                 }
             }
         }
@@ -147,7 +147,7 @@ impl AppView {
     fn adopt_into(&mut self, id: &str, data_key: vault::DataKey) -> anyhow::Result<()> {
         match self.vault_ix(id) {
             Some(ix) => self.vaults[ix].session.adopt(data_key),
-            None => anyhow::bail!("хранилище было удалено"),
+            None => anyhow::bail!(t!("vaults.vault_deleted").to_string()),
         }
     }
 
@@ -191,9 +191,9 @@ impl AppView {
                 {
                     this.vault_form.remember = false;
                     if let Err(error) = this.vaults[ix].session.enable_os_key(&OsKeychain) {
-                        this.vault_error = Some(SharedString::from(format!(
-                            "Хранилище открыто, но запомнить его на этом компьютере не удалось: {error:#}"
-                        )));
+                        this.vault_error = Some(SharedString::from(
+                            t!("vaults.remember_failed", error = format!("{error:#}")).to_string(),
+                        ));
                         cx.notify();
                     }
                 }
@@ -248,8 +248,8 @@ impl AppView {
         }));
     }
 
-    /// Разблокировка ключом из системного хранилища. `interactive` — по кнопке
-    /// на экране хранилища (с индикацией занятости); иначе — тихо, при запуске.
+    /// Unlock with the key from the system credential store. `interactive` — via the button
+    /// on the vault screen (with a busy indicator); otherwise silently, at startup.
     pub(super) fn unlock_with_os_key_for(
         &mut self,
         id: &str,
@@ -382,7 +382,7 @@ impl AppView {
                 .pt_3()
                 .gap_2()
                 .child(
-                    Label::new("Не удалось прочитать хранилище")
+                    Label::new(t!("vaults.read_failed_title").to_string())
                         .text_sm()
                         .font_semibold()
                         .text_color(danger),
@@ -393,10 +393,13 @@ impl AppView {
                         .text_color(muted),
                 )
                 .child(
-                    Label::new(SharedString::from(format!(
-                        "Файл хранилища: {}. Не удаляйте его: повреждённым может оказаться только заголовок, а без файла записи не восстановить.",
-                        self.vault().store().root().display()
-                    )))
+                    Label::new(SharedString::from(
+                        t!(
+                            "vaults.vault_file_note",
+                            path = self.vault().store().root().display().to_string()
+                        )
+                        .to_string(),
+                    ))
                     .text_xs()
                     .text_color(muted),
                 )
@@ -420,7 +423,7 @@ impl AppView {
                             .text_xs()
                             .text_color(muted),
                     )
-                    .child(Self::field_label("Название", muted))
+                    .child(Self::field_label(t!("vaults.field_name"), muted))
                     .child(Input::new(&self.vault_form.name))
                     .child(Input::new(&self.vault_form.password))
                     .child(Input::new(&self.vault_form.repeat))
@@ -430,9 +433,9 @@ impl AppView {
                                 .ghost()
                                 .xsmall()
                                 .selected(self.vault_form.import)
-                                .label(SharedString::from(format!(
-                                    "Будет импортировано записей из hosts.json: {import_count}"
-                                )))
+                                .label(SharedString::from(
+                                    t!("vaults.import_entries", count = import_count).to_string(),
+                                ))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.vault_form.import = !this.vault_form.import;
                                     cx.notify();
@@ -443,9 +446,9 @@ impl AppView {
                         Button::new("vault-create")
                             .w_full()
                             .label(if self.vault_busy {
-                                "Подбор параметров Argon2id…"
+                                t!("vaults.tuning").to_string()
                             } else {
-                                "Создать хранилище"
+                                t!("vaults.create").to_string()
                             })
                             .main_action(verdict.is_ok() && !self.vault_busy)
                             .on_click(
@@ -457,7 +460,7 @@ impl AppView {
                             Button::new("vault-create-cancel")
                                 .ghost()
                                 .xsmall()
-                                .label("Отмена")
+                                .label(t!("vaults.cancel").to_string())
                                 .disabled(self.vault_busy)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.cancel_new_vault(window, cx)
@@ -477,7 +480,7 @@ impl AppView {
                 v_flex()
                     .gap_2()
                     .child(
-                        Label::new(vault_ui::RECOVERY_EXPLAINER)
+                        Label::new(vault_ui::recovery_explainer())
                             .text_xs()
                             .text_color(warning),
                     )
@@ -512,8 +515,8 @@ impl AppView {
                             .ghost()
                             .xsmall()
                             .selected(confirmed)
-                            .label("Фраза восстановления сохранена")
-                            .tooltip("Повторно фраза не отображается")
+                            .label(t!("vaults.recovery_saved").to_string())
+                            .tooltip(t!("vaults.recovery_saved_tooltip").to_string())
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 if let Some(Stage::Recovery { confirmed, .. }) = &mut this.stage {
                                     *confirmed = !*confirmed;
@@ -524,11 +527,11 @@ impl AppView {
                     .child(
                         Button::new("vault-code-done")
                             .w_full()
-                            .label("Продолжить")
+                            .label(t!("vaults.continue").to_string())
                             .tooltip(if confirmed {
-                                "Перейти к хранилищу"
+                                t!("vaults.continue_ready").to_string()
                             } else {
-                                "Подтвердите сохранение кода восстановления"
+                                t!("vaults.continue_confirm").to_string()
                             })
                             .main_action(confirmed)
                             .on_click(
@@ -544,22 +547,22 @@ impl AppView {
             }
 
             Stage::Unlock if self.os_unlocking.contains(&self.vaults[self.current].id) => v_flex().gap_2().child(
-                Label::new("Разблокировка ключом этого компьютера…")
+                Label::new(t!("vaults.unlocking_os").to_string())
                     .text_sm()
                     .text_color(muted),
             ),
 
             Stage::Unlock => v_flex()
                 .gap_2()
-                .child(Label::new(stage.subtitle()).text_xs().text_color(muted))
+                .child(Label::new(SharedString::from(stage.subtitle())).text_xs().text_color(muted))
                 .child(Input::new(&self.vault_form.password))
                 .when(!self.vault().has_os_key(), |this| {
                     this.child(
                         gpui_kit::component::checkbox::Checkbox::new("vault-remember")
                             .small()
-                            .label("Не спрашивать пароль на этом компьютере")
+                            .label(t!("vaults.remember").to_string())
                             .checked(self.vault_form.remember)
-                            .tooltip("Ключ сохранится в системном хранилище учётных данных: Keychain (macOS), диспетчер учётных данных (Windows), Secret Service (Linux). Отключить можно в Настройках → Безопасность.")
+                            .tooltip(t!("vaults.remember_tooltip").to_string())
                             .on_click(cx.listener(|this, checked: &bool, _window, cx| {
                                 this.vault_form.remember = *checked;
                                 cx.notify();
@@ -570,18 +573,16 @@ impl AppView {
                     Button::new("vault-unlock")
                         .w_full()
                         .label(if self.vault_busy {
-                            "Разблокировка…"
+                            t!("vaults.unlocking").to_string()
                         } else {
-                            "Разблокировать"
+                            t!("vaults.unlock").to_string()
                         })
                         .main_action(!self.vault_busy)
                         .on_click(cx.listener(|this, _, window, cx| this.unlock_vault(window, cx))),
                 )
                 .when(self.vault_busy, |this| {
                     this.child(
-                        Label::new(
-                            "Вычисление ключа из пароля занимает около секунды — это защита от перебора.",
-                        )
+                        Label::new(t!("vaults.derive_note").to_string())
                         .text_xs()
                         .text_color(muted),
                     )
@@ -591,10 +592,8 @@ impl AppView {
                         Button::new("vault-unlock-os")
                             .outline()
                             .w_full()
-                            .label("Разблокировать без пароля")
-                            .tooltip(
-                                "Ключом этого компьютера из системного хранилища учётных данных",
-                            )
+                            .label(t!("vaults.unlock_nopass").to_string())
+                            .tooltip(t!("vaults.unlock_nopass_tooltip").to_string())
                             .disabled(self.vault_busy)
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 let id = this.current_id();
@@ -606,8 +605,8 @@ impl AppView {
                     Button::new("vault-forgot")
                         .ghost()
                         .xsmall()
-                        .label("Забыли пароль?")
-                        .tooltip("Разблокировать с помощью кода восстановления")
+                        .label(t!("vaults.forgot").to_string())
+                        .tooltip(t!("vaults.forgot_tooltip").to_string())
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.stage = Some(Stage::UnlockWithCode);
                             this.error = None;
@@ -618,9 +617,7 @@ impl AppView {
             Stage::UnlockWithCode => v_flex()
                 .gap_2()
                 .child(
-                    Label::new(
-                        "Введите 12 или 24 слова английского словаря BIP39 в том порядке, в каком они были выданы при создании хранилища. Регистр не учитывается. Код старого формата (XXXX-XXXX-…) по-прежнему принимается.",
-                    )
+                    Label::new(t!("vaults.code_hint").to_string())
                     .text_xs()
                     .text_color(muted),
                 )
@@ -629,9 +626,9 @@ impl AppView {
                     Button::new("vault-unlock-code")
                         .w_full()
                         .label(if self.vault_busy {
-                            "Разблокировка…"
+                            t!("vaults.unlocking").to_string()
                         } else {
-                            "Разблокировать"
+                            t!("vaults.unlock").to_string()
                         })
                         .main_action(!self.vault_busy)
                         .on_click(
@@ -642,7 +639,7 @@ impl AppView {
                     Button::new("vault-back")
                         .ghost()
                         .xsmall()
-                        .label("Вход по паролю")
+                        .label(t!("vaults.sign_in_password").to_string())
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.stage = Some(Stage::Unlock);
                             this.error = None;
@@ -657,10 +654,10 @@ impl AppView {
             .when(named, |this| {
                 this.child(
                     div().px_3().pb_2().child(
-                        Label::new(SharedString::from(format!(
-                            "Хранилище: {}",
-                            self.vaults[self.current].name
-                        )))
+                        Label::new(SharedString::from(
+                            t!("vaults.vault_named", name = self.vaults[self.current].name)
+                                .to_string(),
+                        ))
                         .text_xs()
                         .text_color(muted),
                     ),

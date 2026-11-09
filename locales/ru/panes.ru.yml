@@ -1,0 +1,7 @@
+panes:
+  session_start_failed: "Не удалось запустить сеанс."
+  disconnected: "Отключено"
+  reconnect: "Переподключиться"
+  close_pane: "Закрыть панель"
+  connection_for_new_pane: "Подключение для новой панели"
+  current_host: "Текущий хост"

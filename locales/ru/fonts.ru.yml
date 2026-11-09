@@ -1,0 +1,13 @@
+fonts:
+  auto: "Автоматически"
+  no_icons: "Без значков"
+  system: "Системный"
+  search: "Найти шрифт"
+  icons_bundled: "Значки из встроенного набора Nerd Fonts 3 (как в kitty)."
+  icons_from: "Значки берутся из «%{name}»."
+  icons_in_font: "Значки — только те, что есть в шрифте терминала."
+  icons_none: "Значков нет: промпты с Nerd Font будут показывать пустые квадраты."
+  title: "Шрифты"
+  terminal: "Терминал"
+  terminal_icons: "Значки в терминале"
+  interface: "Интерфейс"

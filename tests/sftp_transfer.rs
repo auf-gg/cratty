@@ -20,14 +20,14 @@ fn connect(sshd: &DockerSshd) -> SftpHandle {
         AuthMethod::Password(PASSWORD.into()),
     );
     config.host_key_policy = HostKeyPolicy::Fingerprints(vec![sshd.fingerprint()]);
-    spawn_sftp(config).expect("поток sftp")
+    spawn_sftp(config).expect("sftp thread")
 }
 
 async fn next(handle: &mut SftpHandle) -> FromSftp {
     tokio::time::timeout(DEADLINE, handle.events.next())
         .await
-        .expect("sftp молчит")
-        .expect("канал событий закрыт")
+        .expect("sftp is silent")
+        .expect("event channel closed")
 }
 
 async fn ready(handle: &mut SftpHandle) -> String {
@@ -35,7 +35,7 @@ async fn ready(handle: &mut SftpHandle) -> String {
         match next(handle).await {
             FromSftp::Ssh(FromSsh::Connected { .. }) => {}
             FromSftp::Ready { home } => return home,
-            other => panic!("ждали Ready, пришло {other:?}"),
+            other => panic!("expected Ready, got {other:?}"),
         }
     }
 }
@@ -44,11 +44,11 @@ async fn list(handle: &mut SftpHandle, path: &str) -> Vec<RemoteEntry> {
     handle
         .commands
         .unbounded_send(ToSftp::List { path: path.into() })
-        .expect("команда");
+        .expect("command");
     loop {
         match next(handle).await {
             FromSftp::Listing { entries, .. } => return entries,
-            FromSftp::Failed(error) => panic!("список не получен: {error}"),
+            FromSftp::Failed(error) => panic!("listing failed: {error}"),
             _ => {}
         }
     }
@@ -88,9 +88,9 @@ fn read(path: &Path) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn zagruzka_i_skachivanie_kataloga_tuda_i_obratno() {
+async fn directory_upload_and_download_round_trip() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — тест против настоящего sshd пропущен");
+        eprintln!("docker unavailable — test against a real sshd skipped");
         return;
     };
     let mut handle = connect(&sshd);
@@ -101,16 +101,16 @@ async fn zagruzka_i_skachivanie_kataloga_tuda_i_obratno() {
         .into_iter()
         .map(|e| e.name)
         .collect();
-    assert!(names.contains(&"файл.txt".to_string()), "{names:?}");
-    assert!(names.contains(&"каталог".to_string()), "{names:?}");
+    assert!(names.contains(&"file.txt".to_string()), "{names:?}");
+    assert!(names.contains(&"folder".to_string()), "{names:?}");
 
     let source = temp("up");
-    std::fs::create_dir_all(source.join("вложенный")).expect("каталог");
-    std::fs::write(source.join("привет.txt"), "привет, сервер\n").expect("файл");
+    std::fs::create_dir_all(source.join("nested")).expect("directory");
+    std::fs::write(source.join("hello.txt"), "hello, server\n").expect("file");
     let big = noise(3 * 1024 * 1024 + 17);
-    std::fs::write(source.join("вложенный").join("big.bin"), &big).expect("файл");
+    std::fs::write(source.join("nested").join("big.bin"), &big).expect("file");
 
-    let remote = format!("{home}/загрузка");
+    let remote = format!("{home}/upload");
     handle
         .commands
         .unbounded_send(ToSftp::Upload {
@@ -119,14 +119,14 @@ async fn zagruzka_i_skachivanie_kataloga_tuda_i_obratno() {
             remote: remote.clone(),
             overwrite: false,
         })
-        .expect("команда");
+        .expect("command");
     let (result, reports) = finished(&mut handle, 1).await;
     assert_eq!(result, Ok(()));
-    assert!(reports >= 1, "не было ни одного отчёта о ходе");
+    assert!(reports >= 1, "there was not a single progress report");
 
     let uploaded = list(&mut handle, &remote).await;
-    let big_entry = list(&mut handle, &format!("{remote}/вложенный")).await;
-    assert!(uploaded.iter().any(|e| e.name == "вложенный" && e.is_dir));
+    let big_entry = list(&mut handle, &format!("{remote}/nested")).await;
+    assert!(uploaded.iter().any(|e| e.name == "nested" && e.is_dir));
     assert_eq!(big_entry[0].size, big.len() as u64);
 
     handle
@@ -137,7 +137,7 @@ async fn zagruzka_i_skachivanie_kataloga_tuda_i_obratno() {
             remote: remote.clone(),
             overwrite: false,
         })
-        .expect("команда");
+        .expect("command");
     assert!(finished(&mut handle, 2).await.0.is_err());
 
     let back = temp("down");
@@ -149,25 +149,25 @@ async fn zagruzka_i_skachivanie_kataloga_tuda_i_obratno() {
             local: back.clone(),
             overwrite: false,
         })
-        .expect("команда");
+        .expect("command");
     assert_eq!(finished(&mut handle, 3).await.0, Ok(()));
-    assert_eq!(read(&back.join("привет.txt")), b"\xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82, \xd1\x81\xd0\xb5\xd1\x80\xd0\xb2\xd0\xb5\xd1\x80\n");
+    assert_eq!(read(&back.join("hello.txt")), b"hello, server\n");
     assert!(
-        read(&back.join("вложенный").join("big.bin")) == big,
-        "большой файл испорчен"
+        read(&back.join("nested").join("big.bin")) == big,
+        "large file is corrupted"
     );
-    assert!(!back.join("вложенный").join("big.bin.part").exists());
+    assert!(!back.join("nested").join("big.bin.part").exists());
 
     handle
         .commands
         .unbounded_send(ToSftp::Remove {
             path: remote.clone(),
         })
-        .expect("команда");
+        .expect("command");
     loop {
         match next(&mut handle).await {
             FromSftp::Changed { .. } => break,
-            FromSftp::Failed(error) => panic!("не удалилось: {error}"),
+            FromSftp::Failed(error) => panic!("deletion failed: {error}"),
             _ => {}
         }
     }
@@ -176,25 +176,25 @@ async fn zagruzka_i_skachivanie_kataloga_tuda_i_obratno() {
         .into_iter()
         .map(|e| e.name)
         .collect();
-    assert!(!names.contains(&"загрузка".to_string()));
+    assert!(!names.contains(&"upload".to_string()));
 
     let _ = std::fs::remove_dir_all(&source);
     let _ = std::fs::remove_dir_all(&back);
 }
 
 #[tokio::test]
-async fn otmena_ne_ostavlyaet_obrubka_na_servere() {
+async fn cancel_leaves_no_stub_on_server() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — тест против настоящего sshd пропущен");
+        eprintln!("docker unavailable — test against a real sshd skipped");
         return;
     };
     let mut handle = connect(&sshd);
     let home = ready(&mut handle).await;
 
     let source = temp("cancel");
-    std::fs::create_dir_all(&source).expect("каталог");
+    std::fs::create_dir_all(&source).expect("directory");
     let file = source.join("huge.bin");
-    std::fs::write(&file, noise(64 * 1024 * 1024)).expect("файл");
+    std::fs::write(&file, noise(64 * 1024 * 1024)).expect("file");
 
     let remote = format!("{home}/huge.bin");
     handle
@@ -205,21 +205,21 @@ async fn otmena_ne_ostavlyaet_obrubka_na_servere() {
             remote: remote.clone(),
             overwrite: false,
         })
-        .expect("команда");
+        .expect("command");
 
     loop {
         match next(&mut handle).await {
             FromSftp::Progress { id: 7, .. } => break,
-            FromSftp::Finished { id: 7, result } => panic!("успело закончиться: {result:?}"),
+            FromSftp::Finished { id: 7, result } => panic!("finished too early: {result:?}"),
             _ => {}
         }
     }
     handle
         .commands
         .unbounded_send(ToSftp::Cancel { id: 7 })
-        .expect("команда");
+        .expect("command");
     let (result, _) = finished(&mut handle, 7).await;
-    assert_eq!(result, Err("отменено".to_string()));
+    assert_eq!(result, Err("cancelled".to_string()));
 
     let names: Vec<String> = list(&mut handle, &home)
         .await
@@ -228,7 +228,7 @@ async fn otmena_ne_ostavlyaet_obrubka_na_servere() {
         .collect();
     assert!(
         !names.contains(&"huge.bin".to_string()),
-        "обрубок остался: {names:?}"
+        "partial file left behind: {names:?}"
     );
 
     let _ = std::fs::remove_dir_all(&source);
@@ -242,11 +242,11 @@ async fn read_file(handle: &SftpHandle, path: &str) -> Result<Vec<u8>, String> {
             path: path.into(),
             reply,
         })
-        .expect("команда");
+        .expect("command");
     tokio::time::timeout(DEADLINE, answer)
         .await
-        .expect("нет ответа")
-        .expect("ответ потерян")
+        .expect("no reply")
+        .expect("reply lost")
 }
 
 async fn write_file(handle: &SftpHandle, path: &str, data: &[u8]) -> Result<(), String> {
@@ -258,17 +258,17 @@ async fn write_file(handle: &SftpHandle, path: &str, data: &[u8]) -> Result<(), 
             data: data.to_vec(),
             reply,
         })
-        .expect("команда");
+        .expect("command");
     tokio::time::timeout(DEADLINE, answer)
         .await
-        .expect("нет ответа")
-        .expect("ответ потерян")
+        .expect("no reply")
+        .expect("reply lost")
 }
 
 #[tokio::test]
-async fn fayly_po_soedineniyu_terminala_i_pravka_fayla() {
+async fn files_over_terminal_connection_and_file_edit() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — тест против настоящего sshd пропущен");
+        eprintln!("docker unavailable — test against a real sshd skipped");
         return;
     };
     let addr = sshd.addr();
@@ -279,27 +279,27 @@ async fn fayly_po_soedineniyu_terminala_i_pravka_fayla() {
         AuthMethod::Password(PASSWORD.into()),
     );
     config.host_key_policy = HostKeyPolicy::Fingerprints(vec![sshd.fingerprint()]);
-    let mut session = cratty::ssh::spawn_ssh(config).expect("поток сессии");
+    let mut session = cratty::ssh::spawn_ssh(config).expect("session thread");
 
     loop {
         let event = tokio::time::timeout(DEADLINE, session.events.next())
             .await
-            .expect("сессия молчит");
+            .expect("session is silent");
         match event {
             Some(FromSsh::Connected { .. }) => break,
             Some(FromSsh::Output(_)) => {}
-            other => panic!("ждали Connected, пришло {other:?}"),
+            other => panic!("expected Connected, got {other:?}"),
         }
     }
 
     let mut handle = session.open_sftp();
     let home = match next(&mut handle).await {
         FromSftp::Ready { home } => home,
-        other => panic!("ждали Ready без повторного входа, пришло {other:?}"),
+        other => panic!("expected Ready without signing in again, got {other:?}"),
     };
 
-    let path = format!("{home}/заметка.conf");
-    let first = "listen 80;\nимя сервера;\n";
+    let path = format!("{home}/note.conf");
+    let first = "listen 80;\nserver_name example;\n";
     assert_eq!(write_file(&handle, &path, first.as_bytes()).await, Ok(()));
     assert_eq!(
         read_file(&handle, &path).await,
@@ -310,8 +310,8 @@ async fn fayly_po_soedineniyu_terminala_i_pravka_fayla() {
     assert_eq!(read_file(&handle, &path).await, Ok(b"x\n".to_vec()));
 
     let big = temp("big-edit");
-    std::fs::create_dir_all(&big).expect("каталог");
-    std::fs::write(big.join("big.bin"), noise(5 * 1024 * 1024)).expect("файл");
+    std::fs::create_dir_all(&big).expect("directory");
+    std::fs::write(big.join("big.bin"), noise(5 * 1024 * 1024)).expect("file");
     handle
         .commands
         .unbounded_send(ToSftp::Upload {
@@ -320,10 +320,10 @@ async fn fayly_po_soedineniyu_terminala_i_pravka_fayla() {
             remote: format!("{home}/big.bin"),
             overwrite: true,
         })
-        .expect("команда");
+        .expect("command");
     assert_eq!(finished(&mut handle, 1).await.0, Ok(()));
     let refused = read_file(&handle, &format!("{home}/big.bin")).await;
-    assert!(refused.is_err_and(|error| error.contains("велик")));
+    assert!(refused.is_err_and(|error| error.contains("too large")));
 
     assert!(read_file(&handle, &home).await.is_err());
 

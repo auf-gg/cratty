@@ -84,18 +84,18 @@ pub struct TerminalElement {
     selection_color: Rgb,
     selection_foreground: Rgb,
     cursor_color: Rgb,
-    /// Шрифт значков. Значки рисуются отдельно, вписанными в ячейку: у шрифтов
-    /// значков ширина глифа больше ячейки, и в строке они наезжали бы на соседей.
+    /// Icon font. Icons are drawn separately, fitted into the cell: icon fonts
+    /// have glyphs wider than a cell, and in a line they would overlap their neighbors.
     icons: Option<Font>,
 }
 
-/// Значок в ячейке сетки: рисуется поверх строки, на месте пробела.
+/// Icon in a grid cell: drawn over the line, in place of a space.
 struct IconCell {
     row: usize,
     column: usize,
     character: char,
     color: Hsla,
-    /// За значком пробел: значок можно растянуть на две ячейки, как в kitty.
+    /// The icon is followed by a space: it can be stretched over two cells, as in kitty.
     wide: bool,
 }
 
@@ -172,7 +172,7 @@ impl TerminalElement {
                 let start = text.len();
                 let width = cell_width(character);
                 if self.icons.is_some() && is_icon(character) {
-                    // В строке — пробел с тем же фоном, сам значок дорисуем.
+                    // In the line — a space with the same background; the icon itself is drawn on top.
                     text.push(' ');
                     let fg = if selected {
                         self.selection_foreground
@@ -203,7 +203,7 @@ impl TerminalElement {
             }
         }
 
-        // Значок, за которым пробел, займёт и его ячейку.
+        // An icon followed by a space also takes that space's cell.
         let row_text: Vec<char> = text.chars().collect();
         for icon in icons.iter_mut().filter(|icon| icon.row == row) {
             icon.wide = row_text.get(icon.column + 1) == Some(&' ');
@@ -280,7 +280,7 @@ impl TerminalElement {
 }
 
 impl TerminalElement {
-    /// Значок, уменьшенный до ширины ячейки и отцентрованный по высоте.
+    /// Icon scaled down to the cell width and vertically centered.
     fn paint_icon(
         &self,
         icon: &IconCell,
@@ -331,7 +331,7 @@ impl TerminalElement {
     }
 }
 
-/// Значки Nerd Font живут в областях частного использования Юникода.
+/// Nerd Font icons live in the Unicode private use areas.
 fn is_icon(character: char) -> bool {
     matches!(
         character as u32,
@@ -339,8 +339,8 @@ fn is_icon(character: char) -> bool {
     )
 }
 
-/// Разделители powerline рисуем фигурами на всю ячейку, как kitty: глифом
-/// их не вписать в ячейку без зазоров между цветными сегментами промпта.
+/// Powerline separators are drawn as shapes filling the cell, like kitty: a glyph
+/// cannot be fitted into a cell without gaps between the colored prompt segments.
 fn paint_powerline(
     character: char,
     cell: Bounds<Pixels>,
@@ -349,7 +349,7 @@ fn paint_powerline(
 ) -> bool {
     use gpui_kit::PathBuilder;
 
-    // Чуть шире ячейки, чтобы на стыке с соседним фоном не было щели.
+    // Slightly wider than the cell so there is no gap at the border with the neighboring background.
     let overlap = px(0.5);
     let (left, right) = (
         cell.origin.x - overlap,
@@ -365,7 +365,7 @@ fn paint_powerline(
         _ => return false,
     };
     match character {
-        // ▶ и тонкая стрелка вправо
+        // ▶ and thin right arrow
         '\u{e0b0}' => {
             builder.move_to(point(left, top));
             builder.line_to(point(right, middle));
@@ -377,7 +377,7 @@ fn paint_powerline(
             builder.line_to(point(cell.origin.x + width, middle));
             builder.line_to(point(cell.origin.x, bottom));
         }
-        // ◀ и тонкая стрелка влево
+        // ◀ and thin left arrow
         '\u{e0b2}' => {
             builder.move_to(point(right, top));
             builder.line_to(point(left, middle));
@@ -389,7 +389,7 @@ fn paint_powerline(
             builder.line_to(point(cell.origin.x, middle));
             builder.line_to(point(cell.origin.x + width, bottom));
         }
-        // Полукруг выпуклостью вправо
+        // Semicircle bulging right
         '\u{e0b4}' => {
             builder.move_to(point(left, top));
             builder.curve_to(point(left, bottom), point(right + width, middle));
@@ -402,7 +402,7 @@ fn paint_powerline(
                 point(cell.origin.x + width * 2., middle),
             );
         }
-        // Полукруг выпуклостью влево
+        // Semicircle bulging left
         '\u{e0b6}' => {
             builder.move_to(point(right, top));
             builder.curve_to(point(right, bottom), point(left - width, middle));

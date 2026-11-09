@@ -1,5 +1,5 @@
-//! Выбор оформления: режим (системный, тёмный, светлый), палитры для каждого
-//! режима и схематичное окно-превью палитры.
+//! Appearance picker: mode (system, dark, light), palettes for each
+//! mode, and a schematic preview window of the palette.
 
 use super::*;
 use crate::ui::theme::{self, Appearance, ThemeEntry};
@@ -48,14 +48,18 @@ impl AppView {
                         .ghost()
                         .small()
                         .selected(appearance == mode)
-                        .label(mode.title())
+                        .label(match mode {
+                            Appearance::System => t!("theme.mode_system"),
+                            Appearance::Dark => t!("theme.mode_dark"),
+                            Appearance::Light => t!("theme.mode_light"),
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.set_appearance(mode, window, cx)
                         }))
                 }),
             );
 
-        let mut section = Self::section("Оформление", cx)
+        let mut section = Self::section(t!("theme.title"), cx)
             .child(modes)
             .children(shown.map(|entry| Self::theme_preview_window(&entry)));
 
@@ -88,9 +92,9 @@ impl AppView {
             .pt_2()
             .child(Self::hint(
                 if dark {
-                    "Палитра тёмного режима"
+                    t!("theme.palette_dark")
                 } else {
-                    "Палитра светлого режима"
+                    t!("theme.palette_light")
                 },
                 cx,
             ))
@@ -98,7 +102,7 @@ impl AppView {
             .into_any_element()
     }
 
-    /// Плашка темы, нарисованная её же цветами: фон, текст и три акцента.
+    /// Theme chip drawn in its own colors: background, text and three accents.
     fn palette_chip(
         &self,
         entry: ThemeEntry,
@@ -148,8 +152,8 @@ impl AppView {
             .into_any_element()
     }
 
-    /// Схематичное окно в цветах темы: заголовок, боковая панель со списком,
-    /// терминал с цветным выводом и кнопка акцента.
+    /// Schematic window in the theme's colors: title bar, side panel with a list,
+    /// terminal with colored output and an accent button.
     fn theme_preview_window(entry: &ThemeEntry) -> AnyElement {
         let colors = &entry.colors;
         let ansi = |index: u8| {

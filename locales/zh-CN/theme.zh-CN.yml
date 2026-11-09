@@ -1,0 +1,7 @@
+theme:
+  title: "外观"
+  mode_system: "跟随系统"
+  mode_dark: "深色"
+  mode_light: "浅色"
+  palette_dark: "深色模式配色"
+  palette_light: "浅色模式配色"

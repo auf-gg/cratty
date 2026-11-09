@@ -1,0 +1,21 @@
+icons:
+  search_placeholder: "Search icons"
+  catalog_unchanged: "Catalog unchanged."
+  catalog_updated:
+    one: "Catalog updated: %{count} icon."
+    other: "Catalog updated: %{count} icons."
+  choose: "Choose icon"
+  default: "Default"
+  catalog_loading: "Loading catalog…"
+  catalog_none: "No catalog yet: click \"Refresh\"."
+  nothing_found: "Nothing found."
+  more: "And %{count} more — refine the search."
+  count:
+    one: "%{count} icon"
+    other: "%{count} icons"
+  title: "Icon"
+  refresh: "Refresh catalog"
+  app_icons_note: "App icons. The chosen one is downloaded into the vault and visible offline."
+  colored: "Colored icon — one variant for any theme"
+  cancel: "Cancel"
+  downloading: "Downloading…"

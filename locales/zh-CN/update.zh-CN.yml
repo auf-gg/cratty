@@ -1,0 +1,7 @@
+update:
+  downloading: "正在下载… %{percent}%"
+  install: "更新并重启"
+  available: "有新版本 %{version} 可用"
+  installed: "当前已安装：%{version}。已打开的会话将被关闭。"
+  failed: "更新失败：%{error}"
+  later: "稍后"

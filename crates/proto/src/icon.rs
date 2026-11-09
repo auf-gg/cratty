@@ -1,31 +1,31 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Значок, скачанный из внешнего каталога, вместе с байтами — чтобы список
-/// хостов выглядел так же и без сети. Хост или группа ссылаются на него
-/// строкой [`IconRecord::key`], например `selfhst:github`.
+/// An icon downloaded from an external catalog, stored with its bytes so the list
+/// of hosts looks the same offline. A host or group references it
+/// by the string [`IconRecord::key`], for example `selfhst:github`.
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IconRecord {
-    /// Откуда значок: пока только `selfhst`.
+    /// Where the icon comes from: only `selfhst` for now.
     #[serde(default)]
     pub source: String,
-    /// Имя значка в каталоге.
+    /// Icon name in the catalog.
     #[serde(default)]
     pub name: String,
-    /// Формат байтов: `svg` или `png`.
+    /// Byte format: `svg` or `png`.
     #[serde(default)]
     pub format: String,
-    /// Только цветной вариант, одинаковый в любой теме. Тогда светлого и
-    /// тёмного в записи нет, а ключ значка оканчивается на `:color`.
+    /// Color variant only, identical in any theme. Then there is no light or
+    /// dark variant in the record, and the icon key ends with `:color`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub colored: bool,
-    /// Цветной вариант: у цветного значка — единственный, у остальных — запасной,
-    /// когда светлого или тёмного в каталоге нет.
+    /// Color variant: the only one for a color icon, a fallback for the rest
+    /// when the catalog has no light or dark one.
     #[serde(default, with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
     pub color: Vec<u8>,
-    /// Светлый (белый) вариант для тёмной темы; пусто — его нет в каталоге.
+    /// Light (white) variant for the dark theme; empty — not in the catalog.
     #[serde(default, with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
     pub light: Vec<u8>,
-    /// Тёмный вариант для светлой темы; пусто — его нет.
+    /// Dark variant for the light theme; empty — none.
     #[serde(default, with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
     pub dark: Vec<u8>,
 }
@@ -36,7 +36,7 @@ impl core::fmt::Debug for IconRecord {
     }
 }
 
-/// Какой вариант значка показать.
+/// Which icon variant to show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IconVariant {
     Color,
@@ -49,7 +49,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl IconRecord {
-    /// Ключ, которым на значок ссылаются хосты и группы.
+    /// Key by which hosts and groups reference the icon.
     pub fn key(&self) -> String {
         Self::key_of(&self.source, &self.name, self.colored)
     }
@@ -62,7 +62,7 @@ impl IconRecord {
         }
     }
 
-    /// Есть ли что показать в обеих темах.
+    /// Whether there is something to show in both themes.
     pub fn is_complete(&self) -> bool {
         let has = |bytes: &Vec<u8>| !bytes.is_empty() || !self.color.is_empty();
         if self.colored {
@@ -72,8 +72,8 @@ impl IconRecord {
         }
     }
 
-    /// Байты варианта под тему: на тёмном фоне — светлый, на светлом — тёмный.
-    /// Нужного нет — цветной.
+    /// Variant bytes for the theme: light on a dark background, dark on a light one.
+    /// If the needed one is missing, the color one.
     pub fn for_theme(&self, dark_theme: bool) -> (IconVariant, &[u8]) {
         if self.colored {
             return (IconVariant::Color, &self.color);
@@ -123,14 +123,14 @@ mod tests {
     }
 
     #[test]
-    fn variant_vybiraetsya_po_teme() {
+    fn variant_is_chosen_by_theme() {
         let icon = icon();
         assert_eq!(icon.key(), "selfhst:github");
         assert_eq!(
             icon.for_theme(true),
             (IconVariant::Light, &b"<svg light/>"[..])
         );
-        // Тёмного варианта нет — цветной.
+        // No dark variant — use the color one.
         assert_eq!(
             icon.for_theme(false),
             (IconVariant::Color, &b"<svg color/>"[..])
@@ -144,17 +144,17 @@ mod tests {
 
         let mut half = icon;
         half.color.clear();
-        assert!(!half.is_complete(), "для светлой темы показать нечего");
+        assert!(!half.is_complete(), "nothing to show for the light theme");
     }
 
     #[test]
-    fn bayty_v_zapisi_lezhat_base64() {
+    fn bytes_in_record_are_stored_as_base64() {
         let body = crate::RecordBody::Icon(icon());
-        let json = serde_json::to_string(&body).expect("сериализация");
+        let json = serde_json::to_string(&body).expect("serialization");
         assert!(json.contains("PHN2ZyBjb2xvci8+"), "{json}");
         assert!(!json.contains("\"dark\""), "{json}");
         assert_eq!(
-            serde_json::from_str::<crate::RecordBody>(&json).expect("разбор"),
+            serde_json::from_str::<crate::RecordBody>(&json).expect("parse"),
             body
         );
     }

@@ -1,0 +1,5 @@
+ui_settings:
+  no_dir: "Не удалось определить каталог настроек."
+  create_failed: "Не удалось создать %{path}: %{error}"
+  serialize_failed: "Не удалось сериализовать настройки: %{error}"
+  write_failed: "Не удалось записать %{path}: %{error}"

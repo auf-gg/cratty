@@ -1,0 +1,9 @@
+updater:
+  request_failed: "не удалось запросить последний релиз"
+  cut_off: "ответ GitHub оборвался"
+  unexpected: "непонятный ответ GitHub"
+  temp_failed: "не удалось создать временную папку"
+  download_failed: "не удалось скачать обновление"
+  save_failed: "не удалось сохранить обновление"
+  interrupted: "загрузка оборвалась"
+  launch_failed: "не удалось запустить установщик"

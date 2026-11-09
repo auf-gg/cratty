@@ -33,7 +33,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dlina_kadra_ogranichena() {
+    fn frame_length_is_bounded() {
         assert_eq!(frame_len([0, 0, 0, 5]), Ok(5));
         assert_eq!(frame_len([0, 0, 0, 0]), Err(Error::Empty));
         assert!(matches!(
@@ -44,15 +44,15 @@ mod tests {
     }
 
     #[test]
-    fn spisok_klyuchey_tuda_i_obratno() {
+    fn key_list_round_trips() {
         let identities = vec![
-            Identity::new(b"\x00\x00\x00\x0bssh-ed25519".to_vec(), "рабочий"),
+            Identity::new(b"\x00\x00\x00\x0bssh-ed25519".to_vec(), "work"),
             Identity::new(b"blob-2".to_vec(), ""),
         ];
         let frame = identities_answer(&identities);
 
-        let header: [u8; 4] = frame[..4].try_into().expect("заголовок");
-        let len = frame_len(header).expect("длина");
+        let header: [u8; 4] = frame[..4].try_into().expect("header");
+        let len = frame_len(header).expect("length");
         assert_eq!(len, frame.len() - 4);
 
         let body = &frame[4..4 + len];
@@ -60,7 +60,7 @@ mod tests {
     }
 
     #[test]
-    fn zapros_podpisi_tuda_i_obratno() {
+    fn sign_request_round_trips() {
         let mut frame = vec![msg::SIGN_REQUEST];
         for field in [b"key-blob".as_slice(), b"to-be-signed".as_slice()] {
             frame.extend_from_slice(&(field.len() as u32).to_be_bytes());
@@ -68,7 +68,7 @@ mod tests {
         }
         frame.extend_from_slice(&RSA_SHA2_256.to_be_bytes());
 
-        match Request::parse(&frame).expect("разбор") {
+        match Request::parse(&frame).expect("parse") {
             Request::Sign {
                 key_blob,
                 data,
@@ -79,7 +79,7 @@ mod tests {
                 assert_eq!(flags.rsa_hash(), Some(RsaHash::Sha256));
                 assert_eq!(flags.unknown(), 0);
             }
-            other => panic!("ожидалась подпись, пришло {other:?}"),
+            other => panic!("expected a signature, got {other:?}"),
         }
     }
 }

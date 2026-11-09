@@ -13,14 +13,14 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Format(what) => write!(f, "формат записи не разобран: {what}"),
-            Self::Body(what) => write!(f, "тело записи не разобрано: {what}"),
+            Self::Format(what) => write!(f, "record format could not be parsed: {what}"),
+            Self::Body(what) => write!(f, "record body could not be parsed: {what}"),
             Self::EnvelopeMismatch(what) => write!(
                 f,
-                "конверт записи не совпадает с зашифрованным содержимым: {what}"
+                "record envelope does not match the encrypted content: {what}"
             ),
             Self::Vault(error) => write!(f, "{error}"),
-            Self::Rng => f.write_str("операционная система не выдала случайные байты"),
+            Self::Rng => f.write_str("the operating system did not provide random bytes"),
         }
     }
 }

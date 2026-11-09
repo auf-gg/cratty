@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::term::predict::Policy;
@@ -19,30 +20,30 @@ pub struct Settings {
     pub font_size: f32,
     #[serde(default = "default_autolock_minutes")]
     pub autolock_minutes: u32,
-    /// Блокировать ли хранилища самим: по бездействию и после сна.
+    /// Whether to lock the vaults automatically: on inactivity and after sleep.
     #[serde(default = "default_autolock")]
     pub autolock: bool,
     #[serde(default)]
     pub sync_folder: String,
     #[serde(default = "default_prediction")]
     pub prediction: String,
-    /// Старое поле «текущая тема»: читается один раз для переноса, не пишется.
+    /// Old "current theme" field: read once for migration, never written.
     #[serde(default, skip_serializing)]
     pub theme: String,
-    /// «system», «dark» или «light». Пусто — старый файл, переносится из `theme`.
+    /// "system", "dark" or "light". Empty — an old file, migrated from `theme`.
     #[serde(default)]
     pub appearance: String,
     #[serde(default = "default_theme")]
     pub dark_theme: String,
     #[serde(default = "default_light_theme")]
     pub light_theme: String,
-    /// Шрифт терминала; пусто — подобрать самому.
+    /// Terminal font; empty — pick automatically.
     #[serde(default)]
     pub terminal_font: String,
-    /// Шрифт значков в терминале: пусто — сам, «none» — без него.
+    /// Icon font in the terminal: empty — automatic, "none" — no icon font.
     #[serde(default)]
     pub terminal_icons: String,
-    /// Шрифт интерфейса; пусто — системный.
+    /// Interface font; empty — the system one.
     #[serde(default)]
     pub ui_font: String,
     #[serde(default = "default_opacity")]
@@ -55,13 +56,16 @@ pub struct Settings {
     pub panel_width: f32,
     #[serde(default = "default_editor_width")]
     pub editor_width: f32,
-    /// Закреплена ли левая панель. Откреплённая выезжает при наведении на край окна.
+    /// Whether the left panel is pinned. An unpinned one slides out when the pointer reaches the window edge.
     #[serde(default = "default_pinned")]
     pub rail_pinned: bool,
-    /// То же для правой панели сеанса.
+    /// Same for the right session panel.
     #[serde(default = "default_pinned")]
     pub panel_pinned: bool,
-    /// Свёрнутые группы хостов в левой панели: «хранилище/группа».
+    /// Interface language code ("en", "ru", "zh-CN"); empty — follow the system.
+    #[serde(default)]
+    pub language: String,
+    /// Collapsed host groups in the left panel: "vault/group".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collapsed_groups: Vec<String>,
 }
@@ -146,6 +150,7 @@ impl Default for Settings {
             editor_width: default_editor_width(),
             rail_pinned: true,
             panel_pinned: true,
+            language: String::new(),
             collapsed_groups: Vec::new(),
         }
     }
@@ -193,7 +198,7 @@ impl Settings {
         self.appearance = appearance.as_str().into();
     }
 
-    /// Палитра для тёмного или светлого режима.
+    /// Palette for dark or light mode.
     pub fn set_palette(&mut self, id: &str, dark: bool) {
         if dark {
             self.dark_theme = id.into();
@@ -202,7 +207,7 @@ impl Settings {
         }
     }
 
-    /// До режимов была одна тема: светлая «light» или одна из тёмных.
+    /// Before modes there was a single theme: the light "light" or one of the dark ones.
     fn migrate_theme(&mut self) {
         if !self.appearance.is_empty() {
             return;
@@ -285,25 +290,25 @@ pub fn load() -> Settings {
     match serde_json::from_str::<Settings>(&text) {
         Ok(settings) => settings.clamped(),
         Err(error) => {
-            eprintln!("Не удалось разобрать {}: {error}", path.display());
+            eprintln!("Failed to parse {}: {error}", path.display());
             Settings::default()
         }
     }
 }
 
 pub fn save(settings: &Settings) -> Result<(), String> {
-    let path = path().ok_or("Не удалось определить каталог настроек.")?;
+    let path = path().ok_or_else(|| t!("ui_settings.no_dir").to_string())?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Не удалось создать {}: {error}", parent.display()))?;
+            .map_err(|error| t!("ui_settings.create_failed", path = parent.display(), error = error).to_string())?;
     }
 
     let text = serde_json::to_string_pretty(settings)
-        .map_err(|error| format!("Не удалось сериализовать настройки: {error}"))?;
+        .map_err(|error| t!("ui_settings.serialize_failed", error = error).to_string())?;
 
     std::fs::write(&path, text)
-        .map_err(|error| format!("Не удалось записать {}: {error}", path.display()))
+        .map_err(|error| t!("ui_settings.write_failed", path = path.display(), error = error).to_string())
 }
 
 #[cfg(test)]
@@ -349,7 +354,7 @@ mod tests {
             font_size: MAX_FONT_SIZE,
             ..Settings::default()
         };
-        assert!(!settings.nudge_font_size(1.), "выше потолка расти некуда");
+        assert!(!settings.nudge_font_size(1.), "cannot grow above the ceiling");
         assert_eq!(settings.font_size, MAX_FONT_SIZE);
 
         let mut settings = Settings {
@@ -374,28 +379,28 @@ mod tests {
 
     #[test]
     fn an_empty_file_still_yields_working_settings() {
-        let parsed: Settings = serde_json::from_str("{}").expect("не разбирается");
+        let parsed: Settings = serde_json::from_str("{}").expect("fails to parse");
         assert_eq!(parsed.font_size, DEFAULT_FONT_SIZE);
         assert_eq!(parsed.autolock_minutes, DEFAULT_AUTOLOCK_MINUTES);
     }
 
     #[test]
-    fn staraya_tema_perenositsya_v_rezhim() {
-        let dark: Settings = serde_json::from_str(r#"{"theme":"synthwave"}"#).expect("разбор");
+    fn old_theme_is_migrated_to_mode() {
+        let dark: Settings = serde_json::from_str(r#"{"theme":"synthwave"}"#).expect("parse");
         let dark = dark.clamped();
         assert_eq!(dark.appearance, "dark");
         assert_eq!(dark.dark_theme, "synthwave");
 
-        let light: Settings = serde_json::from_str(r#"{"theme":"light"}"#).expect("разбор");
+        let light: Settings = serde_json::from_str(r#"{"theme":"light"}"#).expect("parse");
         assert_eq!(light.clamped().appearance, "light");
 
-        let fresh: Settings = serde_json::from_str("{}").expect("разбор");
+        let fresh: Settings = serde_json::from_str("{}").expect("parse");
         assert_eq!(fresh.clamped().appearance, "system");
 
-        let text = serde_json::to_string(&dark).expect("запись");
+        let text = serde_json::to_string(&dark).expect("write");
         assert!(
             !text.contains("\"theme\""),
-            "старое поле не должно писаться"
+            "the old field must not be written"
         );
     }
 
@@ -421,36 +426,37 @@ mod tests {
             editor_width: 600.0,
             rail_pinned: false,
             panel_pinned: true,
+            language: "zh-CN".into(),
             collapsed_groups: vec!["vault/prod".into()],
         };
-        let text = serde_json::to_string(&settings).expect("не сериализуется");
-        let parsed: Settings = serde_json::from_str(&text).expect("не разбирается");
+        let text = serde_json::to_string(&settings).expect("fails to serialize");
+        let parsed: Settings = serde_json::from_str(&text).expect("fails to parse");
         assert_eq!(parsed, settings);
     }
 
     #[test]
-    fn prozrachnost_v_predelah() {
-        let mut settings: Settings = serde_json::from_str("{}").expect("разбор");
+    fn opacity_within_bounds() {
+        let mut settings: Settings = serde_json::from_str("{}").expect("parse");
         assert_eq!(settings.opacity(), 1.0);
-        assert!(!settings.nudge_opacity(1), "плотнее сплошного некуда");
+        assert!(!settings.nudge_opacity(1), "cannot be more opaque than solid");
         assert!(settings.nudge_opacity(-2));
         assert_eq!(settings.terminal_opacity, 90);
         for _ in 0..30 {
             settings.nudge_opacity(-1);
         }
         assert_eq!(settings.terminal_opacity, MIN_OPACITY);
-        let wild: Settings = serde_json::from_str(r#"{"terminal_opacity":3}"#).expect("разбор");
+        let wild: Settings = serde_json::from_str(r#"{"terminal_opacity":3}"#).expect("parse");
         assert_eq!(wild.clamped().terminal_opacity, MIN_OPACITY);
     }
 
     #[test]
-    fn rezhim_predskazaniya_terpit_opechatki() {
+    fn prediction_mode_tolerates_typos() {
         let parsed: Settings =
-            serde_json::from_str(r#"{"font_size":16,"prediction":"allways"}"#).expect("разбор");
+            serde_json::from_str(r#"{"font_size":16,"prediction":"allways"}"#).expect("parse");
         assert_eq!(parsed.font_size, 16.);
         assert_eq!(parsed.prediction(), Policy::Adaptive);
 
-        let old: Settings = serde_json::from_str(r#"{"font_size":16}"#).expect("разбор");
+        let old: Settings = serde_json::from_str(r#"{"font_size":16}"#).expect("parse");
         assert_eq!(old.prediction(), Policy::Adaptive);
 
         let mut settings = Settings::default();
@@ -459,14 +465,14 @@ mod tests {
     }
 
     #[test]
-    fn nastroyki_i_hranilishche_lezhat_otdelno() {
-        let settings = directory().expect("каталог настроек");
-        let vault = crate::store::VaultStore::default_root().expect("каталог хранилища");
+    fn settings_and_vault_are_stored_separately() {
+        let settings = directory().expect("settings directory");
+        let vault = crate::store::VaultStore::default_root().expect("vault directory");
         assert_ne!(settings, vault);
     }
 
     #[test]
-    fn taymaut_avtoloka_zazhat_v_granicy() {
+    fn autolock_timeout_is_clamped_to_bounds() {
         let too_big = Settings {
             autolock_minutes: 100_000,
             ..Settings::default()
@@ -483,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn taymaut_perevoditsya_v_duration() {
+    fn timeout_converts_to_duration() {
         let settings = Settings {
             autolock_minutes: 15,
             ..Settings::default()
@@ -495,9 +501,9 @@ mod tests {
     }
 
     #[test]
-    fn staryy_fayl_nastroek_chitaetsya() {
+    fn old_settings_file_is_readable() {
         let parsed: Settings =
-            serde_json::from_str(r#"{"font_size":16.0}"#).expect("не разбирается");
+            serde_json::from_str(r#"{"font_size":16.0}"#).expect("fails to parse");
         assert_eq!(parsed.font_size, 16.);
         assert_eq!(parsed.autolock_minutes, DEFAULT_AUTOLOCK_MINUTES);
     }

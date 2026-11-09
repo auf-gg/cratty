@@ -29,15 +29,15 @@ fn address(name: &str) -> srv::Address {
 
 fn start_agent(name: &str) -> srv::Running {
     let key = Arc::new(
-        PrivateKey::random(&mut russh::keys::key::safe_rng(), Algorithm::Ed25519).expect("ключ"),
+        PrivateKey::random(&mut russh::keys::key::safe_rng(), Algorithm::Ed25519).expect("key"),
     );
-    let (running, mut asks) = srv::spawn(address(name)).expect("агент не поднялся");
+    let (running, mut asks) = srv::spawn(address(name)).expect("agent failed to start");
     tokio::spawn(async move {
-        let blob = keys::public_blob(key.public_key()).expect("блоб");
+        let blob = keys::public_blob(key.public_key()).expect("blob");
         while let Some(ask) = asks.next().await {
             match ask {
                 Ask::Identities { reply } => {
-                    let _ = reply.send(vec![Identity::new(blob.clone(), "ключ")]);
+                    let _ = reply.send(vec![Identity::new(blob.clone(), "key")]);
                 }
                 Ask::Sign(ask) => {
                     let _ = ask.reply.send(None);
@@ -67,7 +67,7 @@ async fn wait_shell(session: &mut SshSession) {
     loop {
         let event = tokio::time::timeout(DEADLINE, session.events.next())
             .await
-            .expect("сессия молчит");
+            .expect("session is silent");
         match event {
             Some(FromSsh::Connected { .. }) => {}
             Some(FromSsh::Output(data)) => {
@@ -76,38 +76,38 @@ async fn wait_shell(session: &mut SshSession) {
                     return;
                 }
             }
-            other => panic!("ждали оболочку, получили {other:?}"),
+            other => panic!("expected a shell, got {other:?}"),
         }
     }
 }
 
 #[tokio::test]
-async fn s_probrosom_server_vidit_klyuchi_agenta() {
+async fn with_forwarding_server_sees_agent_keys() {
     let agent = start_agent("on");
     let sshd = FakeSshd::start().await;
-    let mut session = spawn_ssh(config(&sshd, &agent, true)).expect("поток");
+    let mut session = spawn_ssh(config(&sshd, &agent, true)).expect("thread");
     wait_shell(&mut session).await;
 
-    assert!(sshd.agent_requested(), "клиент не попросил проброс");
+    assert!(sshd.agent_requested(), "client did not request forwarding");
     let count = tokio::time::timeout(DEADLINE, sshd.probe_agent())
         .await
-        .expect("агент молчит");
+        .expect("agent is silent");
     assert_eq!(count, Ok(1));
 }
 
 #[tokio::test]
-async fn bez_probrosa_agent_nedostupen_serveru() {
+async fn without_forwarding_agent_is_unavailable_to_server() {
     let agent = start_agent("off");
     let sshd = FakeSshd::start().await;
-    let mut session = spawn_ssh(config(&sshd, &agent, false)).expect("поток");
+    let mut session = spawn_ssh(config(&sshd, &agent, false)).expect("thread");
     wait_shell(&mut session).await;
 
     assert!(!sshd.agent_requested());
     let result = tokio::time::timeout(DEADLINE, sshd.probe_agent())
         .await
-        .expect("клиент не ответил на открытие канала");
+        .expect("client did not answer the channel open");
     assert!(
         result.is_err(),
-        "сервер добрался до агента без проброса: {result:?}"
+        "server reached the agent without forwarding: {result:?}"
     );
 }

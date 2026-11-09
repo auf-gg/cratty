@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use anyhow::{Result, anyhow, bail};
 use vault::Key32;
 use zeroize::Zeroize;
@@ -19,7 +20,7 @@ pub struct OsKeychain;
 impl OsKeychain {
     fn entry(vault_id: &str) -> Result<keyring::Entry> {
         keyring::Entry::new(SERVICE, &entry_name(vault_id))
-            .map_err(|error| anyhow!("хранилище секретов ОС недоступно: {error}"))
+            .map_err(|error| anyhow!("{}", t!("keychain.unavailable", error = error)))
     }
 }
 
@@ -27,7 +28,7 @@ impl KeyStash for OsKeychain {
     fn put(&self, vault_id: &str, key: &Key32) -> Result<()> {
         Self::entry(vault_id)?
             .set_secret(key.as_bytes())
-            .map_err(|error| anyhow!("не записать ключ в хранилище ОС: {error}"))
+            .map_err(|error| anyhow!("{}", t!("keychain.write_failed", error = error)))
     }
 
     fn get(&self, vault_id: &str) -> Result<Option<Key32>> {
@@ -36,18 +37,18 @@ impl KeyStash for OsKeychain {
                 let key = Key32::from_slice(&bytes);
                 bytes.zeroize();
                 Ok(Some(key.map_err(|_| {
-                    anyhow!("в хранилище ОС лежит запись не на 32 байта")
+                    anyhow!("{}", t!("keychain.bad_length"))
                 })?))
             }
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => bail!("не прочитать ключ из хранилища ОС: {error}"),
+            Err(error) => bail!("{}", t!("keychain.read_failed", error = error)),
         }
     }
 
     fn delete(&self, vault_id: &str) -> Result<()> {
         match Self::entry(vault_id)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => bail!("не убрать ключ из хранилища ОС: {error}"),
+            Err(error) => bail!("{}", t!("keychain.remove_failed", error = error)),
         }
     }
 }
@@ -94,7 +95,7 @@ impl KeyStash for MemoryStash {
         let mut entries = self
             .entries
             .lock()
-            .map_err(|_| anyhow!("хранилище-заглушка отравлено паникой"))?;
+            .map_err(|_| anyhow!("stub store poisoned by a panic"))?;
         entries.insert(entry_name(vault_id), key.clone());
         Ok(())
     }
@@ -103,7 +104,7 @@ impl KeyStash for MemoryStash {
         let entries = self
             .entries
             .lock()
-            .map_err(|_| anyhow!("хранилище-заглушка отравлено паникой"))?;
+            .map_err(|_| anyhow!("stub store poisoned by a panic"))?;
         Ok(entries.get(&entry_name(vault_id)).cloned())
     }
 
@@ -111,7 +112,7 @@ impl KeyStash for MemoryStash {
         let mut entries = self
             .entries
             .lock()
-            .map_err(|_| anyhow!("хранилище-заглушка отравлено паникой"))?;
+            .map_err(|_| anyhow!("stub store poisoned by a panic"))?;
         entries.remove(&entry_name(vault_id));
         Ok(())
     }
@@ -122,36 +123,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn imena_zapisey_ne_peresekayutsya() {
+    fn entry_names_do_not_overlap() {
         assert_ne!(entry_name("a"), entry_name("b"));
         assert!(entry_name("vault-1").contains("vault-1"));
     }
 
     #[test]
-    fn zaglushka_vedet_sebya_kak_hranilishche() {
+    fn stub_behaves_like_a_store() {
         let stash = MemoryStash::new();
         let key = Key32::generate().expect("CSPRNG");
 
-        assert!(stash.get("v1").expect("чтение").is_none());
-        stash.put("v1", &key).expect("запись");
-        assert_eq!(stash.get("v1").expect("чтение").as_ref(), Some(&key));
-        assert!(stash.get("v2").expect("чтение").is_none());
+        assert!(stash.get("v1").expect("read").is_none());
+        stash.put("v1", &key).expect("write");
+        assert_eq!(stash.get("v1").expect("read").as_ref(), Some(&key));
+        assert!(stash.get("v2").expect("read").is_none());
 
-        stash.delete("v1").expect("удаление");
-        assert!(stash.get("v1").expect("чтение").is_none());
-        stash.delete("v1").expect("повторное удаление");
+        stash.delete("v1").expect("delete");
+        assert!(stash.get("v1").expect("read").is_none());
+        stash.delete("v1").expect("repeated delete");
     }
 
     #[test]
-    #[ignore = "трогает настоящее хранилище секретов ОС"]
-    fn keychain_operacionnoy_sistemy_hranit_i_otdaet_klyuch() {
+    #[ignore = "touches the real OS secret store"]
+    fn os_keychain_stores_and_returns_key() {
         let stash = OsKeychain;
         let vault_id = format!("test-{}", std::process::id());
         let key = Key32::generate().expect("CSPRNG");
 
-        stash.put(&vault_id, &key).expect("запись");
-        assert_eq!(stash.get(&vault_id).expect("чтение").as_ref(), Some(&key));
-        stash.delete(&vault_id).expect("удаление");
-        assert!(stash.get(&vault_id).expect("чтение").is_none());
+        stash.put(&vault_id, &key).expect("write");
+        assert_eq!(stash.get(&vault_id).expect("read").as_ref(), Some(&key));
+        stash.delete(&vault_id).expect("delete");
+        assert!(stash.get(&vault_id).expect("read").is_none());
     }
 }

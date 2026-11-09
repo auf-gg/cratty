@@ -1,0 +1,5 @@
+sync:
+  folder_error: "Папка синхронизации: %{error}"
+  locked_during: "Хранилище было заблокировано во время синхронизации."
+  received: "Получено записей: %{applied}, локальные новее: %{kept}"
+  and_more: "%{first} (и ещё %{count})"

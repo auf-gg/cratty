@@ -1,0 +1,8 @@
+selfhst:
+  parse_failed: "无法解析 selfh.st 图标目录"
+  empty: "selfh.st 图标目录为空"
+  load_failed: "无法加载 selfh.st 图标目录"
+  not_utf8: "selfh.st 图标目录不是 UTF-8 编码"
+  icon_failed: "无法下载图标 %{name}"
+  cut_off: "响应被截断"
+  too_large: "响应过大"

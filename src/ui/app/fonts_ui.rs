@@ -1,4 +1,4 @@
-//! Выбор шрифтов: терминал, значки в терминале (Nerd Font) и интерфейс.
+//! Font picker: terminal, terminal icons (Nerd Font) and interface.
 
 use super::*;
 use crate::ui::font::{self, MonoFont};
@@ -8,12 +8,20 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 
 type FontSelect = Entity<SelectState<SearchableVec<SharedString>>>;
 
-const AUTO: &str = "Автоматически";
-const NO_ICONS: &str = "Без значков";
-const SYSTEM: &str = "Системный";
+fn auto() -> String {
+    t!("fonts.auto").to_string()
+}
 
-/// Значки Nerd Font, которые обычно рисуют промпты: стрелка powerline,
-/// ветка git, папка, терминал, замок.
+fn no_icons() -> String {
+    t!("fonts.no_icons").to_string()
+}
+
+fn system() -> String {
+    t!("fonts.system").to_string()
+}
+
+/// Nerd Font icons that prompts usually draw: powerline arrow,
+/// git branch, folder, terminal, lock.
 const ICON_SAMPLE: &str = "\u{e0b0} \u{e0a0} \u{f418} \u{f07b} \u{f489} \u{f023}";
 
 pub(super) struct FontPickers {
@@ -33,10 +41,10 @@ enum Slot {
 impl FontPickers {
     pub(super) fn new(settings: &Settings, window: &mut Window, cx: &mut Context<AppView>) -> Self {
         let all = font::installed(cx);
-        let mut make = |first: &[&str], fonts: Vec<String>, current: &str| {
+        let mut make = |first: &[String], fonts: Vec<String>, current: &str| {
             let mut items: Vec<SharedString> = first
                 .iter()
-                .map(|label| SharedString::from(*label))
+                .map(|label| SharedString::from(label.clone()))
                 .collect();
             items.extend(fonts.into_iter().map(SharedString::from));
             let selected = items
@@ -55,17 +63,17 @@ impl FontPickers {
         };
 
         let icons_current = match settings.terminal_icons.trim() {
-            "" => AUTO,
-            font::NO_ICONS => NO_ICONS,
-            name => name,
+            "" => auto(),
+            font::NO_ICONS => no_icons(),
+            name => name.to_string(),
         };
         let terminal = make(
-            &[AUTO],
+            &[auto()],
             font::monospace(&all),
             settings.terminal_font.trim(),
         );
-        let icons = make(&[AUTO, NO_ICONS], font::icon_fonts(&all), icons_current);
-        let ui = make(&[SYSTEM], all, settings.ui_font.trim());
+        let icons = make(&[auto(), no_icons()], font::icon_fonts(&all), &icons_current);
+        let ui = make(&[system()], all, settings.ui_font.trim());
 
         let mut subscribe = |state: &FontSelect, slot: Slot| {
             cx.subscribe_in(
@@ -105,18 +113,20 @@ impl AppView {
         let value = value.as_ref();
         match slot {
             Slot::Terminal => {
-                self.settings.terminal_font = if value == AUTO { "" } else { value }.into();
+                self.settings.terminal_font = if value == auto() { "" } else { value }.into();
             }
             Slot::Icons => {
-                self.settings.terminal_icons = match value {
-                    AUTO => "",
-                    NO_ICONS => font::NO_ICONS,
-                    name => name,
+                self.settings.terminal_icons = if value == auto() {
+                    ""
+                } else if value == no_icons() {
+                    font::NO_ICONS
+                } else {
+                    value
                 }
                 .into();
             }
             Slot::Ui => {
-                self.settings.ui_font = if value == SYSTEM { "" } else { value }.into();
+                self.settings.ui_font = if value == system() { "" } else { value }.into();
             }
         }
         self.error = settings::save(&self.settings).err().map(SharedString::from);
@@ -129,7 +139,7 @@ impl AppView {
         let pickers = &self.font_pickers;
         let mono = MonoFont::get(cx).clone();
         let theme = cx.theme().clone();
-        let field = |title: &'static str| {
+        let field = |title: String| {
             Label::new(title)
                 .text_xs()
                 .text_color(theme.muted_foreground)
@@ -138,24 +148,24 @@ impl AppView {
             Select::new(state)
                 .small()
                 .menu_max_h(px(320.))
-                .search_placeholder("Найти шрифт")
+                .search_placeholder(t!("fonts.search"))
         };
 
         let icons_note: SharedString = match &mono.icons {
             Some(name) if name.as_ref() == font::BUNDLED_ICONS => {
-                "Значки из встроенного набора Nerd Fonts 3 (как в kitty).".into()
+                t!("fonts.icons_bundled").into()
             }
-            Some(name) => format!("Значки берутся из «{name}».").into(),
+            Some(name) => t!("fonts.icons_from", name = name.to_string()).into(),
             None if mono.family.contains("Nerd Font") => {
-                "Значки — только те, что есть в шрифте терминала.".into()
+                t!("fonts.icons_in_font").into()
             }
-            None => "Значков нет: промпты с Nerd Font будут показывать пустые квадраты.".into(),
+            None => t!("fonts.icons_none").into(),
         };
 
-        Self::section("Шрифты", cx)
-            .child(field("Терминал"))
+        Self::section(t!("fonts.title"), cx)
+            .child(field(t!("fonts.terminal").to_string()))
             .child(select(&pickers.terminal))
-            .child(field("Значки в терминале"))
+            .child(field(t!("fonts.terminal_icons").to_string()))
             .child(select(&pickers.icons))
             .child(
                 v_flex()
@@ -168,11 +178,11 @@ impl AppView {
                     .font(mono.font())
                     .text_size(px(self.settings.font_size))
                     .child(SharedString::from("user@host ~/src $ git status"))
-                    .child(SharedString::from("0O 1lI {} [] => != ~ Ёё Жж"))
+                    .child(SharedString::from("0O 1lI {} [] => != ~ Zz Qq"))
                     .child(div().text_color(theme.primary).child(ICON_SAMPLE)),
             )
             .child(Self::hint(icons_note, cx))
-            .child(field("Интерфейс"))
+            .child(field(t!("fonts.interface").to_string()))
             .child(select(&pickers.ui))
             .into_any_element()
     }

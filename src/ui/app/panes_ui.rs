@@ -11,6 +11,8 @@ use gpui_kit::{
     prelude::*, px,
 };
 
+use rust_i18n::t;
+
 use super::{AppView, ROW_TITLE_CHARS, SessionTab, TabKind, shorten};
 use crate::ui::connect;
 use crate::ui::terminal::{TerminalEvent, TerminalView};
@@ -174,7 +176,7 @@ impl AppView {
         let target = connect::resolve(request, &settings);
         let agent = self.agent_address();
         let Some(view) = Self::start_session(&target, &settings, credentials, agent, cx) else {
-            self.error = Some("Не удалось запустить сеанс.".into());
+            self.error = Some(t!("panes.session_start_failed").into());
             cx.notify();
             return None;
         };
@@ -369,7 +371,7 @@ impl AppView {
                         }),
                 )
                 .when(closed, |this| {
-                    this.child(Label::new("Отключено").text_xs().text_color(theme.danger))
+                    this.child(Label::new(t!("panes.disconnected")).text_xs().text_color(theme.danger))
                 })
                 .when(position > 0 && closed, |this| {
                     this.child(
@@ -377,7 +379,7 @@ impl AppView {
                             .ghost()
                             .xsmall()
                             .icon(Icon::empty().path("icons/refresh-cw.svg"))
-                            .tooltip("Переподключиться")
+                            .tooltip(t!("panes.reconnect"))
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.reconnect_pane(index, position - 1, cx)
                             })),
@@ -389,7 +391,7 @@ impl AppView {
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(IconName::Close))
-                            .tooltip("Закрыть панель")
+                            .tooltip(t!("panes.close_pane"))
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.close_pane(index, position - 1, cx)
                             })),
@@ -463,8 +465,8 @@ impl AppView {
                 )
         };
         Some(
-            Self::popover("Подключение для новой панели", px(300.), cx)
-                .child(host_row("split-same".into(), "Текущий хост".into(), None))
+            Self::popover(t!("panes.connection_for_new_pane"), px(300.), cx)
+                .child(host_row("split-same".into(), t!("panes.current_host").to_string(), None))
                 .child(
                     v_flex()
                         .id("split-hosts")
@@ -494,7 +496,7 @@ mod tests {
     use super::grid_columns;
 
     #[test]
-    fn setka_pochti_kvadratnaya() {
+    fn grid_is_almost_square() {
         let got: Vec<usize> = (1..=9).map(grid_columns).collect();
         assert_eq!(got, vec![1, 2, 2, 2, 3, 3, 3, 3, 3]);
     }

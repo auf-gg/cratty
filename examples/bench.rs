@@ -21,56 +21,56 @@ const PARSER_BYTES: usize = 32 * 1024 * 1024;
 const CHUNK: usize = 32 * 1024;
 
 fn main() {
-    println!("сетка {}×{}\n", GRID.cols, GRID.rows);
+    println!("grid {}×{}\n", GRID.cols, GRID.rows);
 
     let parser = bench_parser();
 
     let typical = cat_like_data(256 * 1024);
     let busy = busy_screen();
 
-    let snapshot_typical = bench_snapshot("вывод cat", &typical);
-    let snapshot_busy = bench_snapshot("пёстрый экран", &busy);
-    let frame_typical = bench_frame("вывод cat", &typical);
-    let frame_busy = bench_frame("пёстрый экран", &busy);
-    let element_typical = bench_element("вывод cat", &typical);
-    let element_busy = bench_element("пёстрый экран", &busy);
+    let snapshot_typical = bench_snapshot("cat output", &typical);
+    let snapshot_busy = bench_snapshot("colorful screen", &busy);
+    let frame_typical = bench_frame("cat output", &typical);
+    let frame_busy = bench_frame("colorful screen", &busy);
+    let element_typical = bench_element("cat output", &typical);
+    let element_busy = bench_element("colorful screen", &busy);
 
     println!("\n{:-<62}", "");
-    println!("{:<34}{:>26}", "парсер (поток байт)", parser.summary());
+    println!("{:<34}{:>26}", "parser (byte stream)", parser.summary());
     println!(
         "{:<34}{:>26}",
-        "снимок — вывод cat",
+        "snapshot — cat output",
         snapshot_typical.summary()
     );
     println!(
         "{:<34}{:>26}",
-        "снимок — пёстрый экран",
+        "snapshot — colorful screen",
         snapshot_busy.summary()
     );
     println!(
         "{:<34}{:>26}",
-        "дерево — вывод cat",
+        "tree — cat output",
         frame_typical.summary()
     );
     println!(
         "{:<34}{:>26}",
-        "дерево — пёстрый экран",
+        "tree — colorful screen",
         frame_busy.summary()
     );
     println!(
         "{:<34}{:>26}",
-        "Element — вывод cat",
+        "Element — cat output",
         element_typical.summary()
     );
     println!(
         "{:<34}{:>26}",
-        "Element — пёстрый экран",
+        "Element — colorful screen",
         element_busy.summary()
     );
     println!("{:-<62}", "");
     println!(
-        "\nдерево элементов измерено на NoopTextSystem тестовой платформы:\n\
-         это накладные расходы раскладки и элементов, без шейпинга."
+        "\nthe element tree is measured on the test platform's NoopTextSystem:\n\
+         this is the layout and element overhead, without shaping."
     );
 }
 
@@ -83,8 +83,8 @@ struct Measurement {
 impl Measurement {
     fn summary(&self) -> String {
         match self.throughput {
-            Some(mb) => format!("{mb:.0} МиБ/с"),
-            None => format!("{:.3} мс", self.median.as_secs_f64() * 1000.),
+            Some(mb) => format!("{mb:.0} MiB/s"),
+            None => format!("{:.3} ms", self.median.as_secs_f64() * 1000.),
         }
     }
 
@@ -105,11 +105,11 @@ fn cat_like_data(bytes: usize) -> Vec<u8> {
         line += 1;
         match line % 8 {
             0 => data.extend_from_slice(
-                format!("\x1b[1;32m==> раздел {line}\x1b[0m — заголовок с не-ASCII\r\n").as_bytes(),
+                format!("\x1b[1;32m==> section {line}\x1b[0m — heading with non-ASCII\r\n").as_bytes(),
             ),
             3 => data.extend_from_slice(
                 format!(
-                    "{line:>8}  \x1b[38;5;{}mцветной столбец\x1b[0m  ",
+                    "{line:>8}  \x1b[38;5;{}mcolored column\x1b[0m  ",
                     line % 256
                 )
                 .as_bytes(),
@@ -151,7 +151,7 @@ fn terminal() -> Terminal {
 }
 
 fn bench_parser() -> Measurement {
-    println!("парсер:");
+    println!("parser:");
     let data = cat_like_data(PARSER_BYTES);
     let mut term = terminal();
 
@@ -167,13 +167,13 @@ fn bench_parser() -> Measurement {
 
     let throughput = data.len() as f64 / elapsed.as_secs_f64() / (1024. * 1024.);
     let measurement = Measurement {
-        label: "поток байт",
+        label: "byte stream",
         median: elapsed,
         throughput: Some(throughput),
     };
     println!(
-        "  {:<28}{:.2} с на {} МиБ",
-        "время",
+        "  {:<28}{:.2} s per {} MiB",
+        "time",
         elapsed.as_secs_f64(),
         data.len() / (1024 * 1024)
     );
@@ -182,7 +182,7 @@ fn bench_parser() -> Measurement {
 }
 
 fn bench_snapshot(label: &'static str, screen: &[u8]) -> Measurement {
-    println!("\nснимок сетки — {label}:");
+    println!("\ngrid snapshot — {label}:");
     let mut term = terminal();
     term.advance(screen);
 
@@ -199,14 +199,14 @@ fn bench_snapshot(label: &'static str, screen: &[u8]) -> Measurement {
         .collect();
 
     let measurement = Measurement {
-        label: "медиана",
+        label: "median",
         median: median(samples),
         throughput: None,
     };
     let snapshot = term.snapshot();
     println!(
         "  {:<28}{}",
-        "отрезков в кадре",
+        "spans per frame",
         snapshot
             .lines
             .iter()
@@ -218,7 +218,7 @@ fn bench_snapshot(label: &'static str, screen: &[u8]) -> Measurement {
 }
 
 fn bench_frame(label: &'static str, screen: &[u8]) -> Measurement {
-    println!("\nдерево элементов — {label}:");
+    println!("\nelement tree — {label}:");
 
     let mut term = terminal();
     term.advance(screen);
@@ -258,17 +258,17 @@ fn bench_frame(label: &'static str, screen: &[u8]) -> Measurement {
         .collect();
 
     let measurement = Measurement {
-        label: "медиана",
+        label: "median",
         median: median(samples),
         throughput: None,
     };
-    println!("  {:<28}{elements}", "элементов в кадре");
+    println!("  {:<28}{elements}", "elements per frame");
     measurement.report();
     measurement
 }
 
 fn bench_element(label: &'static str, screen: &[u8]) -> Measurement {
-    println!("\nкастомный Element — {label}:");
+    println!("\ncustom Element — {label}:");
 
     let mut term = terminal();
     term.advance(screen);
@@ -310,11 +310,11 @@ fn bench_element(label: &'static str, screen: &[u8]) -> Measurement {
         .collect();
 
     let measurement = Measurement {
-        label: "медиана",
+        label: "median",
         median: median(samples),
         throughput: None,
     };
-    println!("  {:<28}{}", "элементов в кадре", 1);
+    println!("  {:<28}{}", "elements per frame", 1);
     measurement.report();
     measurement
 }

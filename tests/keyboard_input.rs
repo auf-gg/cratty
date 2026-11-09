@@ -37,7 +37,7 @@ impl Screen {
         config.term = "xterm-256color".into();
         config.pty = START;
 
-        let session = cratty::ssh::spawn_ssh(config).expect("не поднялся поток сессии");
+        let session = cratty::ssh::spawn_ssh(config).expect("session thread failed to start");
         let terminal = Terminal::new(START, Responder::new(session.commands.clone()));
         Self { session, terminal }
     }
@@ -46,14 +46,14 @@ impl Screen {
         self.session
             .commands
             .unbounded_send(ToSsh::Input(Bytes::from(bytes)))
-            .expect("сессия уже закрыта");
+            .expect("session already closed");
     }
 
     fn press(&self, key: Key, mods: Mods) {
         let bytes = self
             .terminal
             .encode_key(key, mods)
-            .unwrap_or_else(|| panic!("{key:?} с {mods:?} ничего не отправляет"));
+            .unwrap_or_else(|| panic!("{key:?} with {mods:?} sends nothing"));
         self.raw(bytes);
     }
 
@@ -68,7 +68,7 @@ impl Screen {
         self.session
             .commands
             .unbounded_send(ToSsh::Resize(size))
-            .expect("сессия уже закрыта");
+            .expect("session already closed");
     }
 
     async fn wait_until(
@@ -89,12 +89,12 @@ impl Screen {
                 Ok(Some(FromSsh::Output(data))) => self.terminal.advance(&data),
                 Ok(Some(FromSsh::Connected { .. } | FromSsh::Forward { .. })) => {}
                 Ok(Some(other @ (FromSsh::NeedSecret { .. } | FromSsh::NeedHostKey { .. }))) => {
-                    panic!("неожиданный диалог {other:?}, пока ждали: {what}")
+                    panic!("unexpected dialog {other:?} while waiting for: {what}")
                 }
                 Ok(Some(FromSsh::Closed(reason))) => {
-                    panic!("сессия закрылась ({reason:?}), пока ждали: {what}")
+                    panic!("session closed ({reason:?}) while waiting for: {what}")
                 }
-                Ok(None) => panic!("канал событий закрылся, пока ждали: {what}"),
+                Ok(None) => panic!("event channel closed while waiting for: {what}"),
                 Err(_) => continue,
             }
 
@@ -105,7 +105,7 @@ impl Screen {
         }
 
         panic!(
-            "не дождались «{what}» за {DEADLINE:?}\nэкран сейчас:\n{}",
+            "timed out waiting for '{what}' after {DEADLINE:?}\nscreen now:\n{}",
             dump(&self.terminal)
         );
     }
@@ -147,47 +147,47 @@ fn painted_width(snapshot: &Snapshot) -> usize {
 #[tokio::test]
 async fn typed_keys_reach_the_shell_and_ctrl_c_interrupts_it() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка ввода в оболочку пропущена");
+        eprintln!("docker unavailable — shell input check skipped");
         return;
     };
 
     let mut screen = Screen::connect(&sshd);
 
-    screen.type_text("echo НАБРАНО-С-КЛАВИАТУРЫ");
+    screen.type_text("echo TYPED-ON-KEYBOARD");
     screen.press(Key::Enter, Mods::NONE);
     screen
-        .wait_until("вывод набранной команды", |snapshot| {
+        .wait_until("output of the typed command", |snapshot| {
             snapshot
                 .lines
                 .iter()
-                .filter(|line| line.text().contains("НАБРАНО-С-КЛАВИАТУРЫ"))
+                .filter(|line| line.text().contains("TYPED-ON-KEYBOARD"))
                 .count()
                 >= 2
         })
         .await;
 
-    screen.type_text("echo ЗАПУЩЕНО && sleep 60");
+    screen.type_text("echo STARTED && sleep 60");
     screen.press(Key::Enter, Mods::NONE);
     screen
-        .wait_until("запуск долгой команды", |snapshot| {
+        .wait_until("start of the long command", |snapshot| {
             snapshot
                 .lines
                 .iter()
-                .filter(|line| line.text().contains("ЗАПУЩЕНО"))
+                .filter(|line| line.text().contains("STARTED"))
                 .count()
                 >= 2
         })
         .await;
     screen.press(Key::Char('c'), Mods::ctrl());
 
-    screen.type_text("echo ПОСЛЕ-ПРЕРЫВАНИЯ");
+    screen.type_text("echo AFTER-INTERRUPT");
     screen.press(Key::Enter, Mods::NONE);
     screen
-        .wait_until("приглашение после Ctrl+C", |snapshot| {
+        .wait_until("prompt after Ctrl+C", |snapshot| {
             snapshot
                 .lines
                 .iter()
-                .filter(|line| line.text().contains("ПОСЛЕ-ПРЕРЫВАНИЯ"))
+                .filter(|line| line.text().contains("AFTER-INTERRUPT"))
                 .count()
                 >= 2
         })
@@ -197,16 +197,16 @@ async fn typed_keys_reach_the_shell_and_ctrl_c_interrupts_it() {
 #[tokio::test]
 async fn arrows_steer_vim_in_application_cursor_mode() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка управления vim пропущена");
+        eprintln!("docker unavailable — vim control check skipped");
         return;
     };
 
     let mut screen = Screen::connect(&sshd);
-    screen.type_text("vim -u NONE /tmp/клавиши.txt");
+    screen.type_text("vim -u NONE /tmp/keys.txt");
     screen.press(Key::Enter, Mods::NONE);
 
     screen
-        .wait_until("экран vim", |snapshot| {
+        .wait_until("vim screen", |snapshot| {
             snapshot
                 .lines
                 .iter()
@@ -221,15 +221,15 @@ async fn arrows_steer_vim_in_application_cursor_mode() {
             .terminal
             .mode()
             .contains(alacritty_terminal::term::TermMode::APP_CURSOR),
-        "vim не включил режим курсорных клавиш — стрелки будут закодированы не так"
+        "vim did not enable cursor-key mode — arrows will be encoded differently"
     );
 
     screen.press(Key::Char('i'), Mods::NONE);
-    screen.type_text("ПРИВЕТ");
+    screen.type_text("HELLO");
     screen.press(Key::Escape, Mods::NONE);
     screen
-        .wait_until("набранный в vim текст", |snapshot| {
-            contains(snapshot, "ПРИВЕТ")
+        .wait_until("text typed in vim", |snapshot| {
+            contains(snapshot, "HELLO")
         })
         .await;
 
@@ -239,8 +239,8 @@ async fn arrows_steer_vim_in_application_cursor_mode() {
 
     screen
         .wait_until(
-            "текст после удаления стрелками",
-            |snapshot| contains(snapshot, "ПРИЕТ"),
+            "text after deleting with arrows",
+            |snapshot| contains(snapshot, "HELO"),
         )
         .await;
 
@@ -248,8 +248,8 @@ async fn arrows_steer_vim_in_application_cursor_mode() {
     screen.press(Key::Char('x'), Mods::NONE);
     screen
         .wait_until(
-            "текст после Home и удаления",
-            |snapshot| contains(snapshot, "РИЕТ") && !contains(snapshot, "ПРИЕТ"),
+            "text after Home and deletion",
+            |snapshot| contains(snapshot, "ELO") && !contains(snapshot, "HELO"),
         )
         .await;
 
@@ -260,7 +260,7 @@ async fn arrows_steer_vim_in_application_cursor_mode() {
 #[tokio::test]
 async fn htop_repaints_wider_after_a_resize() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка resize пропущена");
+        eprintln!("docker unavailable — resize check skipped");
         return;
     };
 
@@ -269,7 +269,7 @@ async fn htop_repaints_wider_after_a_resize() {
     screen.press(Key::Enter, Mods::NONE);
 
     let narrow = screen
-        .wait_until("экран htop на узкой сетке", |snapshot| {
+        .wait_until("htop screen on a narrow grid", |snapshot| {
             contains(snapshot, "Help") && contains(snapshot, "Mem")
         })
         .await;
@@ -277,7 +277,7 @@ async fn htop_repaints_wider_after_a_resize() {
     let narrow_width = painted_width(&narrow);
     assert!(
         narrow_width <= START.cols as usize,
-        "htop нарисовал шире, чем сетка: {narrow_width} > {}",
+        "htop drew wider than the grid: {narrow_width} > {}",
         START.cols
     );
 
@@ -291,14 +291,14 @@ async fn htop_repaints_wider_after_a_resize() {
 
     let snapshot = screen
         .wait_until(
-            "перерисовку htop на широкой сетке",
+            "htop redraw on a wide grid",
             |snapshot| painted_width(snapshot) > START.cols as usize,
         )
         .await;
 
     assert!(
         painted_width(&snapshot) > narrow_width,
-        "после resize htop рисует не шире прежнего ({} против {narrow_width}):\n{}",
+        "after resize htop draws no wider than before ({} vs {narrow_width}):\n{}",
         painted_width(&snapshot),
         dump(&screen.terminal)
     );

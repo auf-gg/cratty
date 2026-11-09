@@ -91,7 +91,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stroka_chitaetsya_i_pishetsya_odinakovo() {
+    fn string_reads_and_writes_symmetrically() {
         let mut writer = Writer::message(42);
         writer.string(b"ssh-ed25519").u32(7);
         let frame = writer.finish();
@@ -99,18 +99,18 @@ mod tests {
         assert_eq!(
             &frame[..4],
             &[0, 0, 0, 20],
-            "длина кадра без самого поля длины"
+            "frame length excluding the length field itself"
         );
         assert_eq!(frame[4], 42);
 
         let mut reader = Reader::new(&frame[5..]);
-        assert_eq!(reader.string().expect("строка"), b"ssh-ed25519");
-        assert_eq!(reader.u32().expect("число"), 7);
-        reader.finish().expect("хвоста нет");
+        assert_eq!(reader.string().expect("string"), b"ssh-ed25519");
+        assert_eq!(reader.u32().expect("number"), 7);
+        reader.finish().expect("no trailing bytes");
     }
 
     #[test]
-    fn obrezannyy_vhod_daet_oshibku_a_ne_paniku() {
+    fn truncated_input_errors_instead_of_panicking() {
         let mut reader = Reader::new(&[0, 0, 0, 8, 1, 2]);
         assert!(matches!(reader.string(), Err(Error::Truncated)));
 
@@ -122,20 +122,20 @@ mod tests {
     }
 
     #[test]
-    fn ogromnaya_dlina_ne_vydelyaet_pamyat() {
+    fn huge_length_does_not_allocate_memory() {
         let mut reader = Reader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 1, 2, 3]);
         assert!(reader.string().is_err());
     }
 
     #[test]
-    fn hvost_posle_soobshcheniya_zamechaetsya() {
+    fn trailing_bytes_after_message_are_detected() {
         let mut reader = Reader::new(&[0, 0, 0, 1, b'x', b'?']);
-        assert_eq!(reader.string().expect("строка"), b"x");
+        assert_eq!(reader.string().expect("string"), b"x");
         assert!(matches!(reader.finish(), Err(Error::Trailing)));
     }
 
     #[test]
-    fn ne_utf8_v_imeni_otvergaetsya() {
+    fn non_utf8_name_is_rejected() {
         let mut reader = Reader::new(&[0, 0, 0, 2, 0xFF, 0xFE]);
         assert!(matches!(reader.utf8(), Err(Error::NotUtf8)));
     }

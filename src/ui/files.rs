@@ -1,4 +1,5 @@
 use crate::ui::theme::MainAction;
+use rust_i18n::t;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -255,7 +256,7 @@ impl FilesView {
             Ok(handle) => self.attach_handle(handle, cx),
             Err(error) => {
                 self.status = Status::Closed {
-                    message: format!("Не удалось запустить поток: {error}").into(),
+                    message: t!("files.stream_failed", error = error).into(),
                     failed: true,
                 };
             }
@@ -289,7 +290,7 @@ impl FilesView {
                 if !this.is_closed() {
                     this.handle = None;
                     this.status = Status::Closed {
-                        message: "Соединение закрыто.".into(),
+                        message: t!("files.closed").into(),
                         failed: false,
                     };
                     cx.notify();
@@ -304,10 +305,10 @@ impl FilesView {
         };
         if entry.size > sftp::MAX_EDIT_BYTES {
             self.remote_error = Some(
-                format!(
-                    "Файл «{}» больше {} МБ и не может быть открыт в редакторе. Скачайте его.",
-                    entry.name,
-                    sftp::MAX_EDIT_BYTES / 1024 / 1024
+                t!(
+                    "files.too_large",
+                    name = entry.name,
+                    mb = sftp::MAX_EDIT_BYTES / 1024 / 1024
                 )
                 .into(),
             );
@@ -334,16 +335,12 @@ impl FilesView {
                         }),
                         Err(_) => {
                             this.remote_error = Some(
-                                format!(
-                                    "Файл «{}» не является текстовым (UTF-8). Скачайте его.",
-                                    entry.name
-                                )
-                                .into(),
+                                t!("files.not_text", name = entry.name).into(),
                             )
                         }
                     },
                     Ok(Err(error)) => this.remote_error = Some(error.into()),
-                    Err(_) => this.remote_error = Some("Соединение закрыто.".into()),
+                    Err(_) => this.remote_error = Some(t!("files.closed").into()),
                 }
                 cx.notify();
             });
@@ -360,7 +357,7 @@ impl FilesView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Скачать сюда".into()),
+            prompt: Some(t!("files.download_here").into()),
         });
         cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await
@@ -415,13 +412,13 @@ impl FilesView {
                         failed: true,
                     },
                     _ => Status::Closed {
-                        message: "Соединение закрыто.".into(),
+                        message: t!("files.closed").into(),
                         failed: false,
                     },
                 };
                 for transfer in &mut self.transfers {
                     if transfer.state == TransferState::Running {
-                        transfer.state = TransferState::Failed("Соединение прервано.".into());
+                        transfer.state = TransferState::Failed(t!("files.interrupted").into());
                     }
                 }
             }
@@ -582,11 +579,7 @@ impl FilesView {
             self.start(Pending::Upload(items), false, cx);
         } else {
             self.dialog = Some(Dialog::Confirm {
-                message: format!(
-                    "На сервере уже существует: {}. Заменить?",
-                    list_names(&clashes)
-                )
-                .into(),
+                message: t!("files.exists_server", names = list_names(&clashes)).into(),
                 action: Pending::Upload(items),
             });
             cx.notify();
@@ -610,11 +603,7 @@ impl FilesView {
             self.start(Pending::Download(items), false, cx);
         } else {
             self.dialog = Some(Dialog::Confirm {
-                message: format!(
-                    "На компьютере уже существует: {}. Заменить?",
-                    list_names(&clashes)
-                )
-                .into(),
+                message: t!("files.exists_local", names = list_names(&clashes)).into(),
                 action: Pending::Download(items),
             });
             cx.notify();
@@ -691,20 +680,13 @@ impl FilesView {
             return;
         }
         let message = if let [entry] = selected.as_slice() {
-            let what = if entry.is_dir {
-                "папку со всем содержимым"
+            if entry.is_dir {
+                t!("files.delete_folder", name = entry.name).to_string()
             } else {
-                "файл"
-            };
-            format!(
-                "Удалить с сервера {what} «{}»? Действие необратимо.",
-                entry.name
-            )
+                t!("files.delete_file", name = entry.name).to_string()
+            }
         } else {
-            format!(
-                "Удалить с сервера объекты ({}), включая содержимое папок? Действие необратимо.",
-                selected.len()
-            )
+            t!("files.delete_many", count = selected.len()).to_string()
         };
         self.dialog = Some(Dialog::Confirm {
             message: message.into(),
@@ -736,7 +718,7 @@ impl FilesView {
             files: true,
             directories: true,
             multiple: true,
-            prompt: Some("Загрузить на сервер".into()),
+            prompt: Some(t!("files.upload_to_server").into()),
         });
         cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await {
@@ -748,7 +730,7 @@ impl FilesView {
 
     fn ensure_path_bars(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.local_bar.input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Путь на компьютере"));
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("files.path_local")));
             self.local_bar._subscription =
                 Some(cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::PressEnter { .. }) {
@@ -761,7 +743,7 @@ impl FilesView {
             self.local_bar.stale = true;
         }
         if self.remote_bar.input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Путь на сервере"));
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("files.path_server")));
             self.remote_bar._subscription =
                 Some(cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::PressEnter { .. }) {
@@ -946,7 +928,7 @@ impl FilesView {
 
         let count = selected.len();
         pane(
-            "Этот компьютер",
+            t!("files.this_computer").into(),
             "icons/monitor.svg",
             self.local_bar.input.clone(),
             &theme,
@@ -957,7 +939,7 @@ impl FilesView {
                         .ghost()
                         .xsmall()
                         .icon(Icon::empty().path("icons/arrow-up.svg"))
-                        .tooltip("На уровень выше")
+                        .tooltip(t!("files.up_level"))
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.local_up();
                             cx.notify();
@@ -968,11 +950,11 @@ impl FilesView {
                         .xsmall()
                         .icon(Icon::empty().path("icons/upload.svg"))
                         .label(if count > 1 {
-                            SharedString::from(format!("На сервер ({count})"))
+                            SharedString::from(t!("files.to_server_count", count = count))
                         } else {
-                            SharedString::from("На сервер")
+                            SharedString::from(t!("files.to_server"))
                         })
-                        .tooltip("Загрузить выделенное в открытую папку сервера")
+                        .tooltip(t!("files.upload_selection_tip"))
                         .main_action(can_upload)
                         .on_click(cx.listener(|this, _, _window, cx| {
                             let paths = this.selected_local().into_iter().map(|e| e.path).collect();
@@ -1066,7 +1048,7 @@ impl FilesView {
         }
 
         pane(
-            "Сервер",
+            t!("files.server").into(),
             "icons/server.svg",
             self.remote_bar.input.clone(),
             &theme,
@@ -1077,7 +1059,7 @@ impl FilesView {
                         .ghost()
                         .xsmall()
                         .icon(Icon::empty().path("icons/arrow-up.svg"))
-                        .tooltip("На уровень выше")
+                        .tooltip(t!("files.up_level"))
                         .disabled(!ready)
                         .on_click(cx.listener(|this, _, _window, cx| {
                             this.remote_up();
@@ -1089,11 +1071,11 @@ impl FilesView {
                         .xsmall()
                         .icon(Icon::empty().path("icons/download.svg"))
                         .label(if count > 1 {
-                            SharedString::from(format!("Скачать ({count})"))
+                            SharedString::from(t!("files.download_count", count = count))
                         } else {
-                            SharedString::from("Скачать")
+                            SharedString::from(t!("files.download"))
                         })
-                        .tooltip("Скачать выделенное в открытую папку компьютера")
+                        .tooltip(t!("files.download_selection_tip"))
                         .main_action(ready && count > 0)
                         .on_click(cx.listener(|this, _, _window, cx| {
                             if this.compact {
@@ -1109,7 +1091,7 @@ impl FilesView {
                         .ghost()
                         .xsmall()
                         .icon(Icon::empty().path("icons/upload.svg"))
-                        .tooltip("Выбрать файлы на компьютере и загрузить сюда")
+                        .tooltip(t!("files.pick_upload_tip"))
                         .disabled(!ready)
                         .on_click(cx.listener(|this, _, _window, cx| this.pick_and_upload(cx))),
                 )
@@ -1118,7 +1100,7 @@ impl FilesView {
                         .ghost()
                         .xsmall()
                         .icon(Icon::empty().path("icons/folder-plus.svg"))
-                        .tooltip("Новая папка")
+                        .tooltip(t!("files.new_folder"))
                         .disabled(!ready)
                         .on_click(cx.listener(|this, _, _window, cx| this.ask_name(false, cx))),
                 )
@@ -1127,7 +1109,7 @@ impl FilesView {
                         .ghost()
                         .xsmall()
                         .icon(Icon::empty().path("icons/pencil.svg"))
-                        .tooltip("Переименовать")
+                        .tooltip(t!("files.rename"))
                         .disabled(!ready || count != 1)
                         .on_click(cx.listener(|this, _, _window, cx| this.ask_name(true, cx))),
                 )
@@ -1136,7 +1118,7 @@ impl FilesView {
                         .ghost()
                         .xsmall()
                         .icon(Icon::new(IconName::Delete))
-                        .tooltip("Удалить")
+                        .tooltip(t!("files.delete"))
                         .disabled(!ready || count == 0)
                         .on_click(cx.listener(|this, _, _window, cx| this.ask_remove(cx))),
                 )
@@ -1184,7 +1166,7 @@ impl FilesView {
                         .justify_between()
                         .items_center()
                         .child(
-                            Label::new("Передачи")
+                            Label::new(t!("files.transfers"))
                                 .text_sm()
                                 .text_color(theme.muted_foreground),
                         )
@@ -1193,7 +1175,7 @@ impl FilesView {
                                 Button::new("clear-transfers")
                                     .ghost()
                                     .xsmall()
-                                    .label("Очистить завершённые")
+                                    .label(t!("files.clear_completed"))
                                     .on_click(
                                         cx.listener(|this, _, _window, cx| this.clear_finished(cx)),
                                     ),
@@ -1218,14 +1200,15 @@ impl FilesView {
                             };
                             let (status, color) = match &transfer.state {
                                 TransferState::Running => (
-                                    format!(
-                                        "{} из {}",
-                                        human_size(transfer.done),
-                                        human_size(transfer.total)
-                                    ),
+                                    t!(
+                                        "files.progress",
+                                        done = human_size(transfer.done),
+                                        total = human_size(transfer.total)
+                                    )
+                                    .to_string(),
                                     theme.muted_foreground,
                                 ),
-                                TransferState::Done => ("Готово".to_string(), theme.success),
+                                TransferState::Done => (t!("files.done").to_string(), theme.success),
                                 TransferState::Failed(error) => (error.clone(), theme.danger),
                             };
                             let arrow = match transfer.direction {
@@ -1283,7 +1266,7 @@ impl FilesView {
                                             .ghost()
                                             .xsmall()
                                             .icon(Icon::new(IconName::Close))
-                                            .tooltip("Отменить")
+                                            .tooltip(t!("files.cancel"))
                                             .on_click(cx.listener(move |this, _, _window, cx| {
                                                 this.cancel(id, cx)
                                             })),
@@ -1301,30 +1284,30 @@ impl FilesView {
         let mono = crate::ui::font::MonoFont::get(cx).family.clone();
         let trust_once = matches!(dialog, Dialog::HostKey { changed: false, .. });
 
-        let (title, body, confirm_label, danger): (SharedString, AnyElement, &'static str, bool) =
+        let (title, body, confirm_label, danger): (SharedString, AnyElement, SharedString, bool) =
             match dialog {
                 Dialog::Confirm { message, .. } => (
-                    "Подтверждение".into(),
+                    t!("files.confirmation").into(),
                     Label::new(message.clone()).into_any_element(),
-                    "Да",
+                    t!("files.yes").into(),
                     true,
                 ),
                 Dialog::Name {
                     rename_from, input, ..
                 } => (
                     if rename_from.is_some() {
-                        "Новое имя".into()
+                        t!("files.new_name").into()
                     } else {
-                        "Новая папка".into()
+                        t!("files.new_folder").into()
                     },
                     match input {
                         Some(input) => Input::new(input).into_any_element(),
                         None => div().into_any_element(),
                     },
                     if rename_from.is_some() {
-                        "Переименовать"
+                        t!("files.rename").into()
                     } else {
-                        "Создать"
+                        t!("files.create").into()
                     },
                     false,
                 ),
@@ -1334,7 +1317,7 @@ impl FilesView {
                         Some(input) => Input::new(input).into_any_element(),
                         None => div().into_any_element(),
                     },
-                    "Войти",
+                    t!("files.enter").into(),
                     false,
                 ),
                 Dialog::HostKey {
@@ -1343,9 +1326,9 @@ impl FilesView {
                     changed,
                 } => (
                     if *changed {
-                        "Ключ сервера изменился".into()
+                        t!("files.key_changed").into()
                     } else {
-                        "Новый сервер".into()
+                        t!("files.new_server").into()
                     },
                     v_flex()
                         .gap_2()
@@ -1359,9 +1342,9 @@ impl FilesView {
                         )
                         .into_any_element(),
                     if *changed {
-                        "Отклонить"
+                        t!("files.reject").into()
                     } else {
-                        "Доверять и сохранить"
+                        t!("files.trust_save").into()
                     },
                     *changed,
                 ),
@@ -1396,7 +1379,7 @@ impl FilesView {
                                 .child(
                                     Button::new("dialog-cancel")
                                         .ghost()
-                                        .label("Отмена")
+                                        .label(t!("files.cancel"))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.cancel_dialog(cx)
                                         })),
@@ -1405,7 +1388,7 @@ impl FilesView {
                                     this.child(
                                         Button::new("dialog-once")
                                             .outline()
-                                            .label("Доверять однократно")
+                                            .label(t!("files.trust_once"))
                                             .on_click(cx.listener(|this, _, _window, cx| {
                                                 this.trust_once(cx)
                                             })),
@@ -1439,7 +1422,7 @@ impl FilesView {
                     .py_2()
                     .bg(theme.muted)
                     .child(
-                        Label::new("Подключение…")
+                        Label::new(t!("files.connecting"))
                             .text_sm()
                             .text_color(theme.muted_foreground),
                     )
@@ -1468,7 +1451,7 @@ impl FilesView {
                                 .primary()
                                 .small()
                                 .icon(Icon::empty().path("icons/refresh-cw.svg"))
-                                .label("Переподключиться")
+                                .label(t!("files.reconnect"))
                                 .on_click(cx.listener(|this, _, _window, cx| {
                                     this.connect(cx);
                                     cx.notify();
@@ -1502,8 +1485,8 @@ impl Render for FilesView {
                                         .ghost()
                                         .xsmall()
                                         .selected(self.show_hidden)
-                                        .label("Скрытые")
-                                        .tooltip("Показывать скрытые файлы")
+                                        .label(t!("files.hidden"))
+                                        .tooltip(t!("files.show_hidden"))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.toggle_hidden(cx)
                                         })),
@@ -1513,7 +1496,7 @@ impl Render for FilesView {
                                         .ghost()
                                         .xsmall()
                                         .icon(Icon::empty().path("icons/refresh-cw.svg"))
-                                        .label("Обновить")
+                                        .label(t!("files.refresh"))
                                         .on_click(
                                             cx.listener(|this, _, _window, cx| this.refresh(cx)),
                                         ),
@@ -1553,7 +1536,7 @@ impl Render for FilesView {
 
 #[allow(clippy::too_many_arguments)]
 fn pane(
-    title: &'static str,
+    title: SharedString,
     icon: &'static str,
     path: Option<Entity<InputState>>,
     theme: &gpui_kit::component::Theme,
@@ -1585,7 +1568,7 @@ fn pane(
                                 .gap_2()
                                 .items_center()
                                 .child(Icon::empty().path(icon).small())
-                                .child(Label::new(title).text_sm()),
+                                .child(Label::new(title.clone()).text_sm()),
                         )
                         .child(toolbar),
                 )
@@ -1606,7 +1589,7 @@ fn pane(
                 .when(empty, |this| {
                     this.child(
                         div().p_3().child(
-                            Label::new("Папка пуста")
+                            Label::new(t!("files.empty"))
                                 .text_sm()
                                 .text_color(theme.muted_foreground),
                         ),
@@ -1710,7 +1693,7 @@ fn row(
 
 fn drag_label(count: usize, name: &str) -> SharedString {
     if count > 1 {
-        format!("Объектов: {count}").into()
+        t!("files.items", count = count).into()
     } else {
         name.to_string().into()
     }
@@ -1720,10 +1703,10 @@ fn list_names(names: &[String]) -> String {
     let shown: Vec<String> = names
         .iter()
         .take(3)
-        .map(|name| format!("«{name}»"))
+        .map(|name| t!("files.quoted", name = name).to_string())
         .collect();
     if names.len() > 3 {
-        format!("{} и ещё {}", shown.join(", "), names.len() - 3)
+        t!("files.and_more", names = shown.join(", "), count = names.len() - 3).to_string()
     } else {
         shown.join(", ")
     }
@@ -1779,19 +1762,25 @@ fn display_name(path: &Path) -> String {
 }
 
 pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    let units: [String; 5] = [
+        t!("files.unit_b").to_string(),
+        t!("files.unit_kb").to_string(),
+        t!("files.unit_mb").to_string(),
+        t!("files.unit_gb").to_string(),
+        t!("files.unit_tb").to_string(),
+    ];
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1024. && unit < UNITS.len() - 1 {
+    while value >= 1024. && unit < units.len() - 1 {
         value /= 1024.;
         unit += 1;
     }
     if unit == 0 {
-        format!("{bytes} Б")
+        format!("{bytes} {}", units[0])
     } else if value < 10. {
-        format!("{value:.1} {}", UNITS[unit]).replace('.', ",")
+        format!("{value:.1} {}", units[unit])
     } else {
-        format!("{value:.0} {}", UNITS[unit])
+        format!("{value:.0} {}", units[unit])
     }
 }
 
@@ -1826,15 +1815,15 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn razmer_chelovecheski() {
-        assert_eq!(human_size(0), "0 Б");
-        assert_eq!(human_size(999), "999 Б");
-        assert_eq!(human_size(1536), "1,5 КБ");
-        assert_eq!(human_size(12 * 1024 * 1024), "12 МБ");
+    fn size_is_human_readable() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(999), "999 B");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(12 * 1024 * 1024), "12 MB");
     }
 
     #[test]
-    fn data_po_kalendaryu() {
+    fn date_by_calendar() {
         let epoch = SystemTime::UNIX_EPOCH;
         assert_eq!(format_time(epoch), "1970-01-01 00:00");
         assert_eq!(
@@ -1856,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn vydelenie_kak_v_faylovom_menedzhere() {
+    fn selection_like_in_a_file_manager() {
         let mut selection = Selection::default();
         selection.click(2, &mods(false, false));
         assert_eq!(selection.rows.iter().copied().collect::<Vec<_>>(), vec![2]);
@@ -1881,10 +1870,10 @@ mod tests {
     }
 
     #[test]
-    fn spisok_imen_v_voprose() {
+    fn list_of_names_in_prompt() {
         let names: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(list_names(&names), "«a», «b»");
+        assert_eq!(list_names(&names), "\"a\", \"b\"");
         let many: Vec<String> = (0..5).map(|i| i.to_string()).collect();
-        assert_eq!(list_names(&many), "«0», «1», «2» и ещё 2");
+        assert_eq!(list_names(&many), "\"0\", \"1\", \"2\" and 2 more");
     }
 }

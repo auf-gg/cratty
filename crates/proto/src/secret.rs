@@ -14,8 +14,8 @@ pub enum SecretPurpose {
     PrivateKey,
     ServerToken,
     Sudo,
-    /// Файл ключа как он лежал на диске (зашифрованный — зашифрованным):
-    /// из него ключ восстанавливается в пользовательский каталог.
+    /// The key file as it lay on disk (encrypted stays encrypted):
+    /// the key is restored from it into the user directory.
     KeyFile,
 }
 
@@ -45,12 +45,12 @@ impl SecretPurpose {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Password => "пароль",
-            Self::KeyPassphrase => "passphrase от ключа",
-            Self::Sudo => "пароль для sudo",
-            Self::PrivateKey => "приватный ключ",
-            Self::ServerToken => "пропуск на сервер",
-            Self::KeyFile => "файл ключа",
+            Self::Password => "password",
+            Self::KeyPassphrase => "key passphrase",
+            Self::Sudo => "sudo password",
+            Self::PrivateKey => "private key",
+            Self::ServerToken => "server token",
+            Self::KeyFile => "key file",
         }
     }
 }
@@ -83,7 +83,7 @@ impl Clone for Secret {
 
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Secret(<скрыт>)")
+        f.write_str("Secret(<hidden>)")
     }
 }
 
@@ -163,7 +163,7 @@ impl<'de> Deserialize<'de> for Secrets {
             type Value = Secrets;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("карта секретов записи")
+                f.write_str("record secrets map")
             }
 
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Secrets, M::Error> {
@@ -187,20 +187,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn debug_ne_pechataet_ni_soderzhimoe_ni_dlinu() {
+    fn debug_prints_neither_content_nor_length() {
         let secret = Secret::new(b"hunter2".to_vec());
-        assert_eq!(format!("{secret:?}"), "Secret(<скрыт>)");
+        assert_eq!(format!("{secret:?}"), "Secret(<hidden>)");
 
         let mut secrets = Secrets::new();
         secrets.set(SecretPurpose::Password, secret);
         let text = format!("{secrets:?}");
-        assert!(text.contains("password"), "назначение показать можно");
+        assert!(text.contains("password"), "the purpose may be shown");
         assert!(!text.contains("hunter2"));
-        assert!(!text.contains('7'), "длина — тоже сведение о секрете");
+        assert!(!text.contains('7'), "the length is also information about the secret");
     }
 
     #[test]
-    fn sravnenie_rabotaet_i_na_raznoy_dline() {
+    fn comparison_works_on_different_lengths_too() {
         let a = Secret::new(b"hunter2".to_vec());
         let b = Secret::new(b"hunter2".to_vec());
         let c = Secret::new(b"hunter3".to_vec());
@@ -212,10 +212,10 @@ mod tests {
     }
 
     #[test]
-    fn pustoy_sekret_ne_hranitsya() {
+    fn empty_secret_is_not_stored() {
         let mut secrets = Secrets::new();
         secrets.set(SecretPurpose::Password, Secret::new(Vec::new()));
-        assert!(secrets.is_empty(), "пустой пароль — это отсутствие пароля");
+        assert!(secrets.is_empty(), "an empty password means no password");
 
         secrets.set(SecretPurpose::Password, Secret::new(b"x".to_vec()));
         assert_eq!(secrets.len(), 1);
@@ -224,11 +224,11 @@ mod tests {
     }
 
     #[test]
-    fn naznacheniya_ne_peresekayutsya() {
+    fn purposes_do_not_overlap() {
         let mut secrets = Secrets::new();
         secrets.set(
             SecretPurpose::Password,
-            Secret::new("пароль".as_bytes().to_vec()),
+            Secret::new("password".as_bytes().to_vec()),
         );
         secrets.set(
             SecretPurpose::KeyPassphrase,
@@ -240,9 +240,9 @@ mod tests {
         assert_eq!(
             secrets
                 .get(SecretPurpose::Password)
-                .expect("пароль")
+                .expect("password")
                 .expose(),
-            "пароль".as_bytes()
+            "password".as_bytes()
         );
         assert_eq!(
             secrets
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn serializaciya_perezhivaet_roundtrip() {
+    fn serialization_survives_roundtrip() {
         let mut secrets = Secrets::new();
         secrets.set(SecretPurpose::Password, Secret::new(b"hunter2".to_vec()));
         secrets.set(
@@ -267,50 +267,50 @@ mod tests {
             Secret::new(vec![0x00, 0xFF, 0x80]),
         );
 
-        let json = serde_json::to_string(&secrets).expect("сериализация");
-        let restored: Secrets = serde_json::from_str(&json).expect("разбор");
+        let json = serde_json::to_string(&secrets).expect("serialization");
+        let restored: Secrets = serde_json::from_str(&json).expect("parse");
         assert_eq!(restored, secrets);
     }
 
     #[test]
-    fn ne_utf8_sekret_perezhivaet_roundtrip() {
+    fn non_utf8_secret_survives_roundtrip() {
         let mut secrets = Secrets::new();
         let bytes = vec![0xFF, 0xFE, 0x00, 0x41];
         secrets.set(SecretPurpose::Password, Secret::new(bytes.clone()));
 
-        let json = serde_json::to_string(&secrets).expect("сериализация");
-        let restored: Secrets = serde_json::from_str(&json).expect("разбор");
+        let json = serde_json::to_string(&secrets).expect("serialization");
+        let restored: Secrets = serde_json::from_str(&json).expect("parse");
         assert_eq!(
             restored
                 .get(SecretPurpose::Password)
-                .expect("пароль")
+                .expect("password")
                 .expose(),
             &bytes[..]
         );
     }
 
     #[test]
-    fn neznakomoe_naznachenie_propuskaetsya() {
-        let json = r#"{"password":[104,105],"будущее":[1,2,3]}"#;
-        let secrets: Secrets = serde_json::from_str(json).expect("разбор");
+    fn unknown_purpose_is_skipped() {
+        let json = r#"{"password":[104,105],"future":[1,2,3]}"#;
+        let secrets: Secrets = serde_json::from_str(json).expect("parse");
         assert_eq!(secrets.len(), 1);
         assert_eq!(
             secrets
                 .get(SecretPurpose::Password)
-                .expect("пароль")
+                .expect("password")
                 .expose(),
             b"hi"
         );
     }
 
     #[test]
-    fn pustaya_karta_razbiraetsya() {
-        let secrets: Secrets = serde_json::from_str("{}").expect("разбор");
+    fn empty_map_parses() {
+        let secrets: Secrets = serde_json::from_str("{}").expect("parse");
         assert!(secrets.is_empty());
     }
 
     #[test]
-    fn metki_naznacheniy_zafiksirovany() {
+    fn purpose_labels_are_pinned() {
         assert_eq!(SecretPurpose::Password.tag(), "password");
         assert_eq!(SecretPurpose::KeyPassphrase.tag(), "key-passphrase");
         assert_eq!(SecretPurpose::Sudo.tag(), "sudo");

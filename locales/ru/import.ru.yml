@@ -1,0 +1,10 @@
+import:
+  summary: "Импорт из ~/.ssh/config: добавлено хостов — %{imported}, пропущено (уже есть) — %{skipped}."
+  summary_warnings: "Импорт из ~/.ssh/config: добавлено хостов — %{imported}, пропущено (уже есть) — %{skipped}, предупреждений — %{warnings}."
+  proxy_command: "%{alias}: ProxyCommand не поддерживается, хост импортирован без него."
+  proxy_jump_dropped: "%{alias}: %{message} Хост импортирован без ProxyJump."
+  save_failed: "%{alias}: не удалось сохранить: %{error}"
+  chain_too_long: "Цепочка ProxyJump слишком длинная или зациклена."
+  empty_element: "В ProxyJump «%{raw}» пустой элемент."
+  chain_cyclic: "Цепочка ProxyJump зациклена."
+  hop_save_failed: "не удалось сохранить промежуточный хост: %{error}"

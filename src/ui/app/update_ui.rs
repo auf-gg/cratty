@@ -1,6 +1,7 @@
-//! Окно «Доступно обновление» (только Windows: на Linux обновляет пакетный
-//! менеджер).
+//! "Update available" dialog (Windows only: on Linux the package
+//! manager handles updates).
 
+use rust_i18n::t;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -18,23 +19,23 @@ use gpui_kit::{AnyElement, Context, MouseButton, SharedString, div, prelude::*, 
 use super::AppView;
 use crate::update::Release;
 
-/// Как часто проверять новые релизы.
+/// How often to check for new releases.
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
 
 #[derive(Default)]
 pub(super) struct UpdateState {
     release: Option<Release>,
-    /// Окно показано; «Позже» его скрывает до следующей новой версии.
+    /// Dialog shown; "Later" hides it until the next new version.
     open: bool,
     installing: bool,
-    /// Доли от 0 до 1000.
+    /// Fractions from 0 to 1000.
     progress: Arc<AtomicU32>,
     error: Option<SharedString>,
     _check: Option<gpui_kit::Task<()>>,
 }
 
 impl AppView {
-    /// Периодически спрашивает GitHub о новом релизе.
+    /// Periodically asks GitHub about a new release.
     pub(super) fn start_update_checks(&mut self, cx: &mut Context<Self>) {
         if !cfg!(windows) {
             return;
@@ -83,7 +84,7 @@ impl AppView {
         let install = cx
             .background_executor()
             .spawn(async move { crate::update::install(&release, &progress) });
-        // Перерисовка ради полосы загрузки, пока идёт скачивание.
+        // Redraw for the progress bar while downloading.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -102,7 +103,7 @@ impl AppView {
         cx.spawn(async move |this, cx| {
             let result = install.await;
             let _ = this.update(cx, |this, cx| match result {
-                // Установщик ждёт, пока освободится exe, и сам запустит новую версию.
+                // The installer waits for the exe to be released, then launches the new version itself.
                 Ok(()) => cx.quit(),
                 Err(err) => {
                     this.updater.installing = false;
@@ -137,12 +138,12 @@ impl AppView {
         let go = if state.installing {
             Button::new("update-go")
                 .primary()
-                .label(format!("Загрузка… {percent}%"))
+                .label(t!("update.downloading", percent = percent))
                 .disabled(true)
         } else {
             Button::new("update-go")
                 .primary()
-                .label("Обновить и перезапустить")
+                .label(t!("update.install"))
                 .on_click(cx.listener(|this, _, _, cx| this.install_update(cx)))
         };
 
@@ -168,17 +169,11 @@ impl AppView {
                         .border_1()
                         .border_color(theme.border)
                         .child(
-                            Label::new(SharedString::from(format!(
-                                "Доступна версия {}",
-                                release.version
-                            )))
+                            Label::new(t!("update.available", version = release.version.to_string()))
                             .font_semibold(),
                         )
                         .child(
-                            Label::new(SharedString::from(format!(
-                                "Установлена {}. Открытые сеансы будут закрыты.",
-                                env!("CARGO_PKG_VERSION")
-                            )))
+                            Label::new(t!("update.installed", version = env!("CARGO_PKG_VERSION")))
                             .text_sm()
                             .text_color(theme.muted_foreground),
                         )
@@ -210,9 +205,7 @@ impl AppView {
                         })
                         .when_some(state.error.clone(), |this, err| {
                             this.child(
-                                Label::new(SharedString::from(format!(
-                                    "Не удалось обновить: {err}"
-                                )))
+                                Label::new(t!("update.failed", error = err.to_string()))
                                 .text_sm()
                                 .text_color(theme.danger),
                             )
@@ -221,7 +214,7 @@ impl AppView {
                             h_flex().gap_2().child(go).child(
                                 Button::new("update-later")
                                     .outline()
-                                    .label("Позже")
+                                    .label(t!("update.later"))
                                     .disabled(state.installing)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.updater.open = false;

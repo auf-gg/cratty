@@ -3,10 +3,10 @@ name = "agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Протокол ssh-agent: разбор запросов и сборка ответов"
+description = "ssh-agent protocol: request parsing and response building"
 
-# Зависимостей нет и не должно быть. Здесь только байты протокола: ни ключей,
-# ни сокетов, ни tokio. Ключи умеет слой приложения (он и так тянет russh со
-# всеми форматами), сокеты — он же. Ровно это условие делает крейт
-# проверяемым известными векторами без единого мока.
+# There are no dependencies and there must not be any. Only protocol bytes here: no keys,
+# no sockets, no tokio. The application layer handles keys (it already pulls in russh with
+# all the formats), and sockets too. That very condition makes the crate
+# verifiable with known vectors without a single mock.
 [dependencies]

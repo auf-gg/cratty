@@ -1,0 +1,23 @@
+icons:
+  search_placeholder: "Поиск значка"
+  catalog_unchanged: "Каталог не изменился."
+  catalog_updated:
+    one: "Каталог обновлён: %{count} значок."
+    few: "Каталог обновлён: %{count} значка."
+    many: "Каталог обновлён: %{count} значков."
+  choose: "Выбрать значок"
+  default: "По умолчанию"
+  catalog_loading: "Загружаем каталог…"
+  catalog_none: "Каталога пока нет: нажмите «Обновить»."
+  nothing_found: "Ничего не нашлось."
+  more: "И ещё %{count} — уточните поиск."
+  count:
+    one: "%{count} значок"
+    few: "%{count} значка"
+    many: "%{count} значков"
+  title: "Значок"
+  refresh: "Обновить каталог"
+  app_icons_note: "Значки приложений. Выбранный скачивается в хранилище и виден без сети."
+  colored: "Цветной значок — один вариант для любой темы"
+  cancel: "Отмена"
+  downloading: "Скачиваем…"

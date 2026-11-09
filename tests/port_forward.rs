@@ -14,8 +14,8 @@ use docker_sshd::{DockerSshd, PASSWORD, USER};
 const DEADLINE: Duration = Duration::from_secs(30);
 
 async fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("порт");
-    listener.local_addr().expect("адрес").port()
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("port");
+    listener.local_addr().expect("address").port()
 }
 
 fn rule(kind: ForwardKind, listen_port: u16, target: Option<(&str, u16)>) -> PortForward {
@@ -40,7 +40,7 @@ fn connect(sshd: &DockerSshd, forwards: Vec<PortForward>) -> SshSession {
     );
     config.host_key_policy = HostKeyPolicy::Fingerprints(vec![sshd.fingerprint()]);
     config.forwards = forwards;
-    spawn_ssh(config).expect("поток сессии")
+    spawn_ssh(config).expect("session thread")
 }
 
 async fn states(session: &mut SshSession, count: usize) -> Vec<ForwardState> {
@@ -48,11 +48,11 @@ async fn states(session: &mut SshSession, count: usize) -> Vec<ForwardState> {
     while states.iter().any(Option::is_none) {
         let event = tokio::time::timeout(DEADLINE, session.events.next())
             .await
-            .expect("сессия молчит");
+            .expect("session is silent");
         match event {
             Some(FromSsh::Forward { index, state }) => states[index] = Some(state),
             Some(FromSsh::Connected { .. } | FromSsh::Output(_)) => {}
-            other => panic!("ждали состояния правил, пришло {other:?}"),
+            other => panic!("expected rule states, got {other:?}"),
         }
     }
     states.into_iter().flatten().collect()
@@ -62,20 +62,20 @@ async fn banner(mut stream: impl AsyncReadExt + Unpin) -> String {
     let mut buffer = [0u8; 7];
     tokio::time::timeout(DEADLINE, stream.read_exact(&mut buffer))
         .await
-        .expect("нет ответа")
-        .expect("чтение");
+        .expect("no reply")
+        .expect("read");
     String::from_utf8_lossy(&buffer).into_owned()
 }
 
 #[tokio::test]
-async fn lokalnyy_dinamicheskiy_i_obratnyy() {
+async fn local_dynamic_and_reverse() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — тест против настоящего sshd пропущен");
+        eprintln!("docker unavailable — test against a real sshd skipped");
         return;
     };
 
-    let echo = TcpListener::bind("127.0.0.1:0").await.expect("эхо");
-    let echo_port = echo.local_addr().expect("адрес").port();
+    let echo = TcpListener::bind("127.0.0.1:0").await.expect("echo");
+    let echo_port = echo.local_addr().expect("address").port();
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = echo.accept().await {
             tokio::spawn(async move {
@@ -107,13 +107,13 @@ async fn lokalnyy_dinamicheskiy_i_obratnyy() {
 
     let mut stream = TcpStream::connect(("127.0.0.1", back))
         .await
-        .expect("-L до -R");
-    stream.write_all(b"ping-pong").await.expect("запись");
+        .expect("-L before -R");
+    stream.write_all(b"ping-pong").await.expect("record");
     let mut answer = [0u8; 9];
     tokio::time::timeout(DEADLINE, stream.read_exact(&mut answer))
         .await
-        .expect("эхо молчит")
-        .expect("чтение");
+        .expect("echo is silent")
+        .expect("read");
     assert_eq!(&answer, b"ping-pong");
 
     session
@@ -122,58 +122,58 @@ async fn lokalnyy_dinamicheskiy_i_obratnyy() {
             index: 0,
             enabled: false,
         })
-        .expect("команда");
+        .expect("command");
     loop {
         match tokio::time::timeout(DEADLINE, session.events.next())
             .await
-            .expect("молчит")
+            .expect("silent")
         {
             Some(FromSsh::Forward { index: 0, state }) => {
                 assert_eq!(state, ForwardState::Off);
                 break;
             }
             Some(_) => {}
-            None => panic!("сессия закрылась"),
+            None => panic!("session closed"),
         }
     }
     assert!(
         TcpStream::connect(("127.0.0.1", local)).await.is_err(),
-        "порт всё ещё слушают"
+        "port is still being listened on"
     );
 }
 
 #[tokio::test]
-async fn zanyatyy_port_ne_meshaet_sessii() {
+async fn busy_port_does_not_break_session() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — тест против настоящего sshd пропущен");
+        eprintln!("docker unavailable — test against a real sshd skipped");
         return;
     };
-    let busy = TcpListener::bind("127.0.0.1:0").await.expect("занять");
-    let port = busy.local_addr().expect("адрес").port();
+    let busy = TcpListener::bind("127.0.0.1:0").await.expect("occupy");
+    let port = busy.local_addr().expect("address").port();
 
     let mut session = connect(
         &sshd,
         vec![rule(ForwardKind::Local, port, Some(("127.0.0.1", 22)))],
     );
     match states(&mut session, 1).await.as_slice() {
-        [ForwardState::Failed(error)] => assert!(error.contains("занят"), "{error}"),
-        other => panic!("ждали ошибку, пришло {other:?}"),
+        [ForwardState::Failed(error)] => assert!(error.contains("in use"), "{error}"),
+        other => panic!("expected an error, got {other:?}"),
     }
     session
         .commands
         .unbounded_send(ToSsh::Input(bytes::Bytes::from_static(
             b"echo still-alive\n",
         )))
-        .expect("ввод");
+        .expect("input");
     let mut seen = String::new();
     while !seen.contains("still-alive\r\n") {
         match tokio::time::timeout(DEADLINE, session.events.next())
             .await
-            .expect("молчит")
+            .expect("silent")
         {
             Some(FromSsh::Output(data)) => seen.push_str(&String::from_utf8_lossy(&data)),
             Some(_) => {}
-            None => panic!("сессия закрылась: {seen}"),
+            None => panic!("session closed: {seen}"),
         }
     }
 }

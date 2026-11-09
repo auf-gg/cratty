@@ -20,15 +20,15 @@ pub const EXTENSION: u8 = 27;
 pub fn describe(kind: u8) -> &'static str {
     match kind {
         ADD_IDENTITY | ADD_ID_CONSTRAINED => {
-            "добавление ключа: ключи берутся из хранилища, а не из ssh-add"
+            "add key: keys come from the vault, not from ssh-add"
         }
         REMOVE_IDENTITY | REMOVE_ALL_IDENTITIES => {
-            "удаление ключа: список ключей меняется в хранилище, а не через агента"
+            "remove key: the key list is changed in the vault, not through the agent"
         }
         ADD_SMARTCARD_KEY | REMOVE_SMARTCARD_KEY | ADD_SMARTCARD_KEY_CONSTRAINED => {
-            "смарт-карта: не поддерживается"
+            "smart card: not supported"
         }
-        LOCK | UNLOCK => "блокировка агента: замок один — замок хранилища, второго не заводим",
-        _ => "неизвестный запрос",
+        LOCK | UNLOCK => "agent lock: there is one lock, the vault lock; we do not add a second",
+        _ => "unknown request",
     }
 }

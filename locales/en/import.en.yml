@@ -1,0 +1,10 @@
+import:
+  summary: "Import from ~/.ssh/config: hosts added — %{imported}, skipped (already present) — %{skipped}."
+  summary_warnings: "Import from ~/.ssh/config: hosts added — %{imported}, skipped (already present) — %{skipped}, warnings — %{warnings}."
+  proxy_command: "%{alias}: ProxyCommand is not supported, the host was imported without it."
+  proxy_jump_dropped: "%{alias}: %{message} The host was imported without ProxyJump."
+  save_failed: "%{alias}: failed to save: %{error}"
+  chain_too_long: "The ProxyJump chain is too long or cyclic."
+  empty_element: "ProxyJump \"%{raw}\" has an empty element."
+  chain_cyclic: "The ProxyJump chain is cyclic."
+  hop_save_failed: "failed to save the jump host: %{error}"

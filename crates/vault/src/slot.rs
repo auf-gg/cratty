@@ -25,15 +25,15 @@ impl SlotKind {
             1 => Ok(Self::Password),
             2 => Ok(Self::ExternalKey),
             3 => Ok(Self::RecoveryCode),
-            _ => Err(Error::Format("неизвестный тип слота")),
+            _ => Err(Error::Format("unknown slot type")),
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Password => "мастер-пароль",
-            Self::ExternalKey => "ключ операционной системы",
-            Self::RecoveryCode => "код восстановления",
+            Self::Password => "master password",
+            Self::ExternalKey => "operating system key",
+            Self::RecoveryCode => "recovery code",
         }
     }
 }
@@ -69,10 +69,10 @@ impl SlotKdf {
             2 => {
                 let salt: [u8; RECOVERY_SALT_LEN] = body
                     .try_into()
-                    .map_err(|_| Error::Format("длина соли HKDF"))?;
+                    .map_err(|_| Error::Format("HKDF salt length"))?;
                 Ok(Self::Hkdf { salt })
             }
-            _ => Err(Error::Format("неизвестный вывод ключа слота")),
+            _ => Err(Error::Format("unknown slot key derivation")),
         }
     }
 }
@@ -146,7 +146,7 @@ impl WrapSlot {
     pub fn unlock_with_password(&self, password: &[u8]) -> Result<(DataKey, AuthHash)> {
         let params = match &self.kdf {
             SlotKdf::Argon2id(params) => params,
-            _ => return Err(Error::Format("слот открывается не паролем")),
+            _ => return Err(Error::Format("slot is not opened by a password")),
         };
         let secrets: MasterSecrets = derive_master_secrets(password, params)?;
         let data_key = self.unseal(secrets.kek())?;
@@ -155,7 +155,7 @@ impl WrapSlot {
 
     pub fn unlock_with_external_key(&self, key: &Key32) -> Result<DataKey> {
         if self.kind != SlotKind::ExternalKey {
-            return Err(Error::Format("слот открывается не внешним ключом"));
+            return Err(Error::Format("slot is not opened by an external key"));
         }
         self.unseal(key)
     }
@@ -163,7 +163,7 @@ impl WrapSlot {
     pub fn unlock_with_recovery_code(&self, code: &RecoveryCode) -> Result<DataKey> {
         let salt = match &self.kdf {
             SlotKdf::Hkdf { salt } => salt,
-            _ => return Err(Error::Format("слот открывается не кодом восстановления")),
+            _ => return Err(Error::Format("slot is not opened by a recovery code")),
         };
         let wrap_key = code.wrap_key(salt)?;
         self.unseal(&wrap_key)
@@ -177,7 +177,7 @@ impl WrapSlot {
         data_key: &DataKey,
     ) -> Result<Self> {
         if label.len() > MAX_LABEL_LEN {
-            return Err(Error::Format("метка слота длиннее 255 байт"));
+            return Err(Error::Format("slot label is longer than 255 bytes"));
         }
         let id: [u8; SLOT_ID_LEN] = rng::array()?;
         let aad = slot_aad(kind, &id, label, &kdf);
@@ -218,16 +218,16 @@ impl WrapSlot {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let mut reader = Reader::new(bytes);
         if reader.u8()? != SLOT_VERSION {
-            return Err(Error::Format("версия слота не поддерживается"));
+            return Err(Error::Format("slot version is not supported"));
         }
         let kind = SlotKind::from_byte(reader.u8()?)?;
         let id: [u8; SLOT_ID_LEN] = reader
             .take(SLOT_ID_LEN)?
             .try_into()
-            .map_err(|_| Error::Format("идентификатор слота"))?;
+            .map_err(|_| Error::Format("slot identifier"))?;
         let label_len = usize::from(reader.u8()?);
         let label = core::str::from_utf8(reader.take(label_len)?)
-            .map_err(|_| Error::Format("метка слота не UTF-8"))?
+            .map_err(|_| Error::Format("slot label is not UTF-8"))?
             .to_owned();
         let kdf_tag = reader.u8()?;
         let kdf_len = usize::from(reader.u8()?);
@@ -243,7 +243,7 @@ impl WrapSlot {
                 | (SlotKind::RecoveryCode, SlotKdf::Hkdf { .. })
         );
         if !consistent {
-            return Err(Error::Format("тип слота не соответствует выводу ключа"));
+            return Err(Error::Format("slot type does not match the key derivation"));
         }
 
         Ok(Self {
@@ -308,10 +308,10 @@ impl SlotSet {
             .slots
             .iter()
             .position(|slot| &slot.id == id)
-            .ok_or(Error::Format("слота с таким идентификатором нет"))?;
+            .ok_or(Error::Format("no slot with this identifier"))?;
         if self.slots.len() == 1 {
             return Err(Error::Format(
-                "это последняя обёртка Data Key — без неё хранилище не открыть",
+                "this is the last Data Key wrapper; the vault cannot be opened without it",
             ));
         }
         Ok(self.slots.remove(position))
@@ -332,7 +332,7 @@ impl SlotSet {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let mut reader = Reader::new(bytes);
         if reader.u8()? != SLOT_SET_VERSION {
-            return Err(Error::Format("версия списка слотов не поддерживается"));
+            return Err(Error::Format("slot list version is not supported"));
         }
         let count = usize_from_u32(reader.u32()?)?;
         let mut slots = Vec::with_capacity(count.min(64));
@@ -346,7 +346,7 @@ impl SlotSet {
 }
 
 fn usize_from_u32(value: u32) -> Result<usize> {
-    usize::try_from(value).map_err(|_| Error::Format("длина не помещается в usize"))
+    usize::try_from(value).map_err(|_| Error::Format("length does not fit in usize"))
 }
 
 struct Reader<'a> {
@@ -363,11 +363,11 @@ impl<'a> Reader<'a> {
         let end = self
             .position
             .checked_add(len)
-            .ok_or(Error::Format("переполнение длины"))?;
+            .ok_or(Error::Format("length overflow"))?;
         let slice = self
             .bytes
             .get(self.position..end)
-            .ok_or(Error::Format("данные обрезаны"))?;
+            .ok_or(Error::Format("data truncated"))?;
         self.position = end;
         Ok(slice)
     }
@@ -378,7 +378,7 @@ impl<'a> Reader<'a> {
 
     fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_le_bytes(
-            self.take(4)?.try_into().expect("срез 4 байта"),
+            self.take(4)?.try_into().expect("4-byte slice"),
         ))
     }
 
@@ -386,7 +386,7 @@ impl<'a> Reader<'a> {
         if self.position == self.bytes.len() {
             Ok(())
         } else {
-            Err(Error::Format("в блобе остались лишние байты"))
+            Err(Error::Format("extra bytes left in the blob"))
         }
     }
 }
@@ -405,55 +405,55 @@ mod tests {
         let data_key = DataKey::generate().expect("CSPRNG");
         let (slot, _) = WrapSlot::from_password(
             &data_key,
-            "мастер-пароль".as_bytes(),
+            "master password".as_bytes(),
             params(),
-            "основной пароль",
+            "primary password",
         )
-        .expect("обёртка");
+        .expect("wrap");
         (data_key, slot)
     }
 
     #[test]
-    fn parolnaya_obertka_otkryvaetsya() {
+    fn password_wrapper_opens() {
         let (data_key, slot) = password_slot();
         let (opened, _) = slot
-            .unlock_with_password("мастер-пароль".as_bytes())
-            .expect("разблокировка");
+            .unlock_with_password("master password".as_bytes())
+            .expect("unlock");
         assert_eq!(opened.as_key(), data_key.as_key());
         assert_eq!(slot.kind(), SlotKind::Password);
-        assert_eq!(slot.label(), "основной пароль");
+        assert_eq!(slot.label(), "primary password");
     }
 
     #[test]
-    fn auth_hash_odinakov_pri_sozdanii_i_razblokirovke() {
+    fn auth_hash_is_same_on_creation_and_unlock() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let (slot, created) =
-            WrapSlot::from_password(&data_key, "пароль".as_bytes(), params(), "метка")
-                .expect("обёртка");
+            WrapSlot::from_password(&data_key, "password".as_bytes(), params(), "label")
+                .expect("wrap");
         let (_, unlocked) = slot
-            .unlock_with_password("пароль".as_bytes())
-            .expect("разблокировка");
+            .unlock_with_password("password".as_bytes())
+            .expect("unlock");
         assert_eq!(created, unlocked);
     }
 
     #[test]
-    fn neverny_parol_ne_otkryvaet() {
+    fn wrong_password_does_not_open() {
         let (_, slot) = password_slot();
         assert_eq!(
-            slot.unlock_with_password("мастер-пароль ".as_bytes())
+            slot.unlock_with_password("master password ".as_bytes())
                 .unwrap_err(),
             Error::Decrypt
         );
     }
 
     #[test]
-    fn vneshniy_klyuch_i_chuzhoy_vneshniy_klyuch() {
+    fn external_key_and_foreign_external_key() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let key = Key32::generate().expect("CSPRNG");
         let slot =
-            WrapSlot::from_external_key(&data_key, &key, "MacBook, Touch ID").expect("обёртка");
+            WrapSlot::from_external_key(&data_key, &key, "MacBook, Touch ID").expect("wrap");
 
-        let opened = slot.unlock_with_external_key(&key).expect("разблокировка");
+        let opened = slot.unlock_with_external_key(&key).expect("unlock");
         assert_eq!(opened.as_key(), data_key.as_key());
 
         let alien = Key32::generate().expect("CSPRNG");
@@ -464,15 +464,15 @@ mod tests {
     }
 
     #[test]
-    fn kod_vosstanovleniya_i_chuzhoy_kod() {
+    fn recovery_code_and_foreign_code() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let code = RecoveryCode::generate().expect("CSPRNG");
         let slot =
-            WrapSlot::from_recovery_code(&data_key, &code, "код восстановления").expect("обёртка");
+            WrapSlot::from_recovery_code(&data_key, &code, "recovery code").expect("wrap");
 
         let opened = slot
             .unlock_with_recovery_code(&code)
-            .expect("разблокировка");
+            .expect("unlock");
         assert_eq!(opened.as_key(), data_key.as_key());
 
         let alien = RecoveryCode::generate().expect("CSPRNG");
@@ -483,22 +483,22 @@ mod tests {
     }
 
     #[test]
-    fn tri_oberki_odnogo_data_key() {
+    fn three_wrappers_of_one_data_key() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let external = Key32::generate().expect("CSPRNG");
         let code = RecoveryCode::generate().expect("CSPRNG");
 
         let (password, _) =
-            WrapSlot::from_password(&data_key, "пароль".as_bytes(), params(), "пароль")
-                .expect("обёртка");
+            WrapSlot::from_password(&data_key, "password".as_bytes(), params(), "password")
+                .expect("wrap");
         let keychain =
-            WrapSlot::from_external_key(&data_key, &external, "keychain").expect("обёртка");
-        let recovery = WrapSlot::from_recovery_code(&data_key, &code, "код").expect("обёртка");
+            WrapSlot::from_external_key(&data_key, &external, "keychain").expect("wrap");
+        let recovery = WrapSlot::from_recovery_code(&data_key, &code, "code").expect("wrap");
 
         assert_eq!(
             password
-                .unlock_with_password("пароль".as_bytes())
-                .expect("пароль")
+                .unlock_with_password("password".as_bytes())
+                .expect("password")
                 .0
                 .as_key(),
             data_key.as_key()
@@ -506,21 +506,21 @@ mod tests {
         assert_eq!(
             keychain
                 .unlock_with_external_key(&external)
-                .expect("ключ")
+                .expect("key")
                 .as_key(),
             data_key.as_key()
         );
         assert_eq!(
             recovery
                 .unlock_with_recovery_code(&code)
-                .expect("код")
+                .expect("code")
                 .as_key(),
             data_key.as_key()
         );
     }
 
     #[test]
-    fn slot_ne_otkryvaetsya_chuzhim_sposobom() {
+    fn slot_does_not_open_with_foreign_method() {
         let (_, slot) = password_slot();
         let key = Key32::generate().expect("CSPRNG");
         assert!(slot.unlock_with_external_key(&key).is_err());
@@ -530,82 +530,82 @@ mod tests {
     }
 
     #[test]
-    fn slot_perezhivaet_serializaciyu() {
+    fn slot_survives_serialization() {
         let (_, slot) = password_slot();
-        let restored = WrapSlot::decode(&slot.encode()).expect("разбор");
+        let restored = WrapSlot::decode(&slot.encode()).expect("parse");
         assert_eq!(slot, restored);
         assert_eq!(
             restored
-                .unlock_with_password("мастер-пароль".as_bytes())
-                .expect("разблокировка")
+                .unlock_with_password("master password".as_bytes())
+                .expect("unlock")
                 .0
                 .as_key(),
-            slot.unlock_with_password("мастер-пароль".as_bytes())
-                .expect("разблокировка")
+            slot.unlock_with_password("master password".as_bytes())
+                .expect("unlock")
                 .0
                 .as_key()
         );
     }
 
     #[test]
-    fn podmenennaya_metka_ne_otkryvaetsya() {
+    fn swapped_label_does_not_open() {
         let (_, slot) = password_slot();
         let mut tampered = slot.clone();
-        tampered.label = "чужая метка".to_owned();
+        tampered.label = "foreign label".to_owned();
         assert_eq!(
             tampered
-                .unlock_with_password("мастер-пароль".as_bytes())
+                .unlock_with_password("master password".as_bytes())
                 .unwrap_err(),
             Error::Decrypt
         );
     }
 
     #[test]
-    fn podmenennyy_identifikator_ne_otkryvaetsya() {
+    fn swapped_id_does_not_open() {
         let (_, slot) = password_slot();
         let mut tampered = slot.clone();
         tampered.id[0] ^= 0xFF;
         assert_eq!(
             tampered
-                .unlock_with_password("мастер-пароль".as_bytes())
+                .unlock_with_password("master password".as_bytes())
                 .unwrap_err(),
             Error::Decrypt
         );
     }
 
     #[test]
-    fn oslablennye_parametry_ne_otkryvayut_slot() {
+    fn weakened_parameters_do_not_open_slot() {
         let (_, slot) = password_slot();
         let mut tampered = slot.clone();
         tampered.kdf = SlotKdf::Argon2id(
-            Argon2idParams::new(8, 1, 1, [0x77; SALT_LEN]).expect("слабые параметры"),
+            Argon2idParams::new(8, 1, 1, [0x77; SALT_LEN]).expect("weak parameters"),
         );
         assert_eq!(
             tampered
-                .unlock_with_password("мастер-пароль".as_bytes())
+                .unlock_with_password("master password".as_bytes())
                 .unwrap_err(),
             Error::Decrypt
         );
     }
 
     #[test]
-    fn izmenennyy_bayt_obertki_ne_otkryvaet() {
+    fn modified_wrapper_byte_does_not_open() {
         let (_, slot) = password_slot();
         for i in 0..slot.sealed.len() {
             let mut tampered = slot.clone();
             tampered.sealed[i] ^= 0x01;
             assert_eq!(
                 tampered
-                    .unlock_with_password("мастер-пароль".as_bytes())
+                    .unlock_with_password("master password".as_bytes())
                     .unwrap_err(),
                 Error::Decrypt,
-                "байт {i} обёртки изменён, а слот открылся"
+                "wrap byte {i} was modified but the slot still opened"
             );
         }
     }
 
     #[test]
-    fn isporchennye_bayty_ne_razbirayutsya() {
+    fn corrupted_bytes_do_not_parse() {
         let (_, slot) = password_slot();
         let encoded = slot.encode();
 
@@ -629,76 +629,76 @@ mod tests {
             &Key32::generate().expect("CSPRNG"),
             "keychain",
         )
-        .expect("обёртка");
+        .expect("wrap");
         let mut mismatched = external.encode();
         mismatched[1] = SlotKind::Password as u8;
         assert!(WrapSlot::decode(&mismatched).is_err());
     }
 
     #[test]
-    fn identifikatory_slotov_raznye() {
+    fn slot_ids_differ() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let a =
-            WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), "первый")
-                .expect("обёртка");
+            WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), "first")
+                .expect("wrap");
         let b =
-            WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), "второй")
-                .expect("обёртка");
+            WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), "second")
+                .expect("wrap");
         assert_ne!(a.id(), b.id());
     }
 
     #[test]
-    fn spisok_slotov_perezhivaet_serializaciyu() {
+    fn slot_list_survives_serialization() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let mut set = SlotSet::new();
         let (password, _) =
-            WrapSlot::from_password(&data_key, "пароль".as_bytes(), params(), "пароль")
-                .expect("обёртка");
+            WrapSlot::from_password(&data_key, "password".as_bytes(), params(), "password")
+                .expect("wrap");
         set.push(password);
         set.push(
             WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), "keychain")
-                .expect("обёртка"),
+                .expect("wrap"),
         );
 
-        let restored = SlotSet::decode(&set.encode()).expect("разбор");
+        let restored = SlotSet::decode(&set.encode()).expect("parse");
         assert_eq!(set, restored);
         assert_eq!(restored.len(), 2);
         assert_eq!(restored.iter_kind(SlotKind::ExternalKey).count(), 1);
     }
 
     #[test]
-    fn udalenie_obertki_keychain_ne_lomaet_parol() {
+    fn removing_keychain_wrapper_does_not_break_password() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let mut set = SlotSet::new();
         let (password, _) =
-            WrapSlot::from_password(&data_key, "пароль".as_bytes(), params(), "пароль")
-                .expect("обёртка");
+            WrapSlot::from_password(&data_key, "password".as_bytes(), params(), "password")
+                .expect("wrap");
         set.push(password);
         let keychain =
             WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), "keychain")
-                .expect("обёртка");
+                .expect("wrap");
         let keychain_id = *keychain.id();
         set.push(keychain);
 
-        set.remove(&keychain_id).expect("удаление");
+        set.remove(&keychain_id).expect("removal");
         assert_eq!(set.len(), 1);
         assert!(set.find(&keychain_id).is_none());
         assert!(
             set.iter()
                 .next()
-                .expect("остался пароль")
-                .unlock_with_password("пароль".as_bytes())
+                .expect("password remains")
+                .unlock_with_password("password".as_bytes())
                 .is_ok()
         );
     }
 
     #[test]
-    fn poslednyaya_obertka_ne_udalyaetsya() {
+    fn last_wrapper_cannot_be_removed() {
         let data_key = DataKey::generate().expect("CSPRNG");
         let mut set = SlotSet::new();
         let slot =
-            WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), "одна")
-                .expect("обёртка");
+            WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), "single")
+                .expect("wrap");
         let id = *slot.id();
         set.push(slot);
         assert!(set.remove(&id).is_err());
@@ -706,9 +706,9 @@ mod tests {
     }
 
     #[test]
-    fn dlinnaya_metka_otvergaetsya() {
+    fn long_label_is_rejected() {
         let data_key = DataKey::generate().expect("CSPRNG");
-        let long = "я".repeat(200);
+        let long = "x".repeat(300);
         assert!(
             WrapSlot::from_external_key(&data_key, &Key32::generate().expect("CSPRNG"), &long)
                 .is_err()
@@ -716,13 +716,13 @@ mod tests {
     }
 
     #[test]
-    fn obertka_ne_soderzhit_data_key_v_otkrytom_vide() {
+    fn wrapper_does_not_contain_data_key_in_plaintext() {
         let (data_key, slot) = password_slot();
         let encoded = slot.encode();
         let needle = data_key.as_key().as_bytes();
         assert!(
             !encoded.windows(KEY_LEN).any(|window| window == needle),
-            "Data Key нашёлся в сериализованной обёртке"
+            "Data Key found in the serialized wrap"
         );
     }
 }

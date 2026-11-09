@@ -1,0 +1,5 @@
+sync:
+  folder_error: "同步文件夹：%{error}"
+  locked_during: "同步期间保险库已被锁定。"
+  received: "已接收条目：%{applied}，本地较新：%{kept}"
+  and_more: "%{first}（另有 %{count} 项）"

@@ -1,0 +1,11 @@
+connect:
+  no_address: "未指定连接地址。"
+  empty_user: "地址“%{raw}”中的用户名为空。"
+  unclosed_bracket: "地址“%{raw}”中的 IPv6 括号未闭合。"
+  no_host: "地址“%{raw}”未指定主机。"
+  invalid_port: "地址“%{raw}”中的端口无效：%{port}。"
+  jump_empty: "ProxyJump“%{raw}”包含空元素。"
+  jump_error: "ProxyJump：%{error}"
+  jump_cyclic: "ProxyJump 链存在循环或过长：%{chain} → %{alias}。"
+  proxy_unsupported: "代理“%{title}”的类型未知，当前版本不支持。"
+  proxy_command: "此主机在 ~/.ssh/config 中设置了 ProxyCommand（%{command}）；不支持运行外部命令。请使用 ProxyJump 或保管库中的代理服务器。"

@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use gpui_kit::component::{
     ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
@@ -70,13 +71,13 @@ pub struct TerminalView {
     session: Option<SshSession>,
     can_save_secrets: bool,
     pending_stored_rejected: bool,
-    /// Секреты с галочкой «Сохранить»: ждут успешного входа, чтобы неверный
-    /// пароль не попал в хранилище. Повторный ввод заменяет прежний.
+    /// Secrets with the "Save" checkbox ticked: they wait for a successful login so a wrong
+    /// password does not end up in the vault. Entering again replaces the previous one.
     unsaved: Vec<(proto::SecretPurpose, proto::Secret)>,
     save_unsaved: bool,
     status: Status,
     font_family: SharedString,
-    /// Шрифт сетки: основной плюс шрифт значков в подстановке.
+    /// Grid font: the main one plus the icon font as a fallback.
     font: gpui_kit::Font,
     focus: FocusHandle,
     metrics: CellMetrics,
@@ -316,7 +317,7 @@ impl TerminalView {
                 kind,
                 error,
             } => {
-                // При повторном запросе галочка остаётся, как её оставили.
+                // On a repeated prompt the checkbox stays as it was left.
                 let remember = secret_purpose(kind)
                     .is_some_and(|purpose| self.unsaved.iter().any(|(p, _)| *p == purpose));
                 self.prompt = Some(Prompt::Secret {
@@ -355,7 +356,7 @@ impl TerminalView {
                 }
 
                 if let CloseReason::Error(text) = &reason
-                    && text.contains(crate::ssh::STORED_PASSWORD_REJECTED)
+                    && text.contains(&crate::ssh::stored_password_rejected())
                 {
                     self.pending_stored_rejected = true;
                 }
@@ -364,14 +365,14 @@ impl TerminalView {
                     CloseReason::Remote { exit_status } => Status::Closed {
                         message: match exit_status {
                             Some(code) => {
-                                format!("Соединение закрыто, код завершения {code}").into()
+                                t!("terminal.closed_code", code = code).into()
                             }
-                            None => "Соединение закрыто удалённой стороной".into(),
+                            None => t!("terminal.closed_remote").into(),
                         },
                         failed: false,
                     },
                     CloseReason::Local => Status::Closed {
-                        message: "Отключено".into(),
+                        message: t!("terminal.disconnected").into(),
                         failed: false,
                     },
                     CloseReason::Error(text) => Status::Closed {
@@ -521,7 +522,7 @@ impl TerminalView {
             window.focus(&bar.input.focus_handle(cx), cx);
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Найти в истории"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("terminal.search_placeholder")));
         window.focus(&input.focus_handle(cx), cx);
 
         let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
@@ -559,7 +560,7 @@ impl TerminalView {
                 None
             }
             Ok(None) if query.is_empty() => None,
-            Ok(None) => Some(SharedString::from("Не найдено")),
+            Ok(None) => Some(SharedString::from(t!("terminal.not_found"))),
             Err(error) => Some(SharedString::from(error)),
         };
         if let Some(bar) = &mut self.search {
@@ -606,7 +607,7 @@ impl TerminalView {
                         .ghost()
                         .xsmall()
                         .label("↑")
-                        .tooltip("Предыдущее совпадение (Enter)")
+                        .tooltip(t!("terminal.prev_match"))
                         .on_click(cx.listener(|this, _, _window, cx| this.search_step(true, cx))),
                 )
                 .child(
@@ -614,7 +615,7 @@ impl TerminalView {
                         .ghost()
                         .xsmall()
                         .label("↓")
-                        .tooltip("Следующее совпадение (Ctrl+Enter)")
+                        .tooltip(t!("terminal.next_match"))
                         .on_click(cx.listener(|this, _, _window, cx| this.search_step(false, cx))),
                 )
                 .child(
@@ -622,7 +623,7 @@ impl TerminalView {
                         .ghost()
                         .xsmall()
                         .label("×")
-                        .tooltip("Закрыть (Esc)")
+                        .tooltip(t!("terminal.close"))
                         .on_click(cx.listener(|this, _, _window, cx| this.close_search(cx))),
                 )
                 .into_any_element(),
@@ -1214,25 +1215,35 @@ impl TerminalView {
 
         let size = self.terminal.size();
         let (text, color) = match &self.status {
-            Status::Connecting { target } => (format!("Подключение к {target}…"), dim),
+            Status::Connecting { target } => (t!("terminal.connecting", target = target).to_string(), dim),
             Status::Connected {
                 target,
                 fingerprint,
             } => {
                 if self.copied {
-                    (format!("{target} — выделенный текст скопирован"), ok)
+                    (t!("terminal.copied", target = target).to_string(), ok)
                 } else {
                     (
-                        format!(
-                            "{target} — {}×{} — ключ {fingerprint}{}",
-                            size.cols,
-                            size.rows,
-                            if display_offset > 0 {
-                                format!(" — прокручено на {display_offset}")
-                            } else {
-                                String::new()
-                            }
-                        ),
+                        if display_offset > 0 {
+                            t!(
+                                "terminal.connected_scrolled",
+                                target = target,
+                                cols = size.cols,
+                                rows = size.rows,
+                                fingerprint = fingerprint,
+                                offset = display_offset
+                            )
+                            .to_string()
+                        } else {
+                            t!(
+                                "terminal.connected",
+                                target = target,
+                                cols = size.cols,
+                                rows = size.rows,
+                                fingerprint = fingerprint
+                            )
+                            .to_string()
+                        },
                         ok,
                     )
                 }
@@ -1319,7 +1330,7 @@ impl TerminalView {
                                     this.child(
                                         Checkbox::new("remember-secret")
                                             .small()
-                                            .label("Сохранить в хранилище")
+                                            .label(SharedString::from(t!("terminal.save_to_vault")))
                                             .checked(remember)
                                             .on_click(cx.listener(
                                                 |this, checked: &bool, _window, cx| {
@@ -1339,7 +1350,7 @@ impl TerminalView {
                                     Button::new("submit-secret")
                                         .primary()
                                         .small()
-                                        .label("Подтвердить")
+                                        .label(t!("terminal.confirm"))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.submit_secret(cx)
                                         })),
@@ -1355,9 +1366,9 @@ impl TerminalView {
                 card.border_color(if *changed { theme.danger } else { theme.border })
                     .child(
                         Label::new(if *changed {
-                            "Ключ хоста изменился"
+                            t!("terminal.key_changed")
                         } else {
-                            "Неизвестный хост"
+                            t!("terminal.unknown_host")
                         })
                         .text_xl()
                         .text_color(if *changed {
@@ -1389,7 +1400,7 @@ impl TerminalView {
                             .child(
                                 Button::new("hostkey-reject")
                                     .ghost()
-                                    .label("Отклонить")
+                                    .label(t!("terminal.reject"))
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.decide_host_key(HostKeyDecision::Reject, cx)
                                     })),
@@ -1397,7 +1408,7 @@ impl TerminalView {
                             .child(
                                 Button::new("hostkey-once")
                                     .outline()
-                                    .label("Доверять однократно")
+                                    .label(t!("terminal.trust_once"))
                                     .on_click(cx.listener(|this, _, _window, cx| {
                                         this.decide_host_key(
                                             HostKeyDecision::Accept { remember: false },
@@ -1409,7 +1420,7 @@ impl TerminalView {
                                 this.child(
                                     Button::new("hostkey-remember")
                                         .primary()
-                                        .label("Доверять и сохранить")
+                                        .label(t!("terminal.trust_save"))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.decide_host_key(
                                                 HostKeyDecision::Accept { remember: true },
@@ -1421,9 +1432,9 @@ impl TerminalView {
                     )
                     .child(
                         Label::new(if *changed {
-                            "Клавиши: o — однократно, n или Esc — отклонить"
+                            t!("terminal.keys_changed")
                         } else {
-                            "Клавиши: y — сохранить, o — однократно, n или Esc — отклонить"
+                            t!("terminal.keys_unknown")
                         })
                         .text_xs()
                         .text_color(theme.muted_foreground),
@@ -1489,14 +1500,14 @@ mod tests {
     #[test]
     fn typing_uses_the_layout_character_not_the_ascii_equivalent() {
         assert_eq!(
-            press("q", Some("й"), plain()).map(|(key, _)| key),
-            Some(Key::Char('й'))
+            press("q", Some("é"), plain()).map(|(key, _)| key),
+            Some(Key::Char('é'))
         );
     }
 
     #[test]
     fn ctrl_uses_the_physical_key_so_ctrl_letters_work_in_any_layout() {
-        let (key, mods) = press("a", Some("ф"), ctrl()).expect("клавиша распознана");
+        let (key, mods) = press("a", Some("à"), ctrl()).expect("key recognized");
         assert_eq!(key, Key::Char('a'));
         assert!(mods.ctrl);
     }
@@ -1507,7 +1518,7 @@ mod tests {
             shift: true,
             ..Default::default()
         };
-        let (key, mods) = press("a", Some("A"), modifiers).expect("клавиша распознана");
+        let (key, mods) = press("a", Some("A"), modifiers).expect("key recognized");
         assert_eq!(key, Key::Char('A'));
         assert!(!mods.shift);
     }
@@ -1518,9 +1529,9 @@ mod tests {
             shift: true,
             ..Default::default()
         };
-        let (key, mods) = press("tab", None, modifiers).expect("клавиша распознана");
+        let (key, mods) = press("tab", None, modifiers).expect("key recognized");
         assert_eq!(key, Key::Tab);
-        assert!(mods.shift, "Shift+Tab обязан остаться Shift+Tab");
+        assert!(mods.shift, "Shift+Tab must remain Shift+Tab");
     }
 
     #[test]

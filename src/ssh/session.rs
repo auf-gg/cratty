@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -55,8 +56,8 @@ pub(super) struct Connected {
 }
 
 impl Connected {
-    /// Прощается с сервером, но недолго: до мёртвого сервера прощание может не
-    /// дойти, а закрытие вкладки его ждёт.
+    /// Says goodbye to the server, but not for long: the goodbye may not reach a dead server,
+    /// and closing the tab waits for it.
     pub async fn disconnect(self) {
         let goodbye = async {
             let _ = self
@@ -97,7 +98,9 @@ pub(super) async fn connect(config: &SshConfig, prompter: &Prompter) -> Result<C
 
     let mut session = client::connect_stream(client_config, route::answering(transport), verifier)
         .await
-        .with_context(|| format!("подключение к {}", route::join(&config.host, config.port)))?;
+        .with_context(|| {
+            t!("ssh.connecting_to", target = route::join(&config.host, config.port))
+        })?;
 
     authenticate(&mut session, &Login::target(config), prompter).await?;
 
@@ -105,7 +108,7 @@ pub(super) async fn connect(config: &SshConfig, prompter: &Prompter) -> Result<C
         .lock()
         .ok()
         .and_then(|guard| guard.clone())
-        .unwrap_or_else(|| "<неизвестен>".to_string());
+        .unwrap_or_else(|| t!("ssh.unknown_fingerprint").into_owned());
 
     Ok(Connected {
         session: Arc::new(session),
@@ -115,10 +118,10 @@ pub(super) async fn connect(config: &SshConfig, prompter: &Prompter) -> Result<C
     })
 }
 
-/// Ждёт `work`, пока канал команд открыт. Закрыли — вкладку закрыли, и
-/// подключение бросается сразу, а не по таймауту: поток SSH ждут при
-/// закрытии, и иначе ждал бы и интерфейс. Команды, пришедшие тем временем,
-/// копятся в `queued` и выполняются после подключения.
+/// Waits for `work` while the command channel is open. If it is closed, the tab was closed, and
+/// the connection is dropped at once rather than on a timeout: the SSH thread is waited on when
+/// closing, and otherwise the UI would wait too. Commands that arrive in the meantime
+/// pile up in `queued` and run after connecting.
 pub(super) async fn unless_closed<T, C>(
     work: impl Future<Output = Result<T>>,
     commands: &mut mpsc::UnboundedReceiver<C>,
@@ -182,9 +185,19 @@ async fn serve(
                 Some(ChannelMsg::ExitStatus { exit_status: status }) => exit_status = Some(status),
                 Some(ChannelMsg::ExitSignal { signal_name, error_message, .. }) => {
                     let text = if error_message.is_empty() {
-                        format!("\r\nshell убит сигналом {signal_name:?}\r\n")
+                        format!(
+                            "\r\n{}\r\n",
+                            t!("ssh.shell_killed", signal = format!("{signal_name:?}"))
+                        )
                     } else {
-                        format!("\r\nshell убит сигналом {signal_name:?}: {error_message}\r\n")
+                        format!(
+                            "\r\n{}\r\n",
+                            t!(
+                                "ssh.shell_killed_detail",
+                                signal = format!("{signal_name:?}"),
+                                message = error_message
+                            )
+                        )
                     };
                     events.send(FromSsh::Output(Bytes::from(text))).await?;
                 }
@@ -198,7 +211,7 @@ async fn serve(
                 Some(ToSsh::Input(data)) => writer
                     .data_bytes(data)
                     .await
-                    .context("отправка ввода в PTY")?,
+                    .context(t!("ssh.ctx_send_input"))?,
                 Some(ToSsh::Resize(size)) => resize(&writer, size).await?,
                 Some(ToSsh::SetForward { index, enabled }) => forwards.set(index, enabled).await,
                 Some(ToSsh::OpenSftp(attach)) => match session.channel_open_session().await {
@@ -206,7 +219,9 @@ async fn serve(
                         tokio::spawn(attach.run(channel));
                     }
                     Err(error) => {
-                        attach.fail(format!("сервер не открыл канал для файлов: {error}")).await;
+                        attach
+                            .fail(t!("ssh.files_channel_failed", error = error).into_owned())
+                            .await;
                     }
                 },
                 Some(ToSsh::Disconnect) | None => {
@@ -223,7 +238,7 @@ async fn serve(
     Ok(reason)
 }
 
-/// Подключение и запуск shell (или команды) — всё, что идёт до первого вывода.
+/// Connecting and starting the shell (or command) — everything that happens before the first output.
 async fn open_shell(
     config: &SshConfig,
     prompter: &Prompter,
@@ -233,7 +248,7 @@ async fn open_shell(
         .session
         .channel_open_session()
         .await
-        .context("сервер не открыл сессионный канал")?;
+        .context(t!("ssh.ctx_session_channel"))?;
 
     let mut early = Vec::new();
 
@@ -248,14 +263,14 @@ async fn open_shell(
             PTY_MODES,
         )
         .await
-        .context("запрос PTY")?;
-    await_reply(&mut channel, "выделение PTY", &mut early).await?;
+        .context(t!("ssh.ctx_pty_request"))?;
+    await_reply(&mut channel, &t!("ssh.what_pty_alloc"), &mut early).await?;
 
     if config.forward_agent {
         channel
             .agent_forward(false)
             .await
-            .context("запрос проброса агента")?;
+            .context(t!("ssh.ctx_agent_forward"))?;
     }
 
     match &config.command {
@@ -263,12 +278,12 @@ async fn open_shell(
             channel
                 .exec(true, command.as_bytes())
                 .await
-                .context("запуск команды")?;
-            await_reply(&mut channel, "запуск команды", &mut early).await?;
+                .context(t!("ssh.what_run_command"))?;
+            await_reply(&mut channel, &t!("ssh.what_run_command"), &mut early).await?;
         }
         None => {
-            channel.request_shell(true).await.context("запрос shell")?;
-            await_reply(&mut channel, "запуск shell", &mut early).await?;
+            channel.request_shell(true).await.context(t!("ssh.ctx_shell_request"))?;
+            await_reply(&mut channel, &t!("ssh.what_start_shell"), &mut early).await?;
         }
     }
 
@@ -299,8 +314,12 @@ async fn open_route(
         route::tcp(first_host, first_port)
             .await
             .with_context(|| match hops.first() {
-                Some(hop) => format!("подключение к {}", hop.describe()),
-                None => format!("подключение к {}", route::join(&config.host, config.port)),
+                Some(hop) => t!("ssh.connecting_to", target = hop.describe()).into_owned(),
+                None => t!(
+                    "ssh.connecting_to",
+                    target = route::join(&config.host, config.port)
+                )
+                .into_owned(),
             })?;
 
     let mut jumps = Vec::new();
@@ -310,10 +329,10 @@ async fn open_route(
             Hop::Socks5(socks) => route::socks5(stream, socks, &host, port)
                 .await
                 .with_context(|| {
-                    format!(
-                        "{} не соединил с {}",
-                        hop.describe(),
-                        route::join(&host, port)
+                    t!(
+                        "ssh.hop_connect_failed",
+                        hop = hop.describe(),
+                        target = route::join(&host, port)
                     )
                 })?,
             Hop::Jump(jump) => {
@@ -353,7 +372,7 @@ async fn open_jump(
     let mut session =
         client::connect_stream(client_config.clone(), route::answering(stream), verifier)
             .await
-            .context("SSH-рукопожатие")?;
+            .context(t!("ssh.ctx_handshake"))?;
 
     let login = Login {
         user: &jump.user,
@@ -364,12 +383,12 @@ async fn open_jump(
     };
     authenticate(&mut session, &login, prompter).await?;
 
-    let tunnel = format!("туннель до {}", route::join(host, port));
+    let tunnel = t!("ssh.tunnel_label", target = route::join(host, port)).into_owned();
     let channel = route::deadline(&tunnel, async {
         session
             .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0)
             .await
-            .with_context(|| format!("хост не открыл {tunnel}"))
+            .with_context(|| t!("ssh.tunnel_failed", tunnel = tunnel))
     })
     .await?;
 
@@ -385,7 +404,7 @@ async fn resize(writer: &ChannelWriteHalf<client::Msg>, size: PtySize) -> Result
             size.pixel_height as u32,
         )
         .await
-        .context("изменение размера PTY")
+        .context(t!("ssh.ctx_resize_pty"))
 }
 
 async fn await_reply(
@@ -396,12 +415,12 @@ async fn await_reply(
     loop {
         match channel.wait().await {
             Some(ChannelMsg::Success) => return Ok(()),
-            Some(ChannelMsg::Failure) => bail!("сервер отказал: {what}"),
+            Some(ChannelMsg::Failure) => bail!(t!("ssh.server_refused", what = what)),
             Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                 early.push(data)
             }
             Some(ChannelMsg::Eof | ChannelMsg::Close) | None => {
-                bail!("канал закрыт, не ответив на запрос: {what}")
+                bail!(t!("ssh.channel_closed", what = what))
             }
             Some(_) => {}
         }
@@ -438,7 +457,7 @@ async fn authenticate(
             let result = session
                 .authenticate_password(login.user, password.clone())
                 .await
-                .context("аутентификация по паролю")?;
+                .context(t!("ssh.ctx_password_auth"))?;
             return match auth_failure_message(&login.whom, &result) {
                 Some(message) => bail!("{message}"),
                 None => Ok(()),
@@ -460,31 +479,35 @@ async fn authenticate(
             Credential::Password => try_password(session, login.user, &login.whom, prompter).await,
             Credential::Stored => match login.stored_password {
                 Some(secret) => try_stored_password(session, login.user, secret, prompter).await,
-                None => Ok(Attempt::Rejected("сохранённого пароля нет".into())),
+                None => Ok(Attempt::Rejected(t!("ssh.no_stored_password").into_owned())),
             },
         };
 
         match outcome {
             Ok(Attempt::Succeeded) => return Ok(()),
             Ok(Attempt::Rejected(why)) => attempts.push(why),
-            Ok(Attempt::Cancelled) => bail!("вход отменён"),
-            Ok(Attempt::StoredRejected) => bail!(
-                "{STORED_PASSWORD_REJECTED}: сервер не принял сохранённый пароль \
-                 для {}. Обновите его в записи и попробуйте снова.",
-                login.whom
-            ),
+            Ok(Attempt::Cancelled) => bail!(t!("ssh.sign_in_cancelled")),
+            Ok(Attempt::StoredRejected) => bail!(t!(
+                "ssh.stored_rejected",
+                marker = stored_password_rejected(),
+                whom = login.whom
+            )),
             Err(err) => attempts.push(format!("{err:#}")),
         }
     }
 
-    bail!(
-        "не удалось войти как {}. Что пробовали:\n  {}",
-        login.whom,
-        attempts.join("\n  ")
-    )
+    bail!(t!(
+        "ssh.sign_in_failed",
+        whom = login.whom,
+        attempts = attempts.join("\n  ")
+    ))
 }
 
-pub const STORED_PASSWORD_REJECTED: &str = "сохранённый пароль отвергнут";
+/// The phrase the UI looks for to offer updating the stored password. It is
+/// translated, so the error and the check must both get it from here.
+pub fn stored_password_rejected() -> String {
+    t!("ssh.stored_rejected_marker").into_owned()
+}
 
 enum Attempt {
     Succeeded,
@@ -499,16 +522,16 @@ async fn try_agent(
     own: Option<&crate::agent::Address>,
 ) -> Result<Attempt> {
     let Some(mut agent) = connect_agent(own).await else {
-        return Ok(Attempt::Rejected("ssh-agent недоступен".into()));
+        return Ok(Attempt::Rejected(t!("ssh.agent_unavailable").into_owned()));
     };
 
     let identities = agent
         .request_identities()
         .await
-        .context("ssh-agent не отдал список ключей")?;
+        .context(t!("ssh.ctx_agent_key_list"))?;
 
     if identities.is_empty() {
-        return Ok(Attempt::Rejected("в ssh-agent нет ключей".into()));
+        return Ok(Attempt::Rejected(t!("ssh.agent_no_keys").into_owned()));
     }
 
     let total = identities.len();
@@ -521,15 +544,15 @@ async fn try_agent(
         let result = session
             .authenticate_publickey_with(user, key, None, &mut agent)
             .await
-            .context("подпись ключом из ssh-agent")?;
+            .context(t!("ssh.ctx_agent_sign"))?;
         if result.success() {
             return Ok(Attempt::Succeeded);
         }
     }
 
-    Ok(Attempt::Rejected(format!(
-        "ни один из {total} ключей ssh-agent не подошёл"
-    )))
+    Ok(Attempt::Rejected(
+        t!("ssh.agent_keys_failed", total = total).into_owned(),
+    ))
 }
 
 #[allow(clippy::collapsible_match)]
@@ -627,7 +650,7 @@ async fn try_key(
         auth::KeyLoad::NeedsPassphrase => {
             let Some(passphrase) = prompter
                 .ask_secret(
-                    format!("Passphrase к ключу {label}"),
+                    t!("ssh.passphrase_prompt", label = label).into_owned(),
                     SecretKind::Passphrase,
                     None,
                 )
@@ -638,7 +661,9 @@ async fn try_key(
             match auth::load_key(path, Some(&passphrase))? {
                 auth::KeyLoad::Loaded(key) => key,
                 auth::KeyLoad::NeedsPassphrase => {
-                    return Ok(Attempt::Rejected(format!("неверный passphrase к {label}")));
+                    return Ok(Attempt::Rejected(
+                        t!("ssh.wrong_passphrase", label = label).into_owned(),
+                    ));
                 }
             }
         }
@@ -649,12 +674,14 @@ async fn try_key(
     let result = session
         .authenticate_publickey(user, signing_key)
         .await
-        .with_context(|| format!("вход по ключу {label}"))?;
+        .with_context(|| t!("ssh.ctx_key_sign", label = label))?;
 
     if result.success() {
         Ok(Attempt::Succeeded)
     } else {
-        Ok(Attempt::Rejected(format!("сервер не принял ключ {label}")))
+        Ok(Attempt::Rejected(
+            t!("ssh.key_not_accepted", label = label).into_owned(),
+        ))
     }
 }
 
@@ -668,14 +695,14 @@ async fn try_stored_password(
 ) -> Result<Attempt> {
     let Ok(text) = std::str::from_utf8(secret.expose()) else {
         return Ok(Attempt::Rejected(
-            "сохранённый пароль не UTF-8 — сервер такой не примет".into(),
+            t!("ssh.stored_not_utf8").into_owned(),
         ));
     };
 
     let result = session
         .authenticate_password(user, text.to_owned())
         .await
-        .context("аутентификация сохранённым паролем")?;
+        .context(t!("ssh.ctx_stored_auth"))?;
     if result.success() {
         return Ok(Attempt::Succeeded);
     }
@@ -706,7 +733,7 @@ async fn try_keyboard_interactive(
             Response::Success => return Ok(Attempt::Succeeded),
             Response::Failure { .. } => {
                 return Ok(Attempt::Rejected(
-                    "сервер не принял keyboard-interactive".into(),
+                    t!("ssh.kbd_not_accepted").into_owned(),
                 ));
             }
             Response::InfoRequest { prompts, .. } => prompts,
@@ -746,13 +773,13 @@ async fn try_keyboard_interactive(
     }
 
     Ok(Attempt::Rejected(
-        "сервер не закончил keyboard-interactive за разумное число шагов".into(),
+        t!("ssh.kbd_too_many_rounds").into_owned(),
     ))
 }
 
-/// Столько раз даём ввести пароль заново. Больше не стоит: каждая попытка
-/// тратит до двух из MaxAuthTries сервера (по умолчанию 6) — пароль и
-/// keyboard-interactive с тем же паролем.
+/// How many times we let the password be re-entered. More is unwise: each attempt
+/// uses up to two of the server's MaxAuthTries (6 by default) — password and
+/// keyboard-interactive with the same password.
 const PASSWORD_ATTEMPTS: usize = 3;
 
 async fn try_password(
@@ -762,11 +789,15 @@ async fn try_password(
     prompter: &Prompter,
 ) -> Result<Attempt> {
     let mut error = None;
-    let mut last = Attempt::Rejected("пароль не подошёл".into());
+    let mut last = Attempt::Rejected(t!("ssh.password_failed").into_owned());
 
     for _ in 0..PASSWORD_ATTEMPTS {
         let Some(password) = prompter
-            .ask_secret(format!("Пароль для {whom}"), SecretKind::Password, error)
+            .ask_secret(
+                t!("ssh.password_prompt", whom = whom).into_owned(),
+                SecretKind::Password,
+                error,
+            )
             .await?
         else {
             return Ok(Attempt::Cancelled);
@@ -775,7 +806,7 @@ async fn try_password(
         let result = session
             .authenticate_password(user, password.clone())
             .await
-            .context("аутентификация по паролю")?;
+            .context("password authentication")?;
 
         if result.success() {
             return Ok(Attempt::Succeeded);
@@ -785,7 +816,7 @@ async fn try_password(
         if !matches!(last, Attempt::Rejected(_)) {
             return Ok(last);
         }
-        error = Some("Неверный пароль. Попробуйте ещё раз.".to_string());
+        error = Some(t!("ssh.wrong_password_retry").into_owned());
     }
 
     Ok(last)
@@ -806,15 +837,15 @@ fn auth_failure_message(user: &str, result: &russh::client::AuthResult) -> Optio
         .collect::<Vec<_>>()
         .join(", ");
     let methods = if methods.is_empty() {
-        "сервер не предложил других способов".to_string()
+        t!("ssh.no_other_methods").into_owned()
     } else {
-        format!("сервер предлагает: {methods}")
+        t!("ssh.server_offers", methods = methods).into_owned()
     };
 
     Some(if *partial_success {
-        format!("для {user} нужен ещё один фактор ({methods})")
+        t!("ssh.needs_more_factor", user = user, methods = methods).into_owned()
     } else {
-        format!("не удалось войти как {user} ({methods})")
+        t!("ssh.could_not_sign_in", user = user, methods = methods).into_owned()
     })
 }
 
@@ -934,10 +965,7 @@ impl client::Handler for Verifier {
     async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool> {
         let key = match key {
             PublicKeyOrCertificate::PublicKey { key, .. } => key.clone(),
-            PublicKeyOrCertificate::Certificate(_) => bail!(
-                "сервер предъявил OpenSSH-сертификат; их проверка пока не поддерживается, \
-                 сейчас доверять ему нельзя"
-            ),
+            PublicKeyOrCertificate::Certificate(_) => bail!(t!("ssh.certificate_unsupported")),
         };
 
         if let Ok(mut slot) = self.fingerprint.lock() {
@@ -958,11 +986,11 @@ impl client::Handler for Verifier {
         );
 
         if !askable {
-            return Err(anyhow!(
-                "{} Отпечаток предъявленного ключа: {}",
-                verdict.message(&self.host, self.port),
-                known_hosts::fingerprint(&key)
-            ));
+            return Err(anyhow!(t!(
+                "ssh.hostkey_not_askable",
+                message = verdict.message(&self.host, self.port),
+                fingerprint = known_hosts::fingerprint(&key)
+            )));
         }
 
         let fingerprint = known_hosts::fingerprint(&key);
@@ -982,12 +1010,11 @@ impl client::Handler for Verifier {
             HostKeyDecision::Accept { remember } => {
                 if remember {
                     if changed {
-                        return Err(anyhow!(
-                            "старый ключ {}:{} остаётся в known_hosts. Уберите его строку вручную, \
-                             иначе проверка будет спотыкаться о неё и дальше",
-                            self.host,
-                            self.port
-                        ));
+                        return Err(anyhow!(t!(
+                            "ssh.old_key_remains",
+                            host = self.host,
+                            port = self.port
+                        )));
                     }
                     if let Err(err) = known_hosts::learn(&self.policy, &self.host, self.port, &key)
                     {
@@ -997,12 +1024,16 @@ impl client::Handler for Verifier {
                 Ok(true)
             }
             HostKeyDecision::Reject => {
-                Err(anyhow!("ключ хоста {}:{} отклонён", self.host, self.port))
+                Err(anyhow!(t!(
+                    "ssh.hostkey_rejected",
+                    host = self.host,
+                    port = self.port
+                )))
             }
         }
     }
 }
 
 fn log_learn_failure(error: &anyhow::Error) {
-    eprintln!("не удалось записать ключ в known_hosts: {error:#}");
+    eprintln!("could not write the key to known_hosts: {error:#}");
 }

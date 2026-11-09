@@ -1,0 +1,7 @@
+update:
+  downloading: "Downloading… %{percent}%"
+  install: "Update and restart"
+  available: "Version %{version} available"
+  installed: "Currently installed: %{version}. Open sessions will be closed."
+  failed: "Update failed: %{error}"
+  later: "Later"

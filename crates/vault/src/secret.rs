@@ -25,14 +25,14 @@ impl Key32 {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
         let arr: [u8; KEY_LEN] = bytes
             .try_into()
-            .map_err(|_| Error::Format("ключ не 32 байта"))?;
+            .map_err(|_| Error::Format("key is not 32 bytes"))?;
         Ok(Self(arr))
     }
 }
 
 impl core::fmt::Debug for Key32 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("Key32(<скрыт>)")
+        f.write_str("Key32(<hidden>)")
     }
 }
 
@@ -55,15 +55,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn debug_ne_pechataet_kluch() {
+    fn debug_does_not_print_key() {
         let key = Key32::from_bytes([0xAB; KEY_LEN]);
         let text = format!("{key:?}");
-        assert_eq!(text, "Key32(<скрыт>)");
+        assert_eq!(text, "Key32(<hidden>)");
         assert!(!text.contains("171") && !text.to_lowercase().contains("ab"));
     }
 
     #[test]
-    fn ravenstvo_za_postoyannoe_vremya() {
+    fn equality_in_constant_time() {
         let a = Key32::from_bytes([1; KEY_LEN]);
         let b = Key32::from_bytes([1; KEY_LEN]);
         let mut other = [1u8; KEY_LEN];
@@ -75,16 +75,16 @@ mod tests {
     }
 
     #[test]
-    fn from_slice_trebuet_tochnoy_dliny() {
+    fn from_slice_requires_exact_length() {
         assert!(Key32::from_slice(&[0u8; 31]).is_err());
         assert!(Key32::from_slice(&[0u8; 33]).is_err());
         assert!(Key32::from_slice(&[0u8; 32]).is_ok());
     }
 
     #[test]
-    fn generate_ne_daet_odinakovyh_klyuchey() {
-        let a = Key32::generate().expect("CSPRNG ОС недоступен");
-        let b = Key32::generate().expect("CSPRNG ОС недоступен");
+    fn generate_does_not_give_identical_keys() {
+        let a = Key32::generate().expect("OS CSPRNG unavailable");
+        let b = Key32::generate().expect("OS CSPRNG unavailable");
         assert_ne!(a, b);
         assert_ne!(a.as_bytes(), &[0u8; KEY_LEN]);
     }

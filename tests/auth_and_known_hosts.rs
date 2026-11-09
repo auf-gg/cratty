@@ -32,7 +32,7 @@ fn base_config(sshd: &DockerSshd, auth: AuthMethod) -> SshConfig {
 async fn next_event(session: &mut SshSession) -> Option<FromSsh> {
     tokio::time::timeout(DEADLINE, session.events.next())
         .await
-        .expect("сессия не прислала события в отведённое время")
+        .expect("session sent no events within the allotted time")
 }
 
 async fn connect_answering(
@@ -49,10 +49,10 @@ async fn connect_answering(
                     session
                         .answers
                         .unbounded_send(reply)
-                        .expect("сессия уже закрыта");
+                        .expect("session already closed");
                 }
             }
-            None => return Err("канал событий закрылся молча".into()),
+            None => return Err("event channel closed silently".into()),
         }
     }
 }
@@ -61,32 +61,32 @@ fn make_key(name: &str, passphrase: Option<&str>) -> (PathBuf, String) {
     use russh::keys::{Algorithm, PrivateKey, ssh_key::LineEnding};
 
     let key =
-        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("не сгенерировать ключ");
+        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("could not generate key");
     let public = key
         .public_key()
         .to_openssh()
-        .expect("не сериализовать открытый ключ");
+        .expect("could not serialize public key");
 
     let serialized = match passphrase {
         Some(phrase) => key
             .encrypt(&mut rand::rng(), phrase)
-            .expect("не зашифровать ключ")
+            .expect("could not encrypt key")
             .to_openssh(LineEnding::LF)
-            .expect("не сериализовать ключ"),
+            .expect("could not serialize key"),
         None => key
             .to_openssh(LineEnding::LF)
-            .expect("не сериализовать ключ"),
+            .expect("could not serialize key"),
     };
 
     let path = std::env::temp_dir().join(format!("cratty-test-{name}"));
-    std::fs::write(&path, serialized.as_bytes()).expect("не записать ключ");
+    std::fs::write(&path, serialized.as_bytes()).expect("could not write key");
     (path, public)
 }
 
 #[tokio::test]
 async fn public_key_auth_works_against_openssh() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка входа по ключу пропущена");
+        eprintln!("docker unavailable — key sign-in check skipped");
         return;
     };
 
@@ -97,10 +97,10 @@ async fn public_key_auth_works_against_openssh() {
         order: vec![Credential::Key(path.clone())],
     };
     let mut session =
-        spawn_ssh(base_config(&sshd, AuthMethod::Plan(plan))).expect("не поднялся поток сессии");
+        spawn_ssh(base_config(&sshd, AuthMethod::Plan(plan))).expect("session thread failed to start");
 
     let result = connect_answering(&mut session, |_| None).await;
-    assert!(result.is_ok(), "вход по ключу не прошёл: {result:?}");
+    assert!(result.is_ok(), "key sign-in failed: {result:?}");
 
     let _ = std::fs::remove_file(path);
 }
@@ -108,29 +108,29 @@ async fn public_key_auth_works_against_openssh() {
 #[tokio::test]
 async fn encrypted_key_asks_for_the_passphrase_and_then_works() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка passphrase пропущена");
+        eprintln!("docker unavailable — passphrase check skipped");
         return;
     };
 
-    let (path, public) = make_key("encrypted-key", Some("пароль-к-ключу"));
+    let (path, public) = make_key("encrypted-key", Some("key-password"));
     sshd.authorize_key(&public);
 
     let plan = AuthPlan {
         order: vec![Credential::Key(path.clone())],
     };
     let mut session =
-        spawn_ssh(base_config(&sshd, AuthMethod::Plan(plan))).expect("не поднялся поток сессии");
+        spawn_ssh(base_config(&sshd, AuthMethod::Plan(plan))).expect("session thread failed to start");
 
     let mut asked = false;
     let result = connect_answering(&mut session, |event| match event {
         FromSsh::NeedSecret { kind, prompt, .. } => {
-            assert_eq!(*kind, SecretKind::Passphrase, "спросили не passphrase");
+            assert_eq!(*kind, SecretKind::Passphrase, "asked for something other than a passphrase");
             assert!(
                 prompt.contains("encrypted-key"),
-                "в подсказке не видно, к какому файлу passphrase: {prompt}"
+                "prompt does not show which file the passphrase is for: {prompt}"
             );
             asked = true;
-            Some(Answer::Secret(Some("пароль-к-ключу".into())))
+            Some(Answer::Secret(Some("key-password".into())))
         }
         _ => None,
     })
@@ -138,9 +138,9 @@ async fn encrypted_key_asks_for_the_passphrase_and_then_works() {
 
     assert!(
         result.is_ok(),
-        "вход по зашифрованному ключу не прошёл: {result:?}"
+        "sign-in with the encrypted key failed: {result:?}"
     );
-    assert!(asked, "passphrase не спросили вовсе");
+    assert!(asked, "passphrase was never asked for");
 
     let _ = std::fs::remove_file(path);
 }
@@ -148,29 +148,29 @@ async fn encrypted_key_asks_for_the_passphrase_and_then_works() {
 #[tokio::test]
 async fn a_wrong_passphrase_is_reported_and_does_not_hang() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка неверного passphrase пропущена");
+        eprintln!("docker unavailable — wrong passphrase check skipped");
         return;
     };
 
-    let (path, public) = make_key("wrong-passphrase-key", Some("правильный"));
+    let (path, public) = make_key("wrong-passphrase-key", Some("correct"));
     sshd.authorize_key(&public);
 
     let plan = AuthPlan {
         order: vec![Credential::Key(path.clone())],
     };
     let mut session =
-        spawn_ssh(base_config(&sshd, AuthMethod::Plan(plan))).expect("не поднялся поток сессии");
+        spawn_ssh(base_config(&sshd, AuthMethod::Plan(plan))).expect("session thread failed to start");
 
     let error = connect_answering(&mut session, |event| match event {
-        FromSsh::NeedSecret { .. } => Some(Answer::Secret(Some("неправильный".into()))),
+        FromSsh::NeedSecret { .. } => Some(Answer::Secret(Some("incorrect".into()))),
         _ => None,
     })
     .await
-    .expect_err("с неверным passphrase войти не должно было получиться");
+    .expect_err("signing in with a wrong passphrase should have failed");
 
     assert!(
         error.contains("passphrase"),
-        "текст ошибки не объясняет причину: {error}"
+        "error text does not explain the cause: {error}"
     );
 
     let _ = std::fs::remove_file(path);
@@ -179,7 +179,7 @@ async fn a_wrong_passphrase_is_reported_and_does_not_hang() {
 #[tokio::test]
 async fn password_is_asked_only_after_the_other_methods_fail() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка запроса пароля пропущена");
+        eprintln!("docker unavailable — password prompt check skipped");
         return;
     };
 
@@ -188,7 +188,7 @@ async fn password_is_asked_only_after_the_other_methods_fail() {
         order: vec![Credential::Key(path.clone()), Credential::Password],
     };
     let mut session =
-        spawn_ssh(base_config(&sshd, AuthMethod::Plan(plan))).expect("не поднялся поток сессии");
+        spawn_ssh(base_config(&sshd, AuthMethod::Plan(plan))).expect("session thread failed to start");
 
     let mut asked_for = Vec::new();
     let result = connect_answering(&mut session, |event| match event {
@@ -200,11 +200,11 @@ async fn password_is_asked_only_after_the_other_methods_fail() {
     })
     .await;
 
-    assert!(result.is_ok(), "вход по паролю не прошёл: {result:?}");
+    assert!(result.is_ok(), "password sign-in failed: {result:?}");
     assert_eq!(
         asked_for,
         vec![SecretKind::Password],
-        "спросили не то или не в том порядке"
+        "asked for the wrong thing or in the wrong order"
     );
 
     let _ = std::fs::remove_file(path);
@@ -213,7 +213,7 @@ async fn password_is_asked_only_after_the_other_methods_fail() {
 #[tokio::test]
 async fn a_wrong_password_is_asked_again_with_an_error() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка повторного пароля пропущена");
+        eprintln!("docker unavailable — repeated password check skipped");
         return;
     };
 
@@ -221,14 +221,14 @@ async fn a_wrong_password_is_asked_again_with_an_error() {
         &sshd,
         AuthMethod::Plan(AuthPlan::password_only()),
     ))
-    .expect("не поднялся поток сессии");
+    .expect("session thread failed to start");
 
     let mut errors = Vec::new();
     let result = connect_answering(&mut session, |event| match event {
         FromSsh::NeedSecret { error, .. } => {
             errors.push(error.clone());
             let answer = if errors.len() == 1 {
-                "неправильный"
+                "incorrect"
             } else {
                 PASSWORD
             };
@@ -238,16 +238,16 @@ async fn a_wrong_password_is_asked_again_with_an_error() {
     })
     .await;
 
-    assert!(result.is_ok(), "со второй попытки не вошли: {result:?}");
-    assert_eq!(errors.len(), 2, "пароль спросили не дважды: {errors:?}");
-    assert!(errors[0].is_none(), "первый запрос уже с ошибкой");
-    assert!(errors[1].is_some(), "повторный запрос без объяснения");
+    assert!(result.is_ok(), "did not sign in on the second attempt: {result:?}");
+    assert_eq!(errors.len(), 2, "password was not asked for exactly twice: {errors:?}");
+    assert!(errors[0].is_none(), "first prompt already carries an error");
+    assert!(errors[1].is_some(), "repeated prompt without an explanation");
 }
 
 #[tokio::test]
 async fn cancelling_the_password_prompt_stops_instead_of_hanging() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка отмены пропущена");
+        eprintln!("docker unavailable — cancellation check skipped");
         return;
     };
 
@@ -255,25 +255,25 @@ async fn cancelling_the_password_prompt_stops_instead_of_hanging() {
         &sshd,
         AuthMethod::Plan(AuthPlan::password_only()),
     ))
-    .expect("не поднялся поток сессии");
+    .expect("session thread failed to start");
 
     let error = connect_answering(&mut session, |event| match event {
         FromSsh::NeedSecret { .. } => Some(Answer::Secret(None)),
         _ => None,
     })
     .await
-    .expect_err("после отказа вводить пароль подключиться нельзя");
+    .expect_err("connecting must fail after refusing to enter the password");
 
     assert!(
-        error.contains("отменён"),
-        "невнятная причина отказа: {error}"
+        error.contains("cancelled"),
+        "unclear reason for the failure: {error}"
     );
 }
 
 #[tokio::test]
 async fn unknown_host_key_is_confirmed_remembered_and_not_asked_again() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка known_hosts пропущена");
+        eprintln!("docker unavailable — known_hosts check skipped");
         return;
     };
 
@@ -293,7 +293,7 @@ async fn unknown_host_key_is_confirmed_remembered_and_not_asked_again() {
         config
     };
 
-    let mut session = spawn_ssh(config()).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(config()).expect("session thread failed to start");
     let mut asked = false;
     let result = connect_answering(&mut session, |event| match event {
         FromSsh::NeedHostKey {
@@ -301,8 +301,8 @@ async fn unknown_host_key_is_confirmed_remembered_and_not_asked_again() {
             changed,
             ..
         } => {
-            assert!(!changed, "для нового хоста не может быть «ключ изменился»");
-            assert_eq!(*fingerprint, sshd.fingerprint(), "показан чужой отпечаток");
+            assert!(!changed, "a new host cannot have a 'key changed' warning");
+            assert_eq!(*fingerprint, sshd.fingerprint(), "someone else's fingerprint was shown");
             asked = true;
             Some(Answer::HostKey(HostKeyDecision::Accept { remember: true }))
         }
@@ -312,25 +312,25 @@ async fn unknown_host_key_is_confirmed_remembered_and_not_asked_again() {
 
     assert!(
         result.is_ok(),
-        "после подтверждения ключа вход не прошёл: {result:?}"
+        "sign-in failed after confirming the key: {result:?}"
     );
-    assert!(asked, "неизвестный ключ приняли, ничего не спросив");
+    assert!(asked, "unknown key was accepted without asking");
     drop(session);
 
-    let recorded = std::fs::read_to_string(&known_hosts).expect("known_hosts не создан");
+    let recorded = std::fs::read_to_string(&known_hosts).expect("known_hosts was not created");
     assert!(
         recorded.contains("ssh-ed25519"),
-        "ключ не записан в known_hosts: {recorded:?}"
+        "key was not recorded in known_hosts: {recorded:?}"
     );
 
-    let mut session = spawn_ssh(config()).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(config()).expect("session thread failed to start");
     let result = connect_answering(&mut session, |event| {
-        panic!("повторно спросили про уже известный ключ: {event:?}")
+        panic!("asked again about an already known key: {event:?}")
     })
     .await;
     assert!(
         result.is_ok(),
-        "с записанным ключом вход не прошёл: {result:?}"
+        "sign-in with the recorded key failed: {result:?}"
     );
 
     let _ = std::fs::remove_file(&known_hosts);
@@ -339,7 +339,7 @@ async fn unknown_host_key_is_confirmed_remembered_and_not_asked_again() {
 #[tokio::test]
 async fn rejecting_the_host_key_refuses_the_connection() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка отказа от ключа пропущена");
+        eprintln!("docker unavailable — key rejection check skipped");
         return;
     };
 
@@ -356,28 +356,28 @@ async fn rejecting_the_host_key_refuses_the_connection() {
     config.host_key_policy = HostKeyPolicy::KnownHostsFile(known_hosts.clone());
     config.pty = GRID;
 
-    let mut session = spawn_ssh(config).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(config).expect("session thread failed to start");
     let error = connect_answering(&mut session, |event| match event {
         FromSsh::NeedHostKey { .. } => Some(Answer::HostKey(HostKeyDecision::Reject)),
         _ => None,
     })
     .await
-    .expect_err("после отказа от ключа соединения быть не должно");
+    .expect_err("there must be no connection after rejecting the key");
 
     assert!(
-        error.contains("отклонён"),
-        "невнятная причина отказа: {error}"
+        error.contains("rejected"),
+        "unclear reason for the failure: {error}"
     );
     assert!(
         !known_hosts.exists(),
-        "отклонённый ключ всё равно записали в known_hosts"
+        "rejected key was recorded in known_hosts anyway"
     );
 }
 
 #[tokio::test]
 async fn accepting_without_remembering_leaves_known_hosts_untouched() {
     let Some(sshd) = DockerSshd::start() else {
-        eprintln!("docker недоступен — проверка разового согласия пропущена");
+        eprintln!("docker unavailable — one-time consent check skipped");
         return;
     };
 
@@ -394,7 +394,7 @@ async fn accepting_without_remembering_leaves_known_hosts_untouched() {
     config.host_key_policy = HostKeyPolicy::KnownHostsFile(known_hosts.clone());
     config.pty = GRID;
 
-    let mut session = spawn_ssh(config).expect("не поднялся поток сессии");
+    let mut session = spawn_ssh(config).expect("session thread failed to start");
     let result = connect_answering(&mut session, |event| match event {
         FromSsh::NeedHostKey { .. } => {
             Some(Answer::HostKey(HostKeyDecision::Accept { remember: false }))
@@ -403,9 +403,9 @@ async fn accepting_without_remembering_leaves_known_hosts_untouched() {
     })
     .await;
 
-    assert!(result.is_ok(), "разовое согласие не пустило: {result:?}");
+    assert!(result.is_ok(), "one-time consent did not let us in: {result:?}");
     assert!(
         !known_hosts.exists(),
-        "«только в этот раз» всё равно записали в known_hosts"
+        "'just this once' was recorded in known_hosts anyway"
     );
 }

@@ -1,0 +1,7 @@
+panes:
+  session_start_failed: "无法启动会话。"
+  disconnected: "已断开"
+  reconnect: "重新连接"
+  close_pane: "关闭窗格"
+  connection_for_new_pane: "新窗格的连接"
+  current_host: "当前主机"

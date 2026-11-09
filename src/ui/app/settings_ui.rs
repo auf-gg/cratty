@@ -1,6 +1,78 @@
 use super::*;
 
 impl AppView {
+    /// `code` is a language pack code, or empty to follow the system language.
+    pub(super) fn set_language(&mut self, code: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.language = code.to_string();
+        self.error = settings::save(&self.settings).err().map(SharedString::from);
+        crate::i18n::apply(code);
+        self.font_pickers = fonts_ui::FontPickers::new(&self.settings, window, cx);
+        self.refresh_placeholders(window, cx);
+        window.refresh();
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    /// Inputs keep the placeholder they were created with, so a language switch re-sets them.
+    fn refresh_placeholders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let inputs = [
+            (&self.form.line, "app.search_or_address"),
+            (&self.form.label, "app.label_example"),
+            (&self.form.group, "app.no_group"),
+            (&self.form.host, "app.host_placeholder"),
+            (&self.form.user, "app.username"),
+            (&self.form.password, "app.password"),
+            (&self.form.key_path, "app.key_path"),
+            (&self.form.forward_draft.listen, "ports.port_placeholder"),
+            (&self.form.forward_draft.target, "ports.target_placeholder"),
+            (&self.proxy_form.label, "app.proxy_label_example"),
+            (&self.proxy_form.host, "app.host_placeholder"),
+            (&self.proxy_form.user, "app.optional"),
+            (&self.proxy_form.password, "app.password"),
+            (&self.snippet_form.label, "snippets.name_placeholder"),
+            (&self.vault_form.name, "app.vault_name_example"),
+            (&self.vault_form.password, "app.master_password"),
+            (&self.vault_form.repeat, "app.repeat_master_password"),
+            (&self.vault_form.code, "app.vault_code"),
+            (&self.vault_form.passphrase, "app.key_passphrase"),
+            (&self.sync_input, "app.shared_folder"),
+        ];
+        for (input, key) in inputs {
+            input.update(cx, |state, cx| state.set_placeholder(t!(key), window, cx));
+        }
+    }
+
+    pub(super) fn language_block(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::i18n::Language;
+
+        let chosen = self.settings.language.trim().to_string();
+        let option = |id: &'static str, label: SharedString, code: &'static str| {
+            Button::new(id)
+                .ghost()
+                .small()
+                .selected(chosen == code)
+                .label(label)
+                .on_click(cx.listener(move |this, _, window, cx| this.set_language(code, window, cx)))
+        };
+        let system = crate::i18n::system_language();
+
+        Self::section(t!("settings.language.title"), cx)
+            .child(
+                h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .child(option(
+                        "language-system",
+                        t!("settings.language.system", language = system.native_name()).into(),
+                        "",
+                    ))
+                    .children(Language::ALL.into_iter().map(|language| {
+                        option(language.code(), language.native_name().into(), language.code())
+                    })),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn nudge_font_size(&mut self, steps: f32, cx: &mut Context<Self>) {
         if !self.settings.nudge_font_size(steps) {
             return;
@@ -44,7 +116,7 @@ impl AppView {
         let muted = cx.theme().muted_foreground;
         let percent = self.settings.terminal_opacity;
         let solid = percent >= 100;
-        Self::section("Прозрачность терминала", cx)
+        Self::section(t!("settings.opacity.title"), cx)
             .child(
                 h_flex()
                     .gap_3()
@@ -63,11 +135,11 @@ impl AppView {
                             .ghost()
                             .small()
                             .selected(self.settings.blur)
-                            .label("Размытие фона")
+                            .label(t!("settings.opacity.blur"))
                             .tooltip(if crate::platform::blur_supported() {
-                                "Размывает изображение под окном терминала для лучшей читаемости."
+                                t!("settings.opacity.blur_tooltip")
                             } else {
-                                "Недоступно в Windows 10: размытие замедляет перемещение и изменение размера окна."
+                                t!("settings.opacity.blur_unavailable")
                             })
                             .disabled(solid || !crate::platform::blur_supported())
                             .on_click(
@@ -77,9 +149,9 @@ impl AppView {
             )
             .child(
                 Label::new(if solid {
-                    "100 % — непрозрачный фон. При меньшем значении сквозь терминал виден рабочий стол."
+                    t!("settings.opacity.note_solid")
                 } else {
-                    "Прозрачность применяется только к фону терминала."
+                    t!("settings.opacity.note_partial")
                 })
                 .text_xs()
                 .text_color(muted),
@@ -99,8 +171,8 @@ impl AppView {
             .and_then(|view| view.read(cx).echo_latency());
 
         let option = |id: &'static str,
-                      label: &'static str,
-                      tooltip: &'static str,
+                      label: SharedString,
+                      tooltip: SharedString,
                       policy: Policy| {
             Button::new(id)
                 .ghost()
@@ -112,40 +184,35 @@ impl AppView {
         };
 
         let status = match latency {
-            Some(latency) => format!("Задержка эха в текущем сеансе: {} мс.", latency.as_millis()),
-            None => {
-                "Задержка эха ещё не измерена. Измерение выполняется по первым введённым символам."
-                    .to_string()
-            }
+            Some(latency) => t!("settings.prediction.latency", ms = latency.as_millis()).to_string(),
+            None => t!("settings.prediction.latency_unknown").to_string(),
         };
 
-        Self::section("Предсказание ввода", cx)
+        Self::section(t!("settings.prediction.title"), cx)
             .child(
                 h_flex()
                     .gap_1()
                     .child(option(
                         "prediction-adaptive",
-                        "Адаптивно",
-                        "Только при задержке эха более 30 мс",
+                        t!("settings.prediction.adaptive").into(),
+                        t!("settings.prediction.adaptive_tooltip").into(),
                         Policy::Adaptive,
                     ))
                     .child(option(
                         "prediction-always",
-                        "Всегда",
-                        "На любом соединении",
+                        t!("settings.prediction.always").into(),
+                        t!("settings.prediction.always_tooltip").into(),
                         Policy::Always,
                     ))
                     .child(option(
                         "prediction-never",
-                        "Никогда",
-                        "Символ отображается после ответа сервера",
+                        t!("settings.prediction.never").into(),
+                        t!("settings.prediction.never_tooltip").into(),
                         Policy::Never,
                     )),
             )
             .child(
-                Label::new(
-                    "Введённые символы отображаются сразу и подчёркиваются до подтверждения сервером. Ввод паролей не отображается: после Enter символы появляются только после ответа сервера.",
-                )
+                Label::new(t!("settings.prediction.note"))
                 .text_xs()
                 .text_color(muted),
             )
@@ -248,6 +315,9 @@ impl AppView {
                 this.children(picker.map(|picker| div().pt_2().child(picker)))
             })
             .when(tab == SettingsTab::General, |this| {
+                this.child(self.language_block(cx))
+            })
+            .when(tab == SettingsTab::General, |this| {
                 this.child(self.theme_block(cx))
             })
             .when(tab == SettingsTab::General, |this| {
@@ -258,20 +328,17 @@ impl AppView {
             })
             .when(tab == SettingsTab::General, |this| {
                 this.child(
-                    Self::section("Размер шрифта в терминале", cx)
+                    Self::section(t!("settings.font_size.title"), cx)
                         .child(Self::stepper(
                             "font",
-                            format!("{size:.0} px"),
+                            t!("settings.font_size.value", size = format!("{size:.0}")).to_string(),
                             size > settings::MIN_FONT_SIZE,
                             size < settings::MAX_FONT_SIZE,
                             Box::new(|this, _window, cx| this.nudge_font_size(-1., cx)),
                             Box::new(|this, _window, cx| this.nudge_font_size(1., cx)),
                             cx,
                         ))
-                        .child(Self::hint(
-                            "Применяется ко всем открытым сеансам",
-                            cx,
-                        )),
+                        .child(Self::hint(t!("settings.font_size.hint"), cx)),
                 )
             })
             .when(tab == SettingsTab::General, |this| {
@@ -279,21 +346,21 @@ impl AppView {
             })
             .when(tab == SettingsTab::Security, |this| {
                 this.child(
-                    Self::section("Автоматическая блокировка", cx)
+                    Self::section(t!("settings.autolock.title"), cx)
                         .child(
                             gpui_kit::component::checkbox::Checkbox::new("autolock-on")
                                 .small()
-                                .label("Блокировать хранилища автоматически")
+                                .label(t!("settings.autolock.enable").to_string())
                                 .checked(autolock)
                                 .on_click(cx.listener(|this, checked: &bool, _window, cx| {
                                     this.set_autolock(*checked, cx)
                                 })),
                         )
                         .when(autolock, |this| {
-                            this.child(Self::hint("Через сколько минут бездействия", cx))
+                            this.child(Self::hint(t!("settings.autolock.minutes_hint"), cx))
                                 .child(Self::stepper(
                                     "autolock",
-                                    format!("{minutes} мин"),
+                                    t!("settings.autolock.minutes_value", minutes = minutes).to_string(),
                                     minutes > settings::MIN_AUTOLOCK_MINUTES,
                                     minutes < settings::MAX_AUTOLOCK_MINUTES,
                                     Box::new(|this, _window, cx| this.nudge_autolock(-1, cx)),
@@ -303,9 +370,9 @@ impl AppView {
                         })
                         .child(
                             Label::new(if autolock {
-                                "Хранилище также блокируется после перехода компьютера в спящий режим. Открытые сеансы при этом продолжают работать."
+                                t!("settings.autolock.note_on")
                             } else {
-                                "Хранилища остаются открытыми, пока вы не заблокируете их сами или не закроете приложение. Удобно, если пароль запомнен в системе: он всё равно разблокирует хранилище без вопросов."
+                                t!("settings.autolock.note_off")
                             })
                             .text_xs()
                             .text_color(muted),
@@ -314,9 +381,9 @@ impl AppView {
             })
             .when(tab == SettingsTab::Security, |this| {
                 this.child(
-                    Self::section("Разблокировка без пароля на этом компьютере", cx)
+                    Self::section(t!("settings.os_key.title"), cx)
                         .child(Self::hint(
-                            SharedString::from(format!("Хранилище: {vault_name}")),
+                            t!("settings.vault_line", name = vault_name.to_string()),
                             cx,
                         ))
                         .child(
@@ -324,9 +391,9 @@ impl AppView {
                                 .outline()
                                 .w_full()
                                 .label(if has_os_key {
-                                    "Отключить"
+                                    t!("settings.os_key.disable")
                                 } else {
-                                    "Включить"
+                                    t!("settings.os_key.enable")
                                 })
                                 .disabled(!has_os_key && !vault_unlocked)
                                 .on_click(
@@ -335,20 +402,18 @@ impl AppView {
                         )
                         .child(
                             Label::new(if has_os_key {
-                                "Хранилище разблокируется без пароля на этом компьютере. Ключ хранится в системном хранилище учётных данных: Keychain (macOS), диспетчер учётных данных (Windows), Secret Service (Linux)."
+                                t!("settings.os_key.note_on")
                             } else if vault_unlocked {
-                                "Ключ будет сохранён в системном хранилище учётных данных. Мастер-пароль и фраза восстановления продолжат действовать; функцию можно отключить в любой момент."
+                                t!("settings.os_key.note_available")
                             } else {
-                                "Доступно только при разблокированном хранилище."
+                                t!("settings.os_key.note_locked")
                             })
                             .text_xs()
                             .text_color(muted),
                         )
                         .when(has_os_key, |this| {
                             this.child(
-                                Label::new(
-                                    "Ключ защищён учётной записью операционной системы: после входа в систему он доступен программам, запущенным от вашего имени.",
-                                )
+                                Label::new(t!("settings.os_key.warning"))
                                 .text_xs()
                                 .text_color(warning),
                             )
@@ -362,9 +427,9 @@ impl AppView {
             })
             .when(tab == SettingsTab::Sync, |this| {
                 this.child(
-                    Self::section("Синхронизация через папку", cx)
+                    Self::section(t!("settings.sync.title"), cx)
                         .child(Self::hint(
-                            SharedString::from(format!("Хранилище: {vault_name}")),
+                            t!("settings.vault_line", name = vault_name.to_string()),
                             cx,
                         ))
                         .child(div().w_full().child(Input::new(&self.sync_input)))
@@ -372,7 +437,7 @@ impl AppView {
                             Button::new("sync-apply")
                                 .outline()
                                 .w_full()
-                                .label("Применить")
+                                .label(t!("settings.sync.apply"))
                                 .on_click(
                                     cx.listener(|this, _, _window, cx| this.apply_sync_folder(cx)),
                                 ),
@@ -382,14 +447,14 @@ impl AppView {
                                 .ghost()
                                 .w_full()
                                 .label(if self.syncing.contains(&current_id) {
-                                    "Синхронизация…"
+                                    t!("settings.sync.syncing")
                                 } else {
-                                    "Синхронизировать сейчас"
+                                    t!("settings.sync.now")
                                 })
                                 .tooltip(if syncing_possible {
-                                    "Получить изменения из папки и записать свои"
+                                    t!("settings.sync.now_tooltip")
                                 } else {
-                                    "Требуются разблокированное хранилище и указанная папка"
+                                    t!("settings.sync.now_unavailable")
                                 })
                                 .disabled(self.syncing.contains(&current_id) || !syncing_possible)
                                 .on_click(cx.listener(|this, _, _window, cx| {
@@ -398,19 +463,12 @@ impl AppView {
                                 })),
                         )
                         .child(
-                            Label::new(concat!(
-                                "Записи сохраняются в папку в зашифрованном виде и могут передаваться через Dropbox, Syncthing или сетевой диск. Пустой путь отключает синхронизацию.",
-                                "",
-                                ""
-                            ))
+                            Label::new(t!("settings.sync.note"))
                             .text_xs()
                             .text_color(muted),
                         )
                         .child(
-                            Label::new(concat!(
-                                "Записи с отметкой «Не синхронизировать» в папку не сохраняются.",
-                                ""
-                            ))
+                            Label::new(t!("settings.sync.note_excluded"))
                             .text_xs()
                             .text_color(muted),
                         )
@@ -428,23 +486,23 @@ impl AppView {
             })
             .when(tab == SettingsTab::General, |this| {
                 this.child(
-                    Self::section("Расположение данных", cx)
+                    Self::section(t!("settings.data.title"), cx)
                         .children(self.listed().map(|(_, slot)| {
-                            Label::new(SharedString::from(format!(
-                                "Хранилище «{}»: {}",
-                                slot.name,
-                                slot.root().display()
-                            )))
+                            Label::new(t!(
+                                "settings.data.vault",
+                                name = slot.name.to_string(),
+                                path = slot.root().display().to_string()
+                            ))
                             .text_xs()
                             .text_color(muted)
                         }))
                         .child(
-                            Label::new(SharedString::from(format!(
-                                "Настройки: {}",
-                                settings::directory()
+                            Label::new(t!(
+                                "settings.data.settings",
+                                path = settings::directory()
                                     .map(|dir| dir.display().to_string())
-                                    .unwrap_or_else(|| "Каталог не определён".into())
-                            )))
+                                    .unwrap_or_else(|| t!("settings.data.unknown").to_string())
+                            ))
                             .text_xs()
                             .text_color(muted),
                         ),

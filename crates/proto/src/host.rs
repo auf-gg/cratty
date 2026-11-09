@@ -16,8 +16,8 @@ pub enum HostAuth {
 impl HostAuth {
     pub fn summary(&self) -> String {
         match self {
-            Self::Auto => "агент и ключи".into(),
-            Self::Password => "пароль".into(),
+            Self::Auto => "agent and keys".into(),
+            Self::Password => "password".into(),
             Self::Key { path } => {
                 let name = path
                     .rsplit(['/', '\\'])
@@ -25,9 +25,9 @@ impl HostAuth {
                     .filter(|name| !name.is_empty())
                     .unwrap_or(path.as_str());
                 if name.is_empty() {
-                    "ключ".into()
+                    "key".into()
                 } else {
-                    format!("ключ {name}")
+                    format!("key {name}")
                 }
             }
         }
@@ -54,14 +54,14 @@ pub struct HostRecord {
     pub forward_agent: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forwards: Vec<crate::PortForward>,
-    /// Имя группы в списке хостов; пусто — без группы.
+    /// Group name in the host list; empty — no group.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub group: String,
-    /// Значок в списке: имя встроенного или `selfhst:<имя>`; пусто — по умолчанию.
+    /// Icon in the list: a built-in name or `selfhst:<name>`; empty — default.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
-    /// Место в списке своей группы, начиная с 1; 0 — не задано (такие идут
-    /// после расставленных, свежие выше).
+    /// Position in its group's list, starting from 1; 0 — unset (those go
+    /// after the ordered ones, newer first).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub order: u64,
 }
@@ -76,7 +76,7 @@ fn is_false(value: &bool) -> bool {
 
 impl core::fmt::Debug for HostRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("HostRecord(<скрыт>)")
+        f.write_str("HostRecord(<hidden>)")
     }
 }
 
@@ -158,7 +158,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn target_sobiraetsya_kak_stroka_podklyucheniya() {
+    fn target_is_built_as_connection_string() {
         let mut host = HostRecord::new("example.com");
         assert_eq!(host.target(), "example.com");
 
@@ -173,94 +173,94 @@ mod tests {
     }
 
     #[test]
-    fn title_padaet_na_adres_bez_metki() {
+    fn title_falls_back_to_address_without_label() {
         let mut host = HostRecord::new("example.com");
         assert_eq!(host.title(), "example.com");
-        host.label = "прод".into();
-        assert_eq!(host.title(), "прод");
+        host.label = "prod".into();
+        assert_eq!(host.title(), "prod");
     }
 
     #[test]
-    fn podpis_klyucha_rezhet_put_lyuboy_platformy() {
+    fn key_label_strips_path_of_any_platform() {
         let posix = HostAuth::Key {
             path: "/home/user/.ssh/id_ed25519".into(),
         };
-        assert_eq!(posix.summary(), "ключ id_ed25519");
+        assert_eq!(posix.summary(), "key id_ed25519");
 
         let windows = HostAuth::Key {
             path: r"C:\Users\user\.ssh\id_rsa".into(),
         };
-        assert_eq!(windows.summary(), "ключ id_rsa");
+        assert_eq!(windows.summary(), "key id_rsa");
 
         let bare = HostAuth::Key {
             path: "id_ecdsa".into(),
         };
-        assert_eq!(bare.summary(), "ключ id_ecdsa");
+        assert_eq!(bare.summary(), "key id_ecdsa");
     }
 
     #[test]
-    fn poisk_ishchet_i_po_metke_i_po_adresu() {
+    fn search_matches_both_label_and_address() {
         let mut host = HostRecord::new("prod-01.example.com");
-        host.label = "Боевой".into();
+        host.label = "Production".into();
 
         assert!(host.matches(""));
-        assert!(host.matches("боевой"));
+        assert!(host.matches("production"));
         assert!(host.matches("PROD"));
         assert!(host.matches("example"));
         assert!(!host.matches("staging"));
     }
 
     #[test]
-    fn zapis_bez_adresa_negodna() {
+    fn record_without_address_is_invalid() {
         assert!(!HostRecord::default().is_usable());
         assert!(!HostRecord::new("   ").is_usable());
         assert!(HostRecord::new("example.com").is_usable());
     }
 
     #[test]
-    fn razbor_perezhivaet_neznakomye_polya() {
-        let json = r#"{"label":"прод","host":"example.com","port":2222,
-                       "user":"root","auth":{"kind":"auto"},"будущее":42}"#;
-        let host: HostRecord = serde_json::from_str(json).expect("разбор");
+    fn parsing_survives_unknown_fields() {
+        let json = r#"{"label":"prod","host":"example.com","port":2222,
+                       "user":"root","auth":{"kind":"auto"},"future":42}"#;
+        let host: HostRecord = serde_json::from_str(json).expect("parse");
         assert_eq!(host.host, "example.com");
         assert_eq!(host.port, 2222);
     }
 
     #[test]
-    fn razbor_perezhivaet_otsutstvuyushchie_polya() {
-        let host: HostRecord = serde_json::from_str(r#"{"host":"example.com"}"#).expect("разбор");
-        assert_eq!(host.port, 22, "порт обязан подставиться по умолчанию");
+    fn parsing_survives_missing_fields() {
+        let host: HostRecord = serde_json::from_str(r#"{"host":"example.com"}"#).expect("parse");
+        assert_eq!(host.port, 22, "the port must default");
         assert_eq!(host.auth, HostAuth::Auto);
         assert!(host.label.is_empty());
     }
 
     #[test]
-    fn cepochka_proksi_sohranyaet_poryadok() {
+    fn proxy_chain_keeps_order() {
         let first = RecordId::generate().expect("CSPRNG");
         let second = RecordId::generate().expect("CSPRNG");
         let mut host = HostRecord::new("example.com");
         host.via = vec![first.clone(), second.clone()];
 
-        let json = serde_json::to_string(&host).expect("сериализация");
-        let back: HostRecord = serde_json::from_str(&json).expect("разбор");
+        let json = serde_json::to_string(&host).expect("serialization");
+        let back: HostRecord = serde_json::from_str(&json).expect("parse");
         assert_eq!(back.via, vec![first, second]);
 
-        let plain = serde_json::to_string(&HostRecord::new("example.com")).expect("сериализация");
+        let plain = serde_json::to_string(&HostRecord::new("example.com")).expect("serialization");
         assert!(!plain.contains("via"), "{plain}");
     }
 
     #[test]
-    fn zapis_perezhivaet_serializaciyu() {
+    fn record_survives_serialization() {
         let mut host = HostRecord::new("example.com");
-        host.label = "прод".into();
+        host.label = "prod".into();
         host.user = "root".into();
         host.auth = HostAuth::Key {
             path: "/home/user/.ssh/id_ed25519".into(),
         };
 
-        let json = serde_json::to_string(&host).expect("сериализация");
+        let json = serde_json::to_string(&host).expect("serialization");
         assert_eq!(
-            serde_json::from_str::<HostRecord>(&json).expect("разбор"),
+            serde_json::from_str::<HostRecord>(&json).expect("parse"),
             host
         );
     }

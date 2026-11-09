@@ -1,0 +1,7 @@
+theme:
+  title: "Оформление"
+  mode_system: "Системное"
+  mode_dark: "Тёмное"
+  mode_light: "Светлое"
+  palette_dark: "Палитра тёмного режима"
+  palette_light: "Палитра светлого режима"

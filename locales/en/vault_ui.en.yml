@@ -1,0 +1,12 @@
+vault_ui:
+  stage_create_title: "Create vault"
+  stage_recovery_title: "Write down the recovery phrase"
+  stage_unlock_title: "Vault is locked"
+  stage_unlock_code_title: "Sign in with recovery code"
+  unlock_subtitle: "Enter the master password to access saved hosts and keys. Connecting by address is available without unlocking."
+  password_too_short: "The password must be at least eight characters long."
+  password_mismatch: "Passwords do not match."
+  create_explainer: "Hosts and keys are encrypted with the master password. The password is not stored and cannot be recovered; if it is lost, access is possible only with the recovery code."
+  create_explainer_import: "Hosts and keys are encrypted with the master password. The password is not stored and cannot be recovered; if it is lost, access is possible only with the recovery code. Entries to be imported from hosts.json: %{count}; the file will be deleted after the import."
+  recovery_explainer: "Write down the 24 words from the English BIP39 wordlist on paper and keep them apart from your computer. The word order matters. This is the only way to unlock the vault without the master password; the phrase is shown only once."
+  migration_warning: "The hosts.json file has been deleted, but copies of it may remain in backups and disk snapshots."

@@ -6,6 +6,7 @@ pub mod route;
 mod session;
 pub mod sftp;
 
+use rust_i18n::t;
 use std::thread::JoinHandle;
 
 use bytes::Bytes;
@@ -13,7 +14,7 @@ use futures::channel::mpsc;
 
 pub use known_hosts::{HostKeyPolicy, HostKeyVerdict};
 pub use route::{Hop, JumpHost, Socks5Hop};
-pub use session::STORED_PASSWORD_REJECTED;
+pub use session::stored_password_rejected;
 
 const OUTPUT_CAPACITY: usize = 64;
 
@@ -51,7 +52,7 @@ pub enum AuthMethod {
 impl std::fmt::Debug for AuthMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Password(_) => f.write_str("Password(<скрыт>)"),
+            Self::Password(_) => f.write_str("Password(<hidden>)"),
             Self::Plan(plan) => write!(f, "Plan({:?})", plan.order),
         }
     }
@@ -79,8 +80,8 @@ pub enum Answer {
 impl std::fmt::Debug for Answer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Secret(Some(_)) => f.write_str("Secret(<скрыт>)"),
-            Self::Secret(None) => f.write_str("Secret(отказ)"),
+            Self::Secret(Some(_)) => f.write_str("Secret(<hidden>)"),
+            Self::Secret(None) => f.write_str("Secret(declined)"),
             Self::HostKey(decision) => write!(f, "HostKey({decision:?})"),
         }
     }
@@ -100,7 +101,7 @@ pub struct SshConfig {
     pub via: Result<Vec<Hop>, String>,
     pub forward_agent: bool,
     pub forwards: Vec<proto::PortForward>,
-    /// Выполнить эту команду вместо интерактивной оболочки.
+    /// Run this command instead of an interactive shell.
     pub command: Option<String>,
 }
 
@@ -147,7 +148,7 @@ pub enum FromSsh {
     NeedSecret {
         prompt: String,
         kind: SecretKind,
-        /// Почему спрашиваем снова, например «неверный пароль».
+        /// Why we are asking again, e.g. "wrong password".
         error: Option<String>,
     },
     NeedHostKey {
@@ -223,15 +224,15 @@ pub fn spawn_ssh(config: SshConfig) -> std::io::Result<SshSession> {
                 Ok(runtime) => runtime,
                 Err(err) => {
                     let mut event_tx = event_tx;
-                    let _ = event_tx.try_send(FromSsh::Closed(CloseReason::Error(format!(
-                        "не удалось создать tokio-рантайм: {err}"
-                    ))));
+                    let _ = event_tx.try_send(FromSsh::Closed(CloseReason::Error(
+                        t!("ssh.runtime_failed", error = err).into_owned()
+                    )));
                     return;
                 }
             };
             runtime.block_on(session::run(config, command_rx, answer_rx, event_tx));
-            // Не ждать фоновых потоков рантайма: там может висеть DNS-запрос
-            // без сети, а этот поток при закрытии вкладки ждёт интерфейс.
+            // Do not wait for the runtime's background threads: a DNS request may hang there
+            // without a network, and the UI waits on this thread when a tab is closed.
             runtime.shutdown_background();
         })?;
 
@@ -243,9 +244,9 @@ pub fn spawn_ssh(config: SshConfig) -> std::io::Result<SshSession> {
     })
 }
 
-/// Локальный терминал: тот же протокол событий, что и у SSH-сеанса, только
-/// вместо сети — PTY на этой машине. Хранилище не нужно: локальная вкладка
-/// не хранит секретов, поэтому доступна и на экране блокировки.
+/// Local terminal: the same event protocol as an SSH session, only
+/// with a PTY on this machine instead of the network. No vault is needed: a local tab
+/// holds no secrets, so it is available on the lock screen too.
 #[cfg(unix)]
 pub fn spawn_local(size: PtySize, term: &str) -> std::io::Result<SshSession> {
     use std::os::fd::FromRawFd;
@@ -256,7 +257,7 @@ pub fn spawn_local(size: PtySize, term: &str) -> std::io::Result<SshSession> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let child = unsafe { spawn_pty_child(master, &shell, term)? };
 
-    // Неблокирующий режим нужен реактору tokio (AsyncFd).
+    // Non-blocking mode is required by the tokio reactor (AsyncFd).
     unsafe {
         let flags = libc::fcntl(master, libc::F_GETFL);
         libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK);
@@ -277,13 +278,13 @@ pub fn spawn_local(size: PtySize, term: &str) -> std::io::Result<SshSession> {
                 Ok(runtime) => runtime,
                 Err(err) => {
                     let mut event_tx = event_tx;
-                    let _ = event_tx.try_send(FromSsh::Closed(CloseReason::Error(format!(
-                        "не удалось создать tokio-рантайм: {err}"
-                    ))));
+                    let _ = event_tx.try_send(FromSsh::Closed(CloseReason::Error(
+                        t!("ssh.runtime_failed", error = err).into_owned()
+                    )));
                     return;
                 }
             };
-            // File владеет дескриптором: закроется вместе с задачей.
+            // File owns the descriptor: it is closed together with the task.
             let file = unsafe { std::fs::File::from_raw_fd(master) };
             runtime.block_on(local_pty_loop(file, child, command_rx, event_tx));
         })?;
@@ -308,15 +309,15 @@ async fn local_pty_loop(
     use std::os::fd::AsRawFd;
     use tokio::io::unix::AsyncFd;
 
-    // SAFETY: File живёт внутри AsyncFd и остаётся в неблокирующем режиме.
+    // SAFETY: File lives inside AsyncFd and stays in non-blocking mode.
     let fd = match unsafe { AsyncFd::register(file) } {
         Ok(fd) => fd,
         Err(err) => {
             let mut event_tx = event_tx;
             let _ = event_tx
-                .send(FromSsh::Closed(CloseReason::Error(format!(
-                    "не удалось следить за PTY: {err}"
-                ))))
+                .send(FromSsh::Closed(CloseReason::Error(
+                    t!("ssh.pty_watch_failed", error = err).into_owned()
+                )))
                 .await;
             return;
         }
@@ -330,7 +331,7 @@ async fn local_pty_loop(
         .await;
 
     async fn closed(event_tx: &mut mpsc::Sender<FromSsh>, child: libc::pid_t) {
-        // Собрать зомби: EOF на master означает, что дочерний процесс вышел.
+        // Reap zombies: EOF on the master means the child process has exited.
         unsafe { libc::waitpid(child, std::ptr::null_mut(), 0) };
         let _ = event_tx
             .send(FromSsh::Closed(CloseReason::Remote { exit_status: None }))
@@ -346,9 +347,9 @@ async fn local_pty_loop(
                     Some(ToSsh::Input(bytes)) => {
                         if let Err(err) = pty_write(&fd, &bytes).await {
                             let _ = event_tx
-                                .send(FromSsh::Closed(CloseReason::Error(format!(
-                                    "запись в PTY: {err}"
-                                ))))
+                                .send(FromSsh::Closed(CloseReason::Error(
+                                    t!("ssh.pty_write_failed", error = err).into_owned()
+                                )))
                                 .await;
                             return;
                         }
@@ -356,16 +357,16 @@ async fn local_pty_loop(
                     Some(ToSsh::Resize(size)) => {
                         set_winsize(fd.get_ref().as_raw_fd(), &size);
                     }
-                    // SFTP и форварды у локальной вкладки не бывают — игнорируем.
+                    // A local tab has no SFTP or forwards — ignore them.
                     Some(ToSsh::OpenSftp(_)) | Some(ToSsh::SetForward { .. }) => {}
                     Some(ToSsh::Disconnect) => {
-                        // Приказ убить — не «выйти сейчас»: сначала дочитываем
-                        // остаток вывода, EOF придёт от самого PTY.
+                        // A kill order is not "exit now": first read
+                        // the rest of the output; EOF will come from the PTY itself.
                         unsafe { libc::kill(child, libc::SIGKILL) };
                     }
                     None => {
-                        // Вкладка закрыта: события уже некому читать, но
-                        // дочерний процесс и зомби нельзя оставлять.
+                        // The tab is closed: nobody reads the events any more, but
+                        // the child process and zombie must not be left behind.
                         unsafe {
                             libc::kill(child, libc::SIGHUP);
                             libc::waitpid(child, std::ptr::null_mut(), 0);
@@ -379,9 +380,9 @@ async fn local_pty_loop(
                     Ok(guard) => guard,
                     Err(err) => {
                         let _ = event_tx
-                            .send(FromSsh::Closed(CloseReason::Error(format!(
-                                "чтение PTY: {err}"
-                            ))))
+                            .send(FromSsh::Closed(CloseReason::Error(
+                                t!("ssh.pty_read_failed", error = err).into_owned()
+                            )))
                             .await;
                         return;
                     }
@@ -408,7 +409,7 @@ async fn local_pty_loop(
                             break;
                         }
                         Err(err) if err.kind() == ErrorKind::Interrupted => continue,
-                        // EIO: на Linux это «другой конец PTY закрыт».
+                        // EIO: on Linux this means "the other end of the PTY is closed".
                         Err(_) => {
                             closed(&mut event_tx, child).await;
                             return;
@@ -469,9 +470,9 @@ fn set_winsize(fd: libc::c_int, size: &PtySize) {
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) };
 }
 
-/// Форкает дочерний процесс с `slave` в качестве управляющего терминала и
-/// запускает в нём интерактивную оболочку. Вызывается один раз, до любых
-/// асинхронных задач, поэтому гонок на fd нет.
+/// Forks a child process with `slave` as the controlling terminal and
+/// runs an interactive shell in it. Called once, before any
+/// async tasks, so there are no races on the fd.
 #[cfg(unix)]
 unsafe fn spawn_pty_child(
     master: libc::c_int,
@@ -498,7 +499,7 @@ unsafe fn spawn_pty_child(
                 libc::close(slave);
             }
             libc::close(master);
-            // Rust выставляет SIGPIPE в SIG_IGN — оболочке нужен стандартный.
+            // Rust sets SIGPIPE to SIG_IGN — the shell needs the default.
             libc::signal(libc::SIGPIPE, libc::SIG_DFL);
             std::env::set_var("TERM", term);
         }
@@ -511,8 +512,8 @@ unsafe fn spawn_pty_child(
     Ok(pid)
 }
 
-/// Открывает slave-конец PTY: после fork родитель сразу закрывает его, и
-/// дочерний процесс остаётся единственным владельцем.
+/// Opens the slave end of the PTY: after fork the parent closes it right away, and
+/// the child remains the sole owner.
 #[cfg(unix)]
 unsafe fn open_pty_slave(master: libc::c_int) -> std::io::Result<libc::c_int> {
     unsafe {
@@ -520,10 +521,10 @@ unsafe fn open_pty_slave(master: libc::c_int) -> std::io::Result<libc::c_int> {
         if libc::ptsname_r(master, name.as_mut_ptr() as *mut libc::c_char, name.len()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        // O_NOCTTY: иначе, если cratty — лидер сессии без терминала (так его
-        // запускают лаунчеры), PTY стал бы управляющим терминалом самого cratty,
-        // и оболочка не смогла бы забрать его себе: fish выходит, bash остаётся
-        // без управления заданиями.
+        // O_NOCTTY: otherwise, if cratty is a session leader without a terminal (as
+        // launchers start it), the PTY would become cratty's own controlling terminal,
+        // and the shell could not take it over: fish exits, bash is left
+        // without job control.
         let slave = libc::open(
             name.as_ptr() as *const libc::c_char,
             libc::O_RDWR | libc::O_NOCTTY,
@@ -535,25 +536,23 @@ unsafe fn open_pty_slave(master: libc::c_int) -> std::io::Result<libc::c_int> {
     }
 }
 
-/// На остальных платформах локального терминала нет: ConPTY — отдельная
-/// большая работа. Кнопка в интерфейсе на них выключена.
+/// There is no local terminal on other platforms: ConPTY is a separate
+/// big piece of work. The button in the UI is disabled there.
 #[cfg(not(unix))]
 pub fn spawn_local(_size: PtySize, _term: &str) -> std::io::Result<SshSession> {
-    Err(std::io::Error::other(
-        "локальный терминал поддерживается только на Unix",
-    ))
+    Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    /// Живой PTY: оболочка отвечает на ввод и корректно закрывается
-    /// по Disconnect. Ждём маркер в выводе, потом убиваем — без гонки
-    /// «kill раньше echo».
+    /// A live PTY: the shell responds to input and closes cleanly
+    /// on Disconnect. We wait for the marker in the output, then kill — without the
+    /// "kill before echo" race.
     #[test]
-    fn lokalnyi_pty_otvechaet_i_zakryvaetsya() {
-        let mut session = spawn_local(PtySize::new(40, 10), "dumb").expect("открыть PTY");
+    fn local_pty_responds_and_closes() {
+        let mut session = spawn_local(PtySize::new(40, 10), "dumb").expect("open PTY");
 
         let mut connected = false;
         let mut marker = false;
@@ -573,20 +572,20 @@ mod tests {
                 session
                     .commands
                     .unbounded_send(ToSsh::Input(Bytes::from("echo cratty-marker\r\n")))
-                    .expect("отправить ввод");
+                    .expect("send input");
             }
             if marker {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(connected, "PTY не доложил о подключении");
-        assert!(marker, "оболочка не вернула echo");
+        assert!(connected, "the PTY did not report a connection");
+        assert!(marker, "the shell did not echo back");
 
         session
             .commands
             .unbounded_send(ToSsh::Disconnect)
-            .expect("отправить Disconnect");
+            .expect("send Disconnect");
 
         let mut closed = false;
         for _ in 0..100 {
@@ -600,7 +599,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(closed, "сессия не закрылась после Disconnect");
+        assert!(closed, "the session did not close after Disconnect");
         session.join();
     }
 }

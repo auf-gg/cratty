@@ -116,7 +116,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zapros_spiska_klyuchey() {
+    fn list_keys_request() {
         assert_eq!(
             Request::parse(&[msg::REQUEST_IDENTITIES]),
             Ok(Request::Identities)
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn zapros_podpisi_razbiraetsya_po_polyam() {
+    fn sign_request_parses_field_by_field() {
         let mut frame = vec![msg::SIGN_REQUEST];
         frame.extend_from_slice(&[0, 0, 0, 3]);
         frame.extend_from_slice(b"key");
@@ -134,7 +134,7 @@ mod tests {
         frame.extend_from_slice(b"data");
         frame.extend_from_slice(&RSA_SHA2_512.to_be_bytes());
 
-        let request = Request::parse(&frame).expect("разбор");
+        let request = Request::parse(&frame).expect("parse");
         assert_eq!(
             request,
             Request::Sign {
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn flagi_vybirayut_hesh_dlya_rsa() {
+    fn flags_select_hash_for_rsa() {
         assert_eq!(SignFlags::from_bits(0).rsa_hash(), None);
         assert_eq!(
             SignFlags::from_bits(RSA_SHA2_256).rsa_hash(),
@@ -163,25 +163,25 @@ mod tests {
     }
 
     #[test]
-    fn neizvestnye_flagi_vidny() {
+    fn unknown_flags_are_visible() {
         assert_eq!(SignFlags::from_bits(RSA_SHA2_256).unknown(), 0);
         assert_eq!(SignFlags::from_bits(0x100).unknown(), 0x100);
     }
 
     #[test]
-    fn dobavlenie_klyucha_ne_podderzhivaetsya_no_uznaetsya() {
-        let request = Request::parse(&[msg::ADD_IDENTITY, 1, 2, 3]).expect("разбор");
+    fn add_key_is_unsupported_but_recognized() {
+        let request = Request::parse(&[msg::ADD_IDENTITY, 1, 2, 3]).expect("parse");
         assert_eq!(
             request,
             Request::Unsupported {
                 kind: msg::ADD_IDENTITY
             }
         );
-        assert!(msg::describe(msg::ADD_IDENTITY).contains("хранилища"));
+        assert!(msg::describe(msg::ADD_IDENTITY).contains("vault"));
     }
 
     #[test]
-    fn session_bind_razbiraetsya() {
+    fn session_bind_parses() {
         let mut body = Vec::new();
         for field in [
             b"hostkey".as_slice(),
@@ -198,13 +198,13 @@ mod tests {
         frame.extend_from_slice(SESSION_BIND.as_bytes());
         frame.extend_from_slice(&body);
 
-        let Request::Extension { name, body } = Request::parse(&frame).expect("разбор")
+        let Request::Extension { name, body } = Request::parse(&frame).expect("parse")
         else {
-            panic!("ожидалось расширение");
+            panic!("expected an extension");
         };
         assert_eq!(name, SESSION_BIND);
 
-        let bind = parse_session_bind(body).expect("разбор привязки");
+        let bind = parse_session_bind(body).expect("bind parse");
         assert_eq!(bind.host_key, b"hostkey");
         assert_eq!(bind.session_id, b"session");
         assert_eq!(bind.signature, b"sig");
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn obrezannyy_session_bind_ne_razbiraetsya() {
+    fn truncated_session_bind_does_not_parse() {
         assert!(parse_session_bind(&[0, 0, 0, 9, 1, 2]).is_err());
         assert!(
             parse_session_bind(&[0, 0, 0, 1, b'a', 0, 0, 0, 1, b'b', 0, 0, 0, 1, b'c']).is_err()
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn proizvolnye_bayty_ne_ronyayut_razbor() {
+    fn arbitrary_bytes_do_not_crash_parsing() {
         let mut seed = 0x1234_5678u32;
         for _ in 0..5000 {
             let mut frame = Vec::new();

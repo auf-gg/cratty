@@ -50,28 +50,28 @@ mod flow_tests {
         let data_key = DataKey::generate().expect("CSPRNG");
 
         let (password_slot, _) =
-            WrapSlot::from_password(&data_key, password, params(), "мастер-пароль")
-                .expect("обёртка");
+            WrapSlot::from_password(&data_key, password, params(), "master password")
+                .expect("wrap");
         let keychain_key = Key32::generate().expect("CSPRNG");
         let keychain_slot =
-            WrapSlot::from_external_key(&data_key, &keychain_key, "Touch ID").expect("обёртка");
+            WrapSlot::from_external_key(&data_key, &keychain_key, "Touch ID").expect("wrap");
         let code = RecoveryCode::generate().expect("CSPRNG");
         let recovery_slot =
-            WrapSlot::from_recovery_code(&data_key, &code, "код восстановления").expect("обёртка");
+            WrapSlot::from_recovery_code(&data_key, &code, "recovery code").expect("wrap");
 
         let mut slots = SlotSet::new();
         slots.push(password_slot);
         slots.push(keychain_slot);
         slots.push(recovery_slot);
 
-        let record_key = data_key.record_key().expect("подключ");
+        let record_key = data_key.record_key().expect("subkey");
         let ctx = RecordContext {
             vault_id: "personal",
             record_id: "prod-01",
             rev: 1,
             key_gen: 1,
         };
-        let sealed = seal_record(&record_key, &ctx, b"root@prod-01 / 22").expect("шифрование");
+        let sealed = seal_record(&record_key, &ctx, b"root@prod-01 / 22").expect("encryption");
 
         (
             Vault {
@@ -84,7 +84,7 @@ mod flow_tests {
     }
 
     fn read_record(vault: &Vault, data_key: &DataKey) -> Vec<u8> {
-        let record_key = data_key.record_key().expect("подключ");
+        let record_key = data_key.record_key().expect("subkey");
         let (record_id, sealed) = &vault.records[0];
         let ctx = RecordContext {
             vault_id: "personal",
@@ -93,37 +93,37 @@ mod flow_tests {
             key_gen: 1,
         };
         open_record(&record_key, &ctx, sealed)
-            .expect("расшифровка")
+            .expect("decryption")
             .expose_secret()
             .to_vec()
     }
 
     #[test]
-    fn tri_sposoba_razblokirovki_dayut_odin_data_key() {
-        let (vault, keychain_key, code) = create("правильный пароль".as_bytes());
+    fn three_unlock_methods_yield_one_data_key() {
+        let (vault, keychain_key, code) = create("correct password".as_bytes());
 
         let by_password = vault
             .slots
             .iter_kind(SlotKind::Password)
             .next()
-            .expect("парольный слот")
-            .unlock_with_password("правильный пароль".as_bytes())
-            .expect("разблокировка")
+            .expect("password slot")
+            .unlock_with_password("correct password".as_bytes())
+            .expect("unlock")
             .0;
         let by_keychain = vault
             .slots
             .iter_kind(SlotKind::ExternalKey)
             .next()
-            .expect("слот keychain")
+            .expect("keychain slot")
             .unlock_with_external_key(&keychain_key)
-            .expect("разблокировка");
+            .expect("unlock");
         let by_recovery = vault
             .slots
             .iter_kind(SlotKind::RecoveryCode)
             .next()
-            .expect("слот кода")
+            .expect("code slot")
             .unlock_with_recovery_code(&code)
-            .expect("разблокировка");
+            .expect("unlock");
 
         assert_eq!(
             read_record(&vault, &by_password),
@@ -140,39 +140,39 @@ mod flow_tests {
     }
 
     #[test]
-    fn smena_parolya_ne_trogaet_zapisi() {
-        let (mut vault, _, _) = create("старый пароль".as_bytes());
+    fn password_change_does_not_touch_records() {
+        let (mut vault, _, _) = create("old password".as_bytes());
         let before = vault.records.clone();
 
         let old_slot = vault
             .slots
             .iter_kind(SlotKind::Password)
             .next()
-            .expect("парольный слот")
+            .expect("password slot")
             .clone();
         let (data_key, _) = old_slot
-            .unlock_with_password("старый пароль".as_bytes())
-            .expect("разблокировка");
+            .unlock_with_password("old password".as_bytes())
+            .expect("unlock");
 
         let (new_slot, _) = WrapSlot::from_password(
             &data_key,
-            "новый пароль".as_bytes(),
+            "new password".as_bytes(),
             Argon2idParams::for_tests([0xAA; SALT_LEN]),
-            "мастер-пароль",
+            "master password",
         )
-        .expect("обёртка");
+        .expect("wrap");
         vault.slots.push(new_slot);
-        vault.slots.remove(old_slot.id()).expect("удаление старой");
+        vault.slots.remove(old_slot.id()).expect("removal of the old one");
 
-        assert_eq!(vault.records, before, "записи не должны были измениться");
+        assert_eq!(vault.records, before, "records should not have changed");
 
         let reopened = vault
             .slots
             .iter_kind(SlotKind::Password)
             .next()
-            .expect("парольный слот")
-            .unlock_with_password("новый пароль".as_bytes())
-            .expect("разблокировка")
+            .expect("password slot")
+            .unlock_with_password("new password".as_bytes())
+            .expect("unlock")
             .0;
         assert_eq!(
             read_record(&vault, &reopened),
@@ -180,28 +180,28 @@ mod flow_tests {
         );
 
         assert!(vault.slots.iter_kind(SlotKind::Password).all(|slot| {
-            slot.unlock_with_password("старый пароль".as_bytes())
+            slot.unlock_with_password("old password".as_bytes())
                 .is_err()
         }));
     }
 
     #[test]
-    fn kod_vosstanovleniya_otkryvaet_zabytoe_hranilishche() {
-        let (vault, _, code) = create("забытый пароль".as_bytes());
+    fn recovery_code_opens_forgotten_vault() {
+        let (vault, _, code) = create("forgotten password".as_bytes());
 
         let shown = code.format_for_user();
         let typed = String::from_utf8(shown.expose_secret().to_vec())
             .expect("ASCII")
             .to_lowercase();
-        let retyped = RecoveryCode::parse(typed.as_bytes()).expect("разбор");
+        let retyped = RecoveryCode::parse(typed.as_bytes()).expect("parse");
 
         let data_key = vault
             .slots
             .iter_kind(SlotKind::RecoveryCode)
             .next()
-            .expect("слот кода")
+            .expect("code slot")
             .unlock_with_recovery_code(&retyped)
-            .expect("разблокировка");
+            .expect("unlock");
         assert_eq!(
             read_record(&vault, &data_key),
             b"root@prod-01 / 22".to_vec()
@@ -209,17 +209,17 @@ mod flow_tests {
     }
 
     #[test]
-    fn hranilishche_perezhivaet_serializaciyu() {
-        let (vault, keychain_key, _) = create("пароль".as_bytes());
-        let restored = SlotSet::decode(&vault.slots.encode()).expect("разбор");
+    fn vault_survives_serialization() {
+        let (vault, keychain_key, _) = create("password".as_bytes());
+        let restored = SlotSet::decode(&vault.slots.encode()).expect("parse");
         assert_eq!(restored, vault.slots);
 
         let data_key = restored
             .iter_kind(SlotKind::ExternalKey)
             .next()
-            .expect("слот keychain")
+            .expect("keychain slot")
             .unlock_with_external_key(&keychain_key)
-            .expect("разблокировка");
+            .expect("unlock");
         assert_eq!(
             read_record(&vault, &data_key),
             b"root@prod-01 / 22".to_vec()
@@ -227,7 +227,7 @@ mod flow_tests {
     }
 
     #[test]
-    fn serializovannoe_hranilishche_ne_soderzhit_sekretov() {
+    fn serialized_vault_contains_no_secrets() {
         let password = "correct horse battery staple".as_bytes();
         let (vault, keychain_key, code) = create(password);
         let bytes = vault.slots.encode();
@@ -236,19 +236,19 @@ mod flow_tests {
             .slots
             .iter_kind(SlotKind::ExternalKey)
             .next()
-            .expect("слот keychain")
+            .expect("keychain slot")
             .unlock_with_external_key(&keychain_key)
-            .expect("разблокировка");
+            .expect("unlock");
 
         for (what, needle) in [
             ("Data Key", data_key.as_key().as_bytes().as_slice()),
-            ("ключ keychain", keychain_key.as_bytes().as_slice()),
-            ("код восстановления", code.format_for_user().expose_secret()),
-            ("мастер-пароль", password),
+            ("keychain key", keychain_key.as_bytes().as_slice()),
+            ("recovery code", code.format_for_user().expose_secret()),
+            ("master password", password),
         ] {
             assert!(
                 !bytes.windows(needle.len()).any(|window| window == needle),
-                "{what} нашёлся в сериализованном хранилище"
+                "{what} found in the serialized vault"
             );
         }
     }

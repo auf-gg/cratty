@@ -1,5 +1,5 @@
-//! Группы хостов: поле группы в форме, строка группы в левом меню и окно
-//! «Изменить группу» (имя и значок).
+//! Host groups: the group field in the form, the group row in the left menu and the
+//! "Edit group" dialog (name and icon).
 
 use super::icons_ui::{IconTarget, icon_asset_path};
 use super::*;
@@ -9,14 +9,14 @@ use proto::GroupRecord;
 
 const DEFAULT_GROUP_ICON: &str = "folder";
 
-/// Ключ свёрнутой группы в настройках: хранилище и имя группы.
+/// Key of a collapsed group in settings: vault and group name.
 fn collapse_key(vault: &str, group: &str) -> String {
     format!("{vault}/{}", GroupRecord::key(group))
 }
 
 pub(super) struct GroupEditor {
     vault: String,
-    /// Имя группы до правки — по нему находятся её хосты.
+    /// Group name before editing — its hosts are found by it.
     old: String,
     name: Entity<InputState>,
     pub(super) icon: String,
@@ -43,7 +43,7 @@ impl AppView {
         cx.notify();
     }
 
-    /// Строка группы в левом меню: щелчок сворачивает, правая кнопка — меню.
+    /// Group row in the left menu: click collapses it, right-click opens the menu.
     pub(super) fn group_row(
         &self,
         vault: &str,
@@ -99,7 +99,7 @@ impl AppView {
             .context_menu(move |menu, _window, _cx| {
                 let (view, vault, name) = (view.clone(), menu_vault.clone(), menu_name.clone());
                 menu.item(
-                    PopupMenuItem::new("Изменить…")
+                    PopupMenuItem::new(t!("groups.edit"))
                         .icon(Icon::empty().path("icons/pencil.svg"))
                         .on_click(move |_, window, cx| {
                             view.update(cx, |this, cx| {
@@ -130,7 +130,7 @@ impl AppView {
             .unwrap_or_default();
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Имя группы")
+                .placeholder(t!("groups.name_placeholder"))
                 .default_value(name.to_owned())
         });
         input.read(cx).focus_handle(cx).focus(window, cx);
@@ -154,8 +154,8 @@ impl AppView {
             editor.icon.clone(),
         );
         let name = editor.name.read(cx).value().trim().to_string();
-        // Значки обеих групп — переименованной и той, с которой она, быть
-        // может, сольётся: после правки они могут стать никому не нужны.
+        // Icons of both groups — the renamed one and the one it may
+        // merge into: after editing they may become unneeded.
         let old_icons: Vec<String> = self
             .unlocked_of(&vault)
             .map(|unlocked| unlocked.groups())
@@ -187,7 +187,7 @@ impl AppView {
             return;
         }
 
-        // Свёрнутая группа остаётся свёрнутой и под новым именем.
+        // A collapsed group stays collapsed under its new name.
         let (from, to) = (collapse_key(&vault, &old), collapse_key(&vault, &name));
         if from != to
             && let Some(index) = self
@@ -240,8 +240,8 @@ impl AppView {
                         .bg(crate::ui::theme::solid_background(cx))
                         .border_1()
                         .border_color(theme.border)
-                        .child(Label::new("Группа").font_semibold())
-                        .child(Self::field_label("Значок и имя", theme.muted_foreground))
+                        .child(Label::new(t!("groups.dialog_title")).font_semibold())
+                        .child(Self::field_label(t!("groups.icon_and_name"), theme.muted_foreground))
                         .child(
                             h_flex()
                                 .gap_2()
@@ -261,7 +261,7 @@ impl AppView {
                                 .child(
                                     Button::new("group-save")
                                         .primary()
-                                        .label("Сохранить")
+                                        .label(t!("groups.save"))
                                         .on_click(
                                             cx.listener(|this, _, _window, cx| this.save_group(cx)),
                                         ),
@@ -269,7 +269,7 @@ impl AppView {
                                 .child(
                                     Button::new("group-cancel")
                                         .outline()
-                                        .label("Отмена")
+                                        .label(t!("groups.cancel"))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.group_editor = None;
                                             cx.notify();
@@ -281,8 +281,8 @@ impl AppView {
         )
     }
 
-    /// Поле «Группа» в форме хоста: имя вводится с клавиатуры или выбирается
-    /// из групп этого хранилища.
+    /// The "Group" field in the host form: the name is typed or chosen
+    /// from the groups of this vault.
     pub(super) fn group_field(&self, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let groups: Vec<HostGroup> = self
@@ -294,7 +294,7 @@ impl AppView {
 
         v_flex()
             .gap_1()
-            .child(Self::field_label("Группа", muted))
+            .child(Self::field_label(t!("groups.field"), muted))
             .child(
                 h_flex()
                     .gap_1()
@@ -304,9 +304,9 @@ impl AppView {
                             .outline()
                             .icon(Icon::empty().path("icons/chevron-down.svg"))
                             .tooltip(if groups.is_empty() {
-                                "Групп пока нет: введите имя новой"
+                                t!("groups.none_yet")
                             } else {
-                                "Выбрать группу"
+                                t!("groups.choose")
                             })
                             .disabled(groups.is_empty())
                             .dropdown_menu(move |menu, _window, _cx| {

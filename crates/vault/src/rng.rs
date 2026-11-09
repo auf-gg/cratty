@@ -15,9 +15,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zapolnyaet_ves_bufer() {
-        let a: [u8; 64] = array().expect("CSPRNG ОС недоступен");
-        let b: [u8; 64] = array().expect("CSPRNG ОС недоступен");
+    fn fills_the_whole_buffer() {
+        let a: [u8; 64] = array().expect("OS CSPRNG unavailable");
+        let b: [u8; 64] = array().expect("OS CSPRNG unavailable");
         assert_ne!(a, b);
         assert_ne!(a, [0u8; 64]);
     }

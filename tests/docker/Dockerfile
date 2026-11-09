@@ -1,13 +1,13 @@
-# Настоящий OpenSSH для проверки совместимости: тесты на russh::server проверяют
-# нашу логику, но не то, как мы договариваемся с реализацией, к которой люди
-# подключаются в жизни.
+# Real OpenSSH for compatibility checks: tests on russh::server verify
+# our logic, but not how we negotiate with the implementation people
+# actually connect to.
 #
-# vim и htop стоят здесь ради проверок M3: это программы полного экрана, и
-# именно на них видно, работают ли альтернативный экран, атрибуты и цвета.
+# vim and htop are here for the M3 checks: they are full-screen programs, and
+# they show whether the alternate screen, attributes and colors work.
 FROM alpine:3.21
 
-# openssh-sftp-server — ради тестов передачи файлов: в Alpine он отдельным пакетом.
-# AllowTcpForwarding — ради тестов проброса портов: в Alpine он выключен.
+# openssh-sftp-server — for the file transfer tests: it is a separate package in Alpine.
+# AllowTcpForwarding — for the port forwarding tests: it is disabled in Alpine.
 RUN apk add --no-cache openssh-server openssh-sftp-server vim htop ncurses \
  && ssh-keygen -A \
  && adduser -D -s /bin/sh tester \
@@ -18,9 +18,9 @@ RUN apk add --no-cache openssh-server openssh-sftp-server vim htop ncurses \
       'PermitEmptyPasswords no' \
       'PrintMotd no'       'AllowTcpForwarding yes' \
       > /etc/ssh/sshd_config.d/cratty-test.conf \
- # Каталог и файл, чтобы `ls --color` было чем раскрашивать.
- && mkdir -p /home/tester/каталог \
- && touch /home/tester/файл.txt \
+ # A directory and a file so `ls --color` has something to color.
+ && mkdir -p /home/tester/folder \
+ && touch /home/tester/file.txt \
  && chown -R tester:tester /home/tester
 
 EXPOSE 22

@@ -19,8 +19,8 @@ pub fn awake_clock() -> std::time::Duration {
     START.get_or_init(std::time::Instant::now).elapsed()
 }
 
-/// Тайловый оконный менеджер (Hyprland, sway, i3…): окна в нём без заголовков,
-/// таскать их мышью не нужно, поэтому свою верхнюю панель не рисуем.
+/// Tiling window manager (Hyprland, sway, i3…): its windows have no title bars,
+/// there is no need to drag them with the mouse, so we don't draw our own top bar.
 pub fn tiling_wm() -> bool {
     if !cfg!(all(unix, not(target_os = "macos"))) {
         return false;
@@ -114,7 +114,7 @@ impl Drop for LockedPages {
 
 impl core::fmt::Debug for LockedPages {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("LockedPages(<адрес скрыт>)")
+        f.write_str("LockedPages(<address hidden>)")
     }
 }
 
@@ -126,14 +126,14 @@ fn disable_core_dumps(warnings: &mut Warnings) {
     };
     let result = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) };
     if result != 0 {
-        warnings.push("не удалось запретить дампы памяти (RLIMIT_CORE)".into());
+        warnings.push(rust_i18n::t!("platform.core_dump_failed").into_owned());
     }
 
     #[cfg(target_os = "linux")]
     {
         let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
         if result != 0 {
-            warnings.push("не удалось закрыть процесс от ptrace (PR_SET_DUMPABLE)".into());
+            warnings.push(rust_i18n::t!("platform.ptrace_failed").into_owned());
         }
     }
 }
@@ -146,11 +146,7 @@ fn lock_range(
 ) -> Option<LockedPages> {
     let result = unsafe { libc::mlock(address, len) };
     if result != 0 {
-        warnings.push(
-            "ключи не закреплены в памяти: не хватает лимита RLIMIT_MEMLOCK, \
-             и страницы могут уйти в своп"
-                .into(),
-        );
+        warnings.push(rust_i18n::t!("platform.memlock_low").into_owned());
         return None;
     }
     Some(LockedPages { address, len })
@@ -183,11 +179,7 @@ fn lock_range(
     use windows_sys::Win32::System::Memory::VirtualLock;
 
     if unsafe { VirtualLock(address, len) } == 0 {
-        warnings.push(
-            "ключи не закреплены в памяти: не хватает квоты рабочего набора, \
-             и страницы могут уйти в файл подкачки"
-                .into(),
-        );
+        warnings.push(rust_i18n::t!("platform.working_set_low").into_owned());
         return None;
     }
 
@@ -213,7 +205,7 @@ fn unlock_range(address: *mut core::ffi::c_void, len: usize) {
 
 #[cfg(not(any(unix, windows)))]
 fn disable_core_dumps(warnings: &mut Warnings) {
-    warnings.push("на этой платформе дампы памяти не запрещены".into());
+    warnings.push(rust_i18n::t!("platform.dumps_unsupported").into_owned());
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -222,7 +214,7 @@ fn lock_range(
     _len: usize,
     warnings: &mut Warnings,
 ) -> Option<LockedPages> {
-    warnings.push("на этой платформе ключи не закрепляются в памяти".into());
+    warnings.push(rust_i18n::t!("platform.pin_unsupported").into_owned());
     None
 }
 
@@ -234,7 +226,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chasy_bodrstvovaniya_idut() {
+    fn awake_clock_ticks() {
         let first = awake_clock();
         std::thread::sleep(std::time::Duration::from_millis(50));
         let second = awake_clock();
@@ -244,12 +236,12 @@ mod tests {
     }
 
     #[test]
-    fn nastroyka_processa_ne_padaet() {
+    fn process_setup_does_not_crash() {
         let _ = harden_process();
     }
 
     #[test]
-    fn zapertoe_znachenie_chitaetsya() {
+    fn locked_value_is_readable() {
         let secret = Box::new([0xABu8; 4096]);
         let mut warnings = Warnings::new();
 
@@ -259,11 +251,11 @@ mod tests {
             assert_eq!(secret[4095], 0xAB);
         }
 
-        assert_eq!(secret[0], 0xAB, "значение пережило отпирание страниц");
+        assert_eq!(secret[0], 0xAB, "the value survived unlocking the pages");
     }
 
     #[test]
-    fn otkaz_zapirovaniya_eto_preduprezhdenie_a_ne_padenie() {
+    fn locking_failure_is_a_warning_not_a_crash() {
         let huge = vec![0u8; 8 * 1024 * 1024];
         let mut warnings = Warnings::new();
         let locked = LockedPages::lock(&huge[0], &mut warnings);
@@ -272,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn tailovye_wm_uznayutsya() {
+    fn tiling_wms_are_recognized() {
         assert!(is_tiling_desktop("Hyprland"));
         assert!(is_tiling_desktop("sway"));
         assert!(is_tiling_desktop("ubuntu:GNOME:i3"));
@@ -282,11 +274,11 @@ mod tests {
     }
 
     #[test]
-    fn debug_ne_pechataet_adres() {
+    fn debug_does_not_print_address() {
         let secret = Box::new([0u8; 64]);
         let mut warnings = Warnings::new();
         if let Some(locked) = LockedPages::lock(secret.as_ref(), &mut warnings) {
-            assert_eq!(format!("{locked:?}"), "LockedPages(<адрес скрыт>)");
+            assert_eq!(format!("{locked:?}"), "LockedPages(<address hidden>)");
         }
     }
 }

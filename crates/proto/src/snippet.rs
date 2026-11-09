@@ -12,7 +12,7 @@ pub struct SnippetRecord {
 
 impl core::fmt::Debug for SnippetRecord {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("SnippetRecord(<скрыт>)")
+        f.write_str("SnippetRecord(<hidden>)")
     }
 }
 
@@ -61,7 +61,7 @@ mod tests {
     }
 
     #[test]
-    fn nazhatiya_kak_ot_klaviatury() {
+    fn keypresses_as_from_keyboard() {
         assert_eq!(snippet("docker ps", true).keystrokes(), b"docker ps\r");
         assert_eq!(snippet("docker ps\n", true).keystrokes(), b"docker ps\r");
         assert_eq!(snippet("docker ps\r\n", false).keystrokes(), b"docker ps");
@@ -72,21 +72,21 @@ mod tests {
     }
 
     #[test]
-    fn zagolovok_iz_komandy() {
+    fn title_from_command() {
         assert_eq!(snippet("  ./all_up.sh\n./x", false).title(), "./all_up.sh");
         let mut named = snippet("x", false);
-        named.label = "Поднять всё".into();
-        assert_eq!(named.title(), "Поднять всё");
+        named.label = "Bring everything up".into();
+        assert_eq!(named.title(), "Bring everything up");
         assert!(!snippet("  \n", true).is_usable());
     }
 
     #[test]
-    fn v_tele_zapisi_razbiraetsya_obratno() {
+    fn record_body_parses_back() {
         let body = crate::RecordBody::Snippet(snippet("ls", true));
-        let json = serde_json::to_string(&body).expect("сериализация");
+        let json = serde_json::to_string(&body).expect("serialization");
         assert_eq!(json.matches("\"kind\"").count(), 1, "{json}");
         assert_eq!(
-            serde_json::from_str::<crate::RecordBody>(&json).expect("разбор"),
+            serde_json::from_str::<crate::RecordBody>(&json).expect("parse"),
             body
         );
     }

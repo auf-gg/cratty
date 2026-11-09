@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use russh::keys::{Error as KeysError, PublicKey, ssh_key::HashAlg};
 use std::path::PathBuf;
 
@@ -23,19 +24,11 @@ impl HostKeyVerdict {
 
     pub fn message(&self, host: &str, port: u16) -> String {
         match self {
-            Self::Trusted => format!("ключ {host}:{port} известен"),
-            Self::Unknown { .. } => format!(
-                "Подключение к {host}:{port} впервые — его ключа нет среди известных. \
-                 Сверьте отпечаток ниже с тем, что показывает сам сервер \
-                 (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), и доверяйте, \
-                 только если совпадает"
-            ),
-            Self::Changed { fingerprint, line } => format!(
-                "КЛЮЧ ХОСТА {host}:{port} ИЗМЕНИЛСЯ — возможна атака посредника. \
-                 Записанный ключ в known_hosts, строка {line}; предъявленный отпечаток {fingerprint}"
-            ),
+            Self::Trusted => t!("ssh.hk_known", host = host, port = port).into_owned(),
+            Self::Unknown { .. } => t!("ssh.hk_unknown", host = host, port = port).into_owned(),
+            Self::Changed { fingerprint, line } => t!("ssh.hk_changed", host = host, port = port, line = line, fingerprint = fingerprint).into_owned(),
             Self::Unreadable { reason } => {
-                format!("не удалось проверить ключ {host}:{port}: {reason}")
+                t!("ssh.hk_unreadable", host = host, port = port, reason = reason).into_owned()
             }
         }
     }
@@ -59,7 +52,7 @@ pub fn verify(policy: &HostKeyPolicy, host: &str, port: u16, key: &PublicKey) ->
         HostKeyPolicy::KnownHosts => match default_known_hosts_path() {
             Some(path) => check_file(&path, host, port, key, fingerprint),
             None => HostKeyVerdict::Unreadable {
-                reason: "не найден домашний каталог, негде искать ~/.ssh/known_hosts".into(),
+                reason: t!("ssh.hk_no_home_lookup").into_owned(),
             },
         },
         HostKeyPolicy::KnownHostsFile(path) => check_file(path, host, port, key, fingerprint),
@@ -71,20 +64,20 @@ pub fn learn(policy: &HostKeyPolicy, host: &str, port: u16, key: &PublicKey) -> 
 
     let path = match policy {
         HostKeyPolicy::KnownHosts => default_known_hosts_path()
-            .ok_or_else(|| anyhow::anyhow!("не найден домашний каталог"))?,
+            .ok_or_else(|| anyhow::anyhow!(t!("ssh.hk_no_home")))?,
         HostKeyPolicy::KnownHostsFile(path) => path.clone(),
         HostKeyPolicy::Fingerprints(_) => {
-            bail!("политика задана списком отпечатков — запоминать некуда")
+            bail!(t!("ssh.hk_fingerprint_policy"))
         }
     };
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("не создать каталог {}", parent.display()))?;
+            .with_context(|| t!("ssh.hk_create_dir_failed", path = parent.display()))?;
     }
 
     russh::keys::known_hosts::learn_known_hosts_path(host, port, key, &path)
-        .with_context(|| format!("не записать ключ в {}", path.display()))
+        .with_context(|| t!("ssh.hk_write_failed", path = path.display()))
 }
 
 fn default_known_hosts_path() -> Option<PathBuf> {
@@ -120,7 +113,7 @@ mod tests {
 
     fn key() -> PublicKey {
         PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
-            .expect("не удалось сгенерировать ключ")
+            .expect("could not generate key")
             .public_key()
             .clone()
     }
@@ -132,7 +125,7 @@ mod tests {
 
     #[test]
     fn unlisted_fingerprint_is_not_trusted() {
-        let policy = HostKeyPolicy::Fingerprints(vec!["SHA256:совсем-другой".into()]);
+        let policy = HostKeyPolicy::Fingerprints(vec!["SHA256:completely-different".into()]);
         assert!(!verify(&policy, "example", 22, &key()).is_trusted());
     }
 
@@ -154,7 +147,7 @@ mod tests {
 
     #[test]
     fn missing_known_hosts_file_means_unknown_not_trusted() {
-        let policy = HostKeyPolicy::KnownHostsFile("нет-такого-файла-надеюсь".into());
+        let policy = HostKeyPolicy::KnownHostsFile("no-such-file-hopefully".into());
         assert!(matches!(
             verify(&policy, "example", 22, &key()),
             HostKeyVerdict::Unknown { .. }

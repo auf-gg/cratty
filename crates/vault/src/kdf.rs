@@ -24,7 +24,7 @@ impl Argon2idParams {
 
     pub fn new(m_cost_kib: u32, t_cost: u32, p_cost: u32, salt: [u8; SALT_LEN]) -> Result<Self> {
         Params::new(m_cost_kib, t_cost, p_cost, Some(MASTER_OUTPUT_LEN))
-            .map_err(|_| Error::Params("значение вне диапазона Argon2id"))?;
+            .map_err(|_| Error::Params("value outside the Argon2id range"))?;
         Ok(Self {
             m_cost_kib,
             t_cost,
@@ -73,21 +73,21 @@ impl Argon2idParams {
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != 12 + 1 + SALT_LEN {
-            return Err(Error::Format("длина параметров Argon2id"));
+            return Err(Error::Format("Argon2id parameters length"));
         }
-        let m = u32::from_le_bytes(bytes[0..4].try_into().expect("срез 4 байта"));
-        let t = u32::from_le_bytes(bytes[4..8].try_into().expect("срез 4 байта"));
-        let p = u32::from_le_bytes(bytes[8..12].try_into().expect("срез 4 байта"));
+        let m = u32::from_le_bytes(bytes[0..4].try_into().expect("4-byte slice"));
+        let t = u32::from_le_bytes(bytes[4..8].try_into().expect("4-byte slice"));
+        let p = u32::from_le_bytes(bytes[8..12].try_into().expect("4-byte slice"));
         if usize::from(bytes[12]) != SALT_LEN {
-            return Err(Error::Format("длина соли"));
+            return Err(Error::Format("salt length"));
         }
-        let salt: [u8; SALT_LEN] = bytes[13..].try_into().expect("срез длины SALT_LEN");
+        let salt: [u8; SALT_LEN] = bytes[13..].try_into().expect("SALT_LEN-length slice");
         Self::new(m, t, p, salt)
     }
 
     #[cfg(test)]
     pub(crate) fn for_tests(salt: [u8; SALT_LEN]) -> Self {
-        Self::new(1024, 1, 1, salt).expect("тестовые параметры валидны")
+        Self::new(1024, 1, 1, salt).expect("test parameters are valid")
     }
 }
 
@@ -102,7 +102,7 @@ impl AuthHash {
 
 impl core::fmt::Debug for AuthHash {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("AuthHash(<скрыт>)")
+        f.write_str("AuthHash(<hidden>)")
     }
 }
 
@@ -143,17 +143,17 @@ pub fn derive_master_secrets(password: &[u8], params: &Argon2idParams) -> Result
         params.p_cost,
         Some(MASTER_OUTPUT_LEN),
     )
-    .map_err(|_| Error::Params("значение вне диапазона Argon2id"))?;
+    .map_err(|_| Error::Params("value outside the Argon2id range"))?;
 
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
 
     let mut out = [0u8; MASTER_OUTPUT_LEN];
     argon
         .hash_password_into(password, &params.salt, &mut out)
-        .map_err(|_| Error::Kdf("Argon2id не выдал вывод (не хватило памяти?)"))?;
+        .map_err(|_| Error::Kdf("Argon2id produced no output (out of memory?)"))?;
 
-    let kek = Key32::from_bytes(out[..KEY_LEN].try_into().expect("срез 32 байта"));
-    let auth_hash = AuthHash(out[KEY_LEN..].try_into().expect("срез 32 байта"));
+    let kek = Key32::from_bytes(out[..KEY_LEN].try_into().expect("32-byte slice"));
+    let auth_hash = AuthHash(out[KEY_LEN..].try_into().expect("32-byte slice"));
     out.zeroize();
 
     Ok(MasterSecrets { kek, auth_hash })
@@ -259,22 +259,22 @@ mod tests {
     use hex_literal::hex;
 
     #[test]
-    fn argon2id_rfc9106_izvestnyy_vektor() {
+    fn argon2id_rfc9106_known_vector() {
         let params = ParamsBuilder::new()
             .m_cost(32)
             .t_cost(3)
             .p_cost(4)
             .data(AssociatedData::new(&[0x04; 12]).expect("AD"))
             .build()
-            .expect("параметры вектора");
+            .expect("vector parameters");
         let argon =
             Argon2::new_with_secret(&[0x03; 8], Algorithm::Argon2id, Version::V0x13, params)
-                .expect("секрет");
+                .expect("secret");
 
         let mut out = [0u8; 32];
         argon
             .hash_password_into(&[0x01; 32], &[0x02; 16], &mut out)
-            .expect("хеширование");
+            .expect("hashing");
 
         assert_eq!(
             out,
@@ -283,10 +283,10 @@ mod tests {
     }
 
     #[test]
-    fn vyvod_iz_parolya_izvestnyy_vektor() {
-        let params = Argon2idParams::new(1024, 3, 1, [0x11; SALT_LEN]).expect("параметры");
+    fn password_derivation_known_vector() {
+        let params = Argon2idParams::new(1024, 3, 1, [0x11; SALT_LEN]).expect("params");
         let secrets =
-            derive_master_secrets(b"correct horse battery staple", &params).expect("вывод ключа");
+            derive_master_secrets(b"correct horse battery staple", &params).expect("key derivation");
 
         assert_eq!(
             secrets.kek().as_bytes(),
@@ -299,42 +299,42 @@ mod tests {
     }
 
     #[test]
-    fn kek_i_auth_hash_ne_sovpadayut() {
+    fn kek_and_auth_hash_differ() {
         let params = Argon2idParams::for_tests([0x22; SALT_LEN]);
-        let secrets = derive_master_secrets("пароль".as_bytes(), &params).expect("вывод ключа");
+        let secrets = derive_master_secrets("password".as_bytes(), &params).expect("key derivation");
         assert_ne!(secrets.kek().as_bytes(), secrets.auth_hash().as_bytes());
         assert_ne!(secrets.kek().as_bytes(), &[0u8; KEY_LEN]);
         assert_ne!(secrets.auth_hash().as_bytes(), &[0u8; KEY_LEN]);
     }
 
     #[test]
-    fn drugoy_parol_drugoy_klyuch() {
+    fn different_password_gives_different_key() {
         let params = Argon2idParams::for_tests([0x22; SALT_LEN]);
-        let a = derive_master_secrets("пароль".as_bytes(), &params).expect("вывод");
-        let b = derive_master_secrets("паролю".as_bytes(), &params).expect("вывод");
+        let a = derive_master_secrets("password".as_bytes(), &params).expect("derivation");
+        let b = derive_master_secrets("passw0rd".as_bytes(), &params).expect("derivation");
         assert_ne!(a.kek(), b.kek());
         assert_ne!(a.auth_hash(), b.auth_hash());
     }
 
     #[test]
-    fn drugaya_sol_drugoy_klyuch() {
+    fn different_salt_gives_different_key() {
         let a = derive_master_secrets(
-            "пароль".as_bytes(),
+            "password".as_bytes(),
             &Argon2idParams::for_tests([0x22; SALT_LEN]),
         )
-        .expect("вывод");
+        .expect("derivation");
         let b = derive_master_secrets(
-            "пароль".as_bytes(),
+            "password".as_bytes(),
             &Argon2idParams::for_tests([0x23; SALT_LEN]),
         )
-        .expect("вывод");
+        .expect("derivation");
         assert_ne!(a.kek(), b.kek());
     }
 
     #[test]
-    fn dlina_vyvoda_vhodit_v_hesh() {
+    fn output_length_is_part_of_the_hash() {
         let params = Argon2idParams::for_tests([0x33; SALT_LEN]);
-        let ours = derive_master_secrets("пароль".as_bytes(), &params).expect("вывод");
+        let ours = derive_master_secrets("password".as_bytes(), &params).expect("derivation");
 
         let argon = Argon2::new(
             Algorithm::Argon2id,
@@ -345,30 +345,30 @@ mod tests {
                 params.p_cost(),
                 Some(32),
             )
-            .expect("параметры"),
+            .expect("params"),
         );
         let mut short = [0u8; 32];
         argon
-            .hash_password_into("пароль".as_bytes(), params.salt(), &mut short)
-            .expect("хеширование");
+            .hash_password_into("password".as_bytes(), params.salt(), &mut short)
+            .expect("hashing");
 
         assert_ne!(
             ours.kek().as_bytes(),
             &short,
-            "если это когда-нибудь совпадёт, комментарий в заголовке модуля можно убрать"
+            "if this ever matches, the comment in the module header can be removed"
         );
     }
 
     #[test]
-    fn parametry_perezhivayut_serializaciyu() {
-        let params = Argon2idParams::new(19 * 1024, 3, 1, [0x44; SALT_LEN]).expect("параметры");
-        let restored = Argon2idParams::decode(&params.encode()).expect("разбор");
+    fn parameters_survive_serialization() {
+        let params = Argon2idParams::new(19 * 1024, 3, 1, [0x44; SALT_LEN]).expect("params");
+        let restored = Argon2idParams::decode(&params.encode()).expect("parse");
         assert_eq!(params, restored);
     }
 
     #[test]
-    fn isporchennye_parametry_ne_razbirayutsya() {
-        let params = Argon2idParams::new(19 * 1024, 3, 1, [0x44; SALT_LEN]).expect("параметры");
+    fn corrupted_parameters_do_not_parse() {
+        let params = Argon2idParams::new(19 * 1024, 3, 1, [0x44; SALT_LEN]).expect("params");
         let encoded = params.encode();
         assert!(Argon2idParams::decode(&encoded[..encoded.len() - 1]).is_err());
         assert!(Argon2idParams::decode(&[]).is_err());
@@ -383,26 +383,26 @@ mod tests {
     }
 
     #[test]
-    fn baseline_znaet_pro_slabye_parametry() {
+    fn baseline_knows_about_weak_parameters() {
         assert!(
             Argon2idParams::baseline()
-                .expect("базовые")
+                .expect("baseline")
                 .meets_baseline()
         );
         assert!(!Argon2idParams::for_tests([0; SALT_LEN]).meets_baseline());
     }
 
     #[test]
-    fn sol_sluchaynaya_u_kazhdyh_parametrov() {
-        let a = Argon2idParams::baseline().expect("базовые");
-        let b = Argon2idParams::baseline().expect("базовые");
+    fn salt_is_random_for_each_set_of_parameters() {
+        let a = Argon2idParams::baseline().expect("baseline");
+        let b = Argon2idParams::baseline().expect("baseline");
         assert_ne!(a.salt(), b.salt());
     }
 
     #[test]
-    fn kalibrovka_ne_opuskaetsya_nizhe_baseline() {
+    fn calibration_does_not_drop_below_baseline() {
         let calibrated =
-            calibrate(Duration::from_nanos(1), &CalibrationLimits::default()).expect("калибровка");
+            calibrate(Duration::from_nanos(1), &CalibrationLimits::default()).expect("calibration");
         assert!(calibrated.params.meets_baseline());
         assert_eq!(
             calibrated.params.m_cost_kib(),
@@ -411,23 +411,23 @@ mod tests {
     }
 
     #[test]
-    fn kalibrovka_uvazhaet_potolok_pamyati() {
+    fn calibration_respects_memory_ceiling() {
         let limits = CalibrationLimits {
             max_m_cost_kib: 24 * 1024,
             max_t_cost: 3,
             p_cost: 1,
         };
-        let calibrated = calibrate(Duration::from_secs(30), &limits).expect("калибровка");
+        let calibrated = calibrate(Duration::from_secs(30), &limits).expect("calibration");
         assert!(calibrated.params.m_cost_kib() <= limits.max_m_cost_kib);
         assert!(calibrated.params.t_cost() <= limits.max_t_cost);
         assert!(calibrated.params.meets_baseline());
     }
 
     #[test]
-    fn auth_hash_ne_pechataetsya() {
+    fn auth_hash_is_not_printed() {
         let params = Argon2idParams::for_tests([0x55; SALT_LEN]);
-        let secrets = derive_master_secrets("пароль".as_bytes(), &params).expect("вывод");
-        assert_eq!(format!("{:?}", secrets.auth_hash()), "AuthHash(<скрыт>)");
-        assert!(format!("{secrets:?}").contains("<скрыт>"));
+        let secrets = derive_master_secrets("password".as_bytes(), &params).expect("derivation");
+        assert_eq!(format!("{:?}", secrets.auth_hash()), "AuthHash(<hidden>)");
+        assert!(format!("{secrets:?}").contains("<hidden>"));
     }
 }

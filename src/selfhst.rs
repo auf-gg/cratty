@@ -1,13 +1,14 @@
-//! Каталог значков selfh.st: список хранится в кеше и обновляется по ETag,
-//! сами значки скачиваются, только когда пользователь выбрал один из них.
+//! The selfh.st icon catalog: the list is kept in a cache and refreshed via ETag,
+//! the icons themselves are downloaded only when the user picks one.
 //!
-//! Все функции здесь блокирующие: зовите их из фонового потока.
+//! All functions here are blocking: call them from a background thread.
 
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use rust_i18n::t;
 use proto::IconRecord;
 
 pub const SOURCE: &str = "selfhst";
@@ -16,16 +17,16 @@ const CATALOG_URL: &str =
     "https://raw.githubusercontent.com/selfhst/icons/refs/heads/main/index-consolidated.json";
 const FILES_URL: &str = "https://cdn.jsdelivr.net/gh/selfhst/icons";
 
-/// Каталог весит сотни килобайт, значок — единицы; больше — что-то не то.
+/// The catalog weighs hundreds of kilobytes, an icon a few; anything larger is wrong.
 const MAX_CATALOG: u64 = 16 * 1024 * 1024;
 const MAX_ICON: u64 = 2 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Значок в каталоге.
+/// An icon in the catalog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
-    /// Имя файла без расширения: `github` → `svg/github.svg`.
+    /// File name without extension: `github` → `svg/github.svg`.
     pub reference: String,
     pub svg: bool,
     pub light: bool,
@@ -35,7 +36,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Ключ значка в записях хостов: `selfhst:github`, цветной —
+    /// Icon key in host records: `selfhst:github`, the colored one —
     /// `selfhst:github:color`.
     pub fn key(&self, colored: bool) -> String {
         IconRecord::key_of(SOURCE, &self.reference, colored)
@@ -51,16 +52,16 @@ impl Entry {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Catalog {
     pub entries: Vec<Entry>,
-    /// ETag ответа, из которого собран каталог: по нему сервер скажет «не изменился».
+    /// ETag of the response the catalog was built from: with it the server will answer "not modified".
     pub etag: Option<String>,
 }
 
 impl Catalog {
-    /// Разбирает `index-consolidated.json`: массив строк
-    /// `[имя, файл, svg, png, webp, light, dark, категория, теги, …]`.
+    /// Parses `index-consolidated.json`: an array of rows
+    /// `[name, file, svg, png, webp, light, dark, category, tags, …]`.
     pub fn parse(text: &str, etag: Option<String>) -> Result<Self> {
         let rows: Vec<Vec<serde_json::Value>> =
-            serde_json::from_str(text).context("каталог selfh.st не разобрать")?;
+            serde_json::from_str(text).with_context(|| t!("selfhst.parse_failed").to_string())?;
         let text_at = |row: &[serde_json::Value], index: usize| {
             row.get(index)
                 .and_then(serde_json::Value::as_str)
@@ -73,7 +74,7 @@ impl Catalog {
             .iter()
             .filter_map(|row| {
                 let reference = text_at(row, 1);
-                // Имя файла пойдёт в адрес: только то, что бывает в каталоге.
+                // The file name goes into a URL: only what occurs in the catalog is allowed.
                 let safe = !reference.is_empty()
                     && reference
                         .chars()
@@ -91,13 +92,13 @@ impl Catalog {
             })
             .collect();
         if entries.is_empty() {
-            bail!("каталог selfh.st пуст");
+            bail!("{}", t!("selfhst.empty"));
         }
         entries.sort_by_key(|entry| entry.name.to_lowercase());
         Ok(Self { entries, etag })
     }
 
-    /// Значки, подходящие под запрос: сначала те, чьё имя с него начинается.
+    /// Icons matching a query: first those whose name starts with it.
     pub fn search(&self, query: &str) -> Vec<&Entry> {
         let query = query.trim().to_lowercase();
         let mut found: Vec<&Entry> = self
@@ -136,7 +137,7 @@ fn home() -> Option<PathBuf> {
     std::env::home_dir()
 }
 
-/// Каталог из кеша, если он там есть и читается.
+/// The catalog from the cache, if it is there and readable.
 pub fn cached() -> Option<Catalog> {
     let dir = cache_dir()?;
     let text = std::fs::read_to_string(dir.join("index.json")).ok()?;
@@ -147,21 +148,21 @@ pub fn cached() -> Option<Catalog> {
     Catalog::parse(&text, etag).ok()
 }
 
-/// Итог обновления каталога.
+/// Result of a catalog refresh.
 pub enum Refresh {
-    /// Сервер ответил, что каталог не изменился.
+    /// The server replied that the catalog has not changed.
     Unchanged,
     Updated(Catalog),
 }
 
-/// Сверяет каталог с сервером по ETag и при изменении кладёт новый в кеш.
+/// Compares the catalog with the server via ETag and caches the new one if it changed.
 pub fn refresh(etag: Option<&str>) -> Result<Refresh> {
     let agent = agent();
     let mut request = agent.get(CATALOG_URL);
     if let Some(etag) = etag {
         request = request.header("If-None-Match", etag);
     }
-    let mut response = request.call().context("каталог selfh.st не загрузился")?;
+    let mut response = request.call().with_context(|| t!("selfhst.load_failed").to_string())?;
     if response.status() == 304 {
         return Ok(Refresh::Unchanged);
     }
@@ -171,11 +172,11 @@ pub fn refresh(etag: Option<&str>) -> Result<Refresh> {
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     let text = read_limited(response.body_mut().as_reader(), MAX_CATALOG)?;
-    let text = String::from_utf8(text).map_err(|_| anyhow!("каталог selfh.st не UTF-8"))?;
+    let text = String::from_utf8(text).map_err(|_| anyhow!("{}", t!("selfhst.not_utf8")))?;
     let catalog = Catalog::parse(&text, etag.clone())?;
 
     if let Some(dir) = cache_dir() {
-        // Кеш — не критичен: не записался, значит в другой раз скачаем снова.
+        // The cache is not critical: if it was not written, we will download again next time.
         let _ = std::fs::create_dir_all(&dir)
             .and_then(|()| std::fs::write(dir.join("index.json"), &text))
             .and_then(|()| std::fs::write(dir.join("etag"), etag.unwrap_or_default()));
@@ -183,8 +184,8 @@ pub fn refresh(etag: Option<&str>) -> Result<Refresh> {
     Ok(Refresh::Updated(catalog))
 }
 
-/// Скачивает значок. Цветной — один файл. Иначе светлый и тёмный, а цветной
-/// только на замену тому из них, которого в каталоге нет.
+/// Downloads an icon. The colored one is a single file. Otherwise light and dark, and the colored
+/// one only as a replacement for whichever of them is missing from the catalog.
 pub fn download(entry: &Entry, colored: bool) -> Result<IconRecord> {
     let agent = agent();
     let format = if entry.svg { "svg" } else { "png" };
@@ -193,7 +194,7 @@ pub fn download(entry: &Entry, colored: bool) -> Result<IconRecord> {
         let mut response = agent
             .get(&url)
             .call()
-            .with_context(|| format!("значок {} не скачался", entry.name))?;
+            .with_context(|| t!("selfhst.icon_failed", name = entry.name).to_string())?;
         read_limited(response.body_mut().as_reader(), MAX_ICON)
     };
 
@@ -236,9 +237,9 @@ fn read_limited(reader: impl std::io::Read, limit: u64) -> Result<Vec<u8>> {
     reader
         .take(limit + 1)
         .read_to_end(&mut bytes)
-        .context("ответ оборвался")?;
+        .with_context(|| t!("selfhst.cut_off").to_string())?;
     if bytes.len() as u64 > limit {
-        bail!("ответ слишком большой");
+        bail!("{}", t!("selfhst.too_large"));
     }
     Ok(bytes)
 }
@@ -251,61 +252,61 @@ mod tests {
         ["GitHub", "github", "Y", "Y", "Y", "Y", "Y", "Other", "Git", "2313"],
         ["13 Feet Ladder", "13-feet-ladder", "N", "Y", "Y", "N", "N", "Self-Hosted", "", "643"],
         ["Gitea", "gitea", "Y", "Y", "Y", "N", "N", "Self-Hosted", "Git", "1"],
-        ["Злой", "../etc/passwd", "Y", "Y", "Y", "N", "N", "", "", "1"]
+        ["Evil", "../etc/passwd", "Y", "Y", "Y", "N", "N", "", "", "1"]
     ]"#;
 
-    /// Живой сервер: `cargo test -- --ignored selfhst`.
+    /// Live server: `cargo test -- --ignored selfhst`.
     #[test]
-    #[ignore = "ходит в сеть"]
-    fn zhivoy_katalog_i_znachok() {
-        let Refresh::Updated(catalog) = refresh(None).expect("каталог") else {
-            panic!("без ETag ответ «не изменился» невозможен");
+    #[ignore = "hits the network"]
+    fn live_catalog_and_icon() {
+        let Refresh::Updated(catalog) = refresh(None).expect("catalog") else {
+            panic!("without an ETag a \"not modified\" response is impossible");
         };
         assert!(catalog.entries.len() > 1000);
         assert!(matches!(
-            refresh(catalog.etag.as_deref()).expect("повтор"),
+            refresh(catalog.etag.as_deref()).expect("repeat"),
             Refresh::Unchanged
         ));
 
         let github = catalog.find("github").expect("github");
-        let icon = download(github, false).expect("значок");
+        let icon = download(github, false).expect("icon");
         assert!(icon.light.starts_with(b"<svg") || icon.light.starts_with(b"<?xml"));
         assert!(!icon.dark.is_empty());
         assert!(
             icon.color.is_empty(),
-            "оба варианта есть — цветной не нужен"
+            "both variants exist — the colored one is not needed"
         );
         assert!(icon.is_complete());
 
-        let icon = download(github, true).expect("цветной");
+        let icon = download(github, true).expect("colored");
         assert!(!icon.color.is_empty() && icon.light.is_empty() && icon.dark.is_empty());
 
         let png = catalog
             .entries
             .iter()
             .find(|entry| !entry.svg && !entry.light)
-            .expect("без svg и вариантов");
+            .expect("without svg and variants");
         let icon = download(png, false).expect("png");
-        assert!(icon.color.starts_with(b"\x89PNG"), "запасной цветной");
+        assert!(icon.color.starts_with(b"\x89PNG"), "fallback colored");
         assert!(icon.is_complete());
     }
 
     #[test]
-    fn katalog_razbiraetsya() {
-        let catalog = Catalog::parse(SAMPLE, Some("\"abc\"".into())).expect("разбор");
-        assert_eq!(catalog.entries.len(), 3, "опасное имя файла отброшено");
-        let github = catalog.find("github").expect("есть");
+    fn catalog_parses() {
+        let catalog = Catalog::parse(SAMPLE, Some("\"abc\"".into())).expect("parse");
+        assert_eq!(catalog.entries.len(), 3, "dangerous file name dropped");
+        let github = catalog.find("github").expect("present");
         assert!(github.svg && github.light && github.dark);
         assert_eq!(github.key(false), "selfhst:github");
         assert_eq!(github.key(true), "selfhst:github:color");
-        let ladder = catalog.find("13-feet-ladder").expect("есть");
+        let ladder = catalog.find("13-feet-ladder").expect("present");
         assert!(!ladder.svg && !ladder.light);
         assert!(Catalog::parse("[]", None).is_err());
     }
 
     #[test]
-    fn poisk_snachala_po_nachalu_imeni() {
-        let catalog = Catalog::parse(SAMPLE, None).expect("разбор");
+    fn search_matches_name_prefix_first() {
+        let catalog = Catalog::parse(SAMPLE, None).expect("parse");
         let names = |query: &str| -> Vec<String> {
             catalog
                 .search(query)
@@ -314,7 +315,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(names("git"), vec!["gitea", "github"]);
-        // Тег тоже ищется, но совпадение с началом имени — выше.
+        // The tag is searched too, but a match at the start of the name ranks higher.
         assert_eq!(names("GIT").len(), 2);
         assert_eq!(names("ladder"), vec!["13-feet-ladder"]);
         assert_eq!(names("").len(), 3);

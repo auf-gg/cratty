@@ -1,6 +1,7 @@
 pub mod keys;
 mod transport;
 
+use rust_i18n::t;
 use anyhow::{Context, Result};
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
@@ -46,7 +47,7 @@ pub fn spawn(address: Address) -> Result<(Running, mpsc::UnboundedReceiver<Ask>)
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    let _ = ready_tx.send(Err(format!("не создать tokio-рантайм: {error}")));
+                    let _ = ready_tx.send(Err(t!("agent.runtime_failed", error = error).into_owned()));
                     return;
                 }
             };
@@ -79,7 +80,7 @@ pub fn spawn(address: Address) -> Result<(Running, mpsc::UnboundedReceiver<Ask>)
                 }
             });
         })
-        .context("не запустить поток агента")?;
+        .context(t!("agent.thread_start_failed"))?;
 
     match ready_rx.recv() {
         Ok(Ok(())) => Ok((
@@ -96,7 +97,7 @@ pub fn spawn(address: Address) -> Result<(Running, mpsc::UnboundedReceiver<Ask>)
         }
         Err(_) => {
             let _ = thread.join();
-            anyhow::bail!("поток агента завершился, не сказав ничего")
+            anyhow::bail!(t!("agent.thread_exited"))
         }
     }
 }
@@ -135,7 +136,7 @@ where
         match stream.read_exact(&mut header).await {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(error) => return Err(error).context("чтение заголовка кадра"),
+            Err(error) => return Err(error).context(t!("agent.ctx_frame_header")),
         }
 
         let len = match ::agent::frame_len(header) {
@@ -148,11 +149,11 @@ where
         stream
             .read_exact(&mut frame)
             .await
-            .context("чтение кадра")?;
+            .context(t!("agent.ctx_frame"))?;
 
         let response = respond(&frame, &mut bound, &asks).await;
-        stream.write_all(&response).await.context("ответ агенту")?;
-        stream.flush().await.context("сброс ответа")?;
+        stream.write_all(&response).await.context(t!("agent.ctx_reply"))?;
+        stream.flush().await.context(t!("agent.ctx_flush"))?;
     }
 }
 
@@ -262,12 +263,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spisok_klyuchey_prihodit_iz_prilozheniya() {
+    async fn key_list_comes_from_the_app() {
         let response = one(&[11], |ask| {
             let Ask::Identities { reply } = ask else {
-                panic!("ожидался запрос списка");
+                panic!("expected a list request");
             };
-            let _ = reply.send(vec![::agent::Identity::new(b"blob".to_vec(), "ключ")]);
+            let _ = reply.send(vec![::agent::Identity::new(b"blob".to_vec(), "key")]);
         })
         .await;
 
@@ -276,7 +277,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn otkaz_cheloveka_daet_failure() {
+    async fn human_refusal_gives_failure() {
         let mut frame = vec![13];
         for field in [b"key".as_slice(), b"data".as_slice()] {
             frame.extend_from_slice(&(field.len() as u32).to_be_bytes());
@@ -286,7 +287,7 @@ mod tests {
 
         let response = one(&frame, |ask| {
             let Ask::Sign(ask) = ask else {
-                panic!("ожидался запрос подписи");
+                panic!("expected a sign request");
             };
             assert_eq!(ask.public, b"key");
             assert_eq!(ask.data, b"data");
@@ -299,7 +300,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn neizvestnyy_flag_ne_dohodit_do_klyucha() {
+    async fn unknown_flag_does_not_reach_the_key() {
         let mut frame = vec![13];
         for field in [b"key".as_slice(), b"data".as_slice()] {
             frame.extend_from_slice(&(field.len() as u32).to_be_bytes());
@@ -314,12 +315,12 @@ mod tests {
         assert_eq!(response, ::agent::failure());
         assert!(
             rx.try_recv().is_err(),
-            "приложение не должны были беспокоить"
+            "the app should not have been bothered"
         );
     }
 
     #[tokio::test]
-    async fn dobavlenie_klyucha_otvergaetsya() {
+    async fn adding_a_key_is_rejected() {
         let (asks, mut rx) = mpsc::unbounded();
         let mut bound = None;
         let response = respond(&[17, 1, 2, 3], &mut bound, &asks).await;
@@ -328,9 +329,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn neizvestnoe_rasshirenie_otlichaetsya_ot_otkaza() {
+    async fn unknown_extension_differs_from_failure() {
         let mut frame = vec![27];
-        let name = "нету".as_bytes();
+        let name = "missing".as_bytes();
         frame.extend_from_slice(&(name.len() as u32).to_be_bytes());
         frame.extend_from_slice(name);
 
@@ -342,7 +343,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lozhnaya_privyazka_ne_zapominaetsya() {
+    async fn bogus_binding_is_not_remembered() {
         let mut body = Vec::new();
         for field in [
             b"hostkey".as_slice(),
@@ -366,20 +367,20 @@ mod tests {
         assert_eq!(response, ::agent::failure());
         assert!(
             bound.is_none(),
-            "непроверенная привязка не должна запоминаться"
+            "an unverified binding must not be remembered"
         );
     }
 
     #[tokio::test]
-    async fn nastoyashchaya_privyazka_dohodit_do_voprosa() {
+    async fn genuine_binding_reaches_the_prompt() {
         let host = russh::keys::PrivateKey::random(
             &mut russh::keys::key::safe_rng(),
             russh::keys::ssh_key::Algorithm::Ed25519,
         )
-        .expect("ключ сервера");
+        .expect("server key");
         let session_id = b"session-id".as_slice();
-        let signature = keys::sign(&host, session_id, None).expect("подпись");
-        let host_blob = keys::public_blob(host.public_key()).expect("блоб");
+        let signature = keys::sign(&host, session_id, None).expect("signature");
+        let host_blob = keys::public_blob(host.public_key()).expect("blob");
 
         let mut body = Vec::new();
         for field in [host_blob.as_slice(), session_id, signature.as_slice()] {
@@ -398,14 +399,14 @@ mod tests {
         let response = respond(&frame, &mut bound, &asks).await;
 
         assert_eq!(response, ::agent::success());
-        let bound = bound.expect("привязка должна была запомниться");
+        let bound = bound.expect("the binding should have been remembered");
         assert_eq!(bound.host_key, host_blob);
         assert!(bound.fingerprint.starts_with("SHA256:"));
         assert!(!bound.is_forwarding);
     }
 
     #[tokio::test]
-    async fn musor_poluchaet_otkaz() {
+    async fn garbage_gets_a_failure() {
         let (asks, _rx) = mpsc::unbounded();
         let mut bound = None;
         for frame in [vec![], vec![255], vec![13, 0, 0, 0, 200]] {

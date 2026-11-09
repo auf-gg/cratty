@@ -1,7 +1,8 @@
 use super::*;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use std::borrow::Cow;
 
-/// Хост, который тащат по левой панели в другую группу.
+/// Host being dragged across the left panel into another group.
 #[derive(Clone)]
 pub(super) struct HostDrag {
     vault: String,
@@ -27,9 +28,9 @@ impl Render for HostDragPreview {
 }
 
 impl AppView {
-    /// Делает элемент местом, куда можно бросить хост того же хранилища:
-    /// он переезжает в группу `group` (пустое имя — без группы). С `anchor`
-    /// хост встаёт на место этого хоста — так меняется порядок и внутри группы.
+    /// Makes the element a drop target for a host from the same vault:
+    /// it moves into group `group` (empty name means no group). With `anchor`
+    /// the host takes that host's place, which also reorders within a group.
     pub(super) fn host_drop_target<E: InteractiveElement>(
         element: E,
         vault: &str,
@@ -63,7 +64,7 @@ impl AppView {
             }))
     }
 
-    /// Место «Без группы» в конце хранилища, пока тащат хост из группы.
+    /// The "No group" drop spot at the end of the vault while a host is dragged out of a group.
     fn ungroup_zone(&self, vault: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.dragging_host.as_ref() != Some(&(vault.to_owned(), true)) {
             return None;
@@ -80,7 +81,7 @@ impl AppView {
         .border_1()
         .border_color(theme.border)
         .child(
-            Label::new("Без группы")
+            Label::new(t!("rail.no_group"))
                 .text_xs()
                 .text_color(theme.muted_foreground),
         );
@@ -117,9 +118,9 @@ impl AppView {
                 .bg(theme.sidebar)
                 .border_r_1()
                 .border_color(theme.border)
-                // Брошенный туда, где его не принимают (например, на самого
-                // себя), хост gpui снимает без перерисовки — и подсказка
-                // перетаскивания застывает. Перерисовываем сами.
+                // Dropped where it is not accepted (for example, onto
+                // itself), the host is removed by gpui without a redraw — and the
+                // drag hint freezes. We redraw ourselves.
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _window, cx| {
@@ -142,9 +143,9 @@ impl AppView {
                                 .small()
                                 .icon(Icon::empty().path("icons/square-terminal.svg"))
                                 .tooltip(if cfg!(unix) {
-                                    "Локальный терминал (без хранилища)"
+                                    t!("rail.local_terminal")
                                 } else {
-                                    "Локальный терминал поддерживается только на Unix"
+                                    t!("rail.local_terminal_unix_only")
                                 })
                                 .disabled(!cfg!(unix))
                                 .on_click(
@@ -157,9 +158,9 @@ impl AppView {
                                 .small()
                                 .icon(Icon::new(IconName::Plus))
                                 .tooltip(if locked {
-                                    "Новый хост (требуется разблокировать хранилище)"
+                                    t!("rail.new_host_locked")
                                 } else {
-                                    "Новый хост"
+                                    t!("rail.new_host")
                                 })
                                 .disabled(locked)
                                 .on_click(
@@ -179,13 +180,13 @@ impl AppView {
                         .gap_4()
                         .when(looks_like_address, |this| {
                             this.child(self.rail_group(
-                                "Подключиться",
+                                t!("rail.group_connect"),
                                 vec![self.address_row(&query, cx)],
                                 cx,
                             ))
                         })
                         .when(!sessions.is_empty(), |this| {
-                            this.child(self.rail_group("Сеансы", sessions, cx))
+                            this.child(self.rail_group(t!("rail.group_sessions"), sessions, cx))
                         })
                         .children(self.import_notice_box(cx))
                         .children(vault_groups)
@@ -211,15 +212,15 @@ impl AppView {
                 if saved.is_empty() {
                     vec![self.empty_row(
                         if query.is_empty() {
-                            "Хосты не добавлены"
+                            t!("rail.no_hosts")
                         } else {
-                            "Ничего не нашлось"
+                            t!("rail.nothing_found")
                         },
                         cx,
                     )]
                 } else {
                     let mut rows = Vec::new();
-                    // Сначала группы по алфавиту, за ними хосты без группы.
+                    // Groups first, alphabetically, then hosts without a group.
                     for group in unlocked.groups() {
                         let key = proto::GroupRecord::key(&group.name);
                         let members: Vec<&HostRecord> = saved
@@ -229,7 +230,7 @@ impl AppView {
                         if members.is_empty() {
                             continue;
                         }
-                        // При поиске группы раскрыты: иначе найденное не видно.
+                        // While searching, groups are expanded: otherwise matches are not visible.
                         let collapsed =
                             query.is_empty() && self.is_group_collapsed(&id, &group.name);
                         rows.push(self.group_row(&id, &group, members.len(), collapsed, cx));
@@ -266,12 +267,12 @@ impl AppView {
             .into_any_element()
     }
 
-    fn rail_group(&self, title: &'static str, rows: Vec<AnyElement>, cx: &App) -> AnyElement {
+    fn rail_group(&self, title: impl Into<SharedString>, rows: Vec<AnyElement>, cx: &App) -> AnyElement {
         v_flex()
             .gap_px()
             .child(
                 div().h(px(22.)).px_2().flex().items_center().child(
-                    Label::new(title)
+                    Label::new(title.into())
                         .text_xs()
                         .font_medium()
                         .text_color(cx.theme().muted_foreground),
@@ -353,7 +354,7 @@ impl AppView {
                 .ghost()
                 .xsmall()
                 .icon(Icon::new(IconName::Close))
-                .tooltip("Закрыть")
+                .tooltip(t!("rail.close"))
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     cx.stop_propagation();
                     this.close_tab(index, cx)
@@ -442,13 +443,13 @@ impl AppView {
                 cx.listener(move |this, _, _window, cx| this.open_saved(&vault, &open_target, cx)),
             )
             .context_menu(move |menu, _window, _cx| {
-                let item = |label: &'static str, icon: &'static str| {
+                let item = |label: Cow<'static, str>, icon: &'static str| {
                     PopupMenuItem::new(label).icon(Icon::empty().path(icon))
                 };
                 let files = {
                     let (view, vault, target) =
                         (view.clone(), menu_vault.clone(), menu_target.clone());
-                    item("Файлы (SFTP)", "icons/folder.svg").on_click(move |_, _window, cx| {
+                    item(t!("rail.menu_files"), "icons/folder.svg").on_click(move |_, _window, cx| {
                         view.update(cx, |this, cx| {
                             let credentials = this.saved_credentials(&vault, &target);
                             this.open_files(&target, credentials, Some(vault.clone()), cx);
@@ -458,14 +459,14 @@ impl AppView {
                 let edit = {
                     let (view, vault, target) =
                         (view.clone(), menu_vault.clone(), menu_target.clone());
-                    item("Изменить", "icons/pencil.svg").on_click(move |_, window, cx| {
+                    item(t!("rail.menu_edit"), "icons/pencil.svg").on_click(move |_, window, cx| {
                         view.update(cx, |this, cx| this.edit(&vault, &target, window, cx));
                     })
                 };
                 let delete = {
                     let (view, vault, target) =
                         (view.clone(), menu_vault.clone(), menu_target.clone());
-                    item("Удалить…", "icons/delete.svg").on_click(move |_, _window, cx| {
+                    item(t!("rail.menu_delete"), "icons/delete.svg").on_click(move |_, _window, cx| {
                         view.update(cx, |this, cx| {
                             this.confirm_forget = Some((vault.clone(), target.clone()));
                             cx.notify();
@@ -480,7 +481,7 @@ impl AppView {
             .into_any_element()
     }
 
-    /// Подтверждение удаления хоста из контекстного меню.
+    /// Confirmation of host deletion from the context menu.
     pub(super) fn forget_host_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (vault, target) = self.confirm_forget.clone()?;
         let theme = cx.theme().clone();
@@ -507,13 +508,11 @@ impl AppView {
                         .border_1()
                         .border_color(theme.danger)
                         .child(
-                            Label::new(SharedString::from(format!("Удалить хост «{target}»?")))
+                            Label::new(t!("rail.delete_host_title", target = target))
                                 .font_semibold(),
                         )
                         .child(
-                            Label::new(
-                                "Запись и сохранённые для неё пароли будут удалены из хранилища. Открытые сеансы останутся подключёнными.",
-                            )
+                            Label::new(t!("rail.delete_host_body"))
                             .text_sm()
                             .text_color(theme.muted_foreground),
                         )
@@ -523,7 +522,7 @@ impl AppView {
                                 .child(
                                     Button::new("host-delete-confirm")
                                         .danger()
-                                        .label("Удалить")
+                                        .label(t!("rail.delete"))
                                         .on_click(cx.listener(move |this, _, _window, cx| {
                                             this.confirm_forget = None;
                                             this.forget(&vault, &target, cx);
@@ -533,7 +532,7 @@ impl AppView {
                                 .child(
                                     Button::new("host-delete-cancel")
                                         .outline()
-                                        .label("Отмена")
+                                        .label(t!("rail.cancel"))
                                         .on_click(cx.listener(|this, _, _window, cx| {
                                             this.confirm_forget = None;
                                             cx.notify();
@@ -576,9 +575,9 @@ impl AppView {
         let theme = cx.theme().clone();
         let id = self.vaults[ix].id.clone();
         let (title, hint) = if self.vaults[ix].session.state().is_absent() {
-            ("Хранилище не создано", "Создать хранилище")
+            (t!("rail.no_vault_created"), t!("rail.create_vault"))
         } else {
-            ("Хранилище заблокировано", "Разблокировать")
+            (t!("rail.vault_locked"), t!("rail.unlock"))
         };
         Self::rail_row(SharedString::from(format!("rail-locked-{id}")), false, cx)
             .h(px(42.))
@@ -601,14 +600,14 @@ impl AppView {
             .into_any_element()
     }
 
-    fn empty_row(&self, text: &'static str, cx: &App) -> AnyElement {
+    fn empty_row(&self, text: impl Into<SharedString>, cx: &App) -> AnyElement {
         div()
             .px_2()
             .h(px(28.))
             .flex()
             .items_center()
             .child(
-                Label::new(text)
+                Label::new(text.into())
                     .text_xs()
                     .text_color(cx.theme().muted_foreground),
             )
@@ -618,7 +617,7 @@ impl AppView {
     fn rail_footer(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let unlocked = self.any_unlocked();
-        let nav = |id: &'static str, icon: Icon, tip: &'static str, section: Section| {
+        let nav = |id: &'static str, icon: Icon, tip: Cow<'static, str>, section: Section| {
             Button::new(id)
                 .ghost()
                 .small()
@@ -637,25 +636,25 @@ impl AppView {
             .child(nav(
                 "rail-keys",
                 Icon::empty().path("icons/key-round.svg"),
-                "Ключи",
+                t!("rail.keys"),
                 Section::Keys,
             ))
             .child(nav(
                 "rail-proxies",
                 Icon::empty().path("icons/route.svg"),
-                "Прокси",
+                t!("rail.proxies"),
                 Section::Proxies,
             ))
             .child(nav(
                 "rail-snippets",
                 Icon::empty().path("icons/square-terminal.svg"),
-                "Сниппеты",
+                t!("rail.snippets"),
                 Section::Snippets,
             ))
             .child(nav(
                 "rail-settings",
                 Icon::new(IconName::Settings),
-                "Настройки",
+                t!("rail.settings"),
                 Section::Settings,
             ))
             .child(div().flex_grow_1())
@@ -677,9 +676,9 @@ impl AppView {
                             }),
                     )
                     .tooltip(if unlocked {
-                        "Заблокировать все хранилища"
+                        t!("rail.lock_all")
                     } else {
-                        "Разблокировать хранилище"
+                        t!("rail.unlock_vault")
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if unlocked {

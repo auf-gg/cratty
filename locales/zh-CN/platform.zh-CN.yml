@@ -1,0 +1,7 @@
+platform:
+  core_dump_failed: "无法禁用内存转储 (RLIMIT_CORE)"
+  ptrace_failed: "无法保护进程免受 ptrace (PR_SET_DUMPABLE)"
+  memlock_low: "密钥未锁定在内存中：RLIMIT_MEMLOCK 过低，内存页可能被换出"
+  working_set_low: "密钥未锁定在内存中：工作集配额过低，内存页可能被写入页面文件"
+  dumps_unsupported: "此平台未禁用内存转储"
+  pin_unsupported: "此平台不会将密钥锁定在内存中"

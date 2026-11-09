@@ -1,0 +1,19 @@
+icons:
+  search_placeholder: "搜索图标"
+  catalog_unchanged: "目录没有变化。"
+  catalog_updated:
+    other: "目录已更新：%{count} 个图标。"
+  choose: "选择图标"
+  default: "默认"
+  catalog_loading: "正在加载目录…"
+  catalog_none: "暂无目录：请点击“刷新”。"
+  nothing_found: "未找到任何内容。"
+  more: "还有 %{count} 个——请缩小搜索范围。"
+  count:
+    other: "%{count} 个图标"
+  title: "图标"
+  refresh: "刷新目录"
+  app_icons_note: "应用图标。所选图标会下载到保管库中，离线时也可见。"
+  colored: "彩色图标——一个版本适用于任何主题"
+  cancel: "取消"
+  downloading: "正在下载…"

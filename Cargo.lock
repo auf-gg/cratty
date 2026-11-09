@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "agent"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "ahash"
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "cratty"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agent",
  "alacritty_terminal",
@@ -6343,7 +6343,7 @@ dependencies = [
 
 [[package]]
 name = "proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -8072,7 +8072,7 @@ dependencies = [
 
 [[package]]
 name = "sync"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8886,7 +8886,7 @@ dependencies = [
 
 [[package]]
 name = "vault"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "bip39",

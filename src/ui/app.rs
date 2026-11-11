@@ -84,6 +84,9 @@ enum Edge {
     Editor,
 }
 
+/// Width of the resize handle over a panel border.
+const EDGE_HANDLE: f32 = 6.0;
+
 struct EdgeDrag;
 
 impl Render for EdgeDrag {
@@ -1659,7 +1662,10 @@ impl AppView {
                     })),
             )
             .child(
-                h_flex().justify_end().pr_2().gap_1().child(
+                // `occlude`: the whole title bar is a window drag area, and on
+                // Windows the OS would take the click as a window move — the
+                // button would never get it.
+                h_flex().occlude().justify_end().pr_2().gap_1().child(
                     Button::new("theme")
                         .ghost()
                         .xsmall()
@@ -1683,13 +1689,29 @@ impl AppView {
             .into()
     }
 
-    fn edge_handle(&self, id: &'static str, edge: Edge, cx: &mut Context<Self>) -> AnyElement {
+    /// Resize handle laid over the panel border, taking no room in the layout
+    /// (otherwise it shows as a gap). `offset` is the border's distance from the
+    /// left edge (rail) or the right edge (panel, editor) of the parent; the
+    /// parent must be `relative()` and the handle added after the content.
+    fn edge_handle(
+        &self,
+        id: &'static str,
+        edge: Edge,
+        offset: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let accent = cx.theme().primary;
+        let start = px(offset - EDGE_HANDLE / 2.0);
         div()
             .id(id)
-            .w(px(4.))
-            .h_full()
-            .flex_shrink_0()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(EDGE_HANDLE))
+            .map(|this| match edge {
+                Edge::Rail => this.left(start),
+                _ => this.right(start),
+            })
             .cursor_col_resize()
             .hover(move |style| style.bg(accent))
             .on_drag(edge, |_, _, _, cx| cx.new(|_| EdgeDrag))
@@ -2097,6 +2119,8 @@ impl Render for AppView {
         // the panel over the content.
         let rail_pinned = self.settings.rail_pinned;
         let panel_pinned = self.settings.panel_pinned;
+        let has_rail = rail.is_some();
+        let has_panel = session_panel.is_some();
         let (rail, rail_overlay) = match (rail_pinned, rail) {
             (true, rail) => (rail, None),
             (false, Some(rail)) if self.rail_peek => {
@@ -2142,17 +2166,24 @@ impl Render for AppView {
                             .flex_row()
                             .flex_grow_1()
                             .overflow_hidden()
-                            .when(rail_pinned, |this| {
-                                this.children(rail).child(self.edge_handle(
+                            .when(rail_pinned, |this| this.children(rail))
+                            .child(div().flex_grow_1().overflow_hidden().child(workspace))
+                            .when(panel_pinned, |this| this.children(session_panel))
+                            .when(rail_pinned && has_rail, |this| {
+                                this.child(self.edge_handle(
                                     "edge-rail",
                                     Edge::Rail,
+                                    self.settings.rail_width,
                                     cx,
                                 ))
                             })
-                            .child(div().flex_grow_1().overflow_hidden().child(workspace))
-                            .when(panel_pinned && session_panel.is_some(), |this| {
-                                this.child(self.edge_handle("edge-panel", Edge::Panel, cx))
-                                    .children(session_panel)
+                            .when(panel_pinned && has_panel, |this| {
+                                this.child(self.edge_handle(
+                                    "edge-panel",
+                                    Edge::Panel,
+                                    self.settings.panel_width,
+                                    cx,
+                                ))
                             })
                             .children(rail_overlay)
                             .children(panel_overlay)
@@ -2178,10 +2209,10 @@ impl Render for AppView {
                                         Edge::Editor => {
                                             let mut right = f32::from(window.viewport_size().width);
                                             if this.settings.panel_pinned && !this.showing_page {
-                                                right -= this.settings.panel_width + 4.0;
+                                                right -= this.settings.panel_width;
                                             }
                                             let left = if this.settings.rail_pinned {
-                                                this.settings.rail_width + 4.0
+                                                this.settings.rail_width
                                             } else {
                                                 0.0
                                             };
@@ -2259,7 +2290,11 @@ pub fn open_main_window(cx: &mut App) -> Result<()> {
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(640.), px(400.))),
-            titlebar: Some(TitleBar::title_bar_options()),
+            // The system title: taskbar, Alt+Tab, window list.
+            titlebar: Some(gpui_kit::TitlebarOptions {
+                title: Some("Cratty".into()),
+                ..TitleBar::title_bar_options()
+            }),
             window_decorations: Some(gpui_kit::WindowDecorations::Client),
             app_id: Some("cratty".into()),
             window_background: crate::ui::theme::window_background(&startup),

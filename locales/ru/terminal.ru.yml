@@ -9,8 +9,6 @@ terminal:
   close: "Закрыть (Esc)"
   connecting: "Подключение к %{target}…"
   copied: "%{target} — выделенный текст скопирован"
-  connected: "%{target} — %{cols}×%{rows} — ключ %{fingerprint}"
-  connected_scrolled: "%{target} — %{cols}×%{rows} — ключ %{fingerprint} — прокручено на %{offset}"
   save_to_vault: "Сохранить в хранилище"
   confirm: "Подтвердить"
   key_changed: "Ключ хоста изменился"

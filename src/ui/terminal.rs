@@ -1204,56 +1204,29 @@ impl Render for TerminalView {
                     .children(self.search_panel(cx))
                     .children(self.prompt.is_some().then(|| self.prompt_panel(cx))),
             )
-            .child(self.status_bar(snapshot.display_offset, cx))
+            .children(self.status_bar(cx))
     }
 }
 
 impl TerminalView {
-    fn status_bar(&self, display_offset: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Status line under the terminal. Hidden while the session is simply
+    /// connected: it only shows connecting, closing and the "copied" notice.
+    fn status_bar(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let theme = cx.theme();
         let (dim, error, ok) = (theme.muted_foreground, theme.danger, theme.success);
 
-        let size = self.terminal.size();
         let (text, color) = match &self.status {
             Status::Connecting { target } => (t!("terminal.connecting", target = target).to_string(), dim),
-            Status::Connected {
-                target,
-                fingerprint,
-            } => {
-                if self.copied {
-                    (t!("terminal.copied", target = target).to_string(), ok)
-                } else {
-                    (
-                        if display_offset > 0 {
-                            t!(
-                                "terminal.connected_scrolled",
-                                target = target,
-                                cols = size.cols,
-                                rows = size.rows,
-                                fingerprint = fingerprint,
-                                offset = display_offset
-                            )
-                            .to_string()
-                        } else {
-                            t!(
-                                "terminal.connected",
-                                target = target,
-                                cols = size.cols,
-                                rows = size.rows,
-                                fingerprint = fingerprint
-                            )
-                            .to_string()
-                        },
-                        ok,
-                    )
-                }
+            Status::Connected { target, .. } if self.copied => {
+                (t!("terminal.copied", target = target).to_string(), ok)
             }
+            Status::Connected { .. } => return None,
             Status::Closed { message, failed } => {
                 (message.to_string(), if *failed { error } else { dim })
             }
         };
 
-        div()
+        Some(div()
             .flex_shrink_0()
             .px_2()
             .py_1()
@@ -1262,7 +1235,7 @@ impl TerminalView {
             .whitespace_nowrap()
             .overflow_hidden()
             .text_ellipsis()
-            .child(SharedString::from(text))
+            .child(SharedString::from(text)))
     }
 }
 

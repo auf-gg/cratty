@@ -9,8 +9,6 @@ terminal:
   close: "关闭（Esc）"
   connecting: "正在连接 %{target}…"
   copied: "%{target} — 所选文本已复制"
-  connected: "%{target} — %{cols}×%{rows} — 密钥 %{fingerprint}"
-  connected_scrolled: "%{target} — %{cols}×%{rows} — 密钥 %{fingerprint} — 已滚动 %{offset}"
   save_to_vault: "保存到保管库"
   confirm: "确认"
   key_changed: "主机密钥已更改"

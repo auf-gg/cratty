@@ -9,8 +9,6 @@ terminal:
   close: "Close (Esc)"
   connecting: "Connecting to %{target}…"
   copied: "%{target} — selected text copied"
-  connected: "%{target} — %{cols}×%{rows} — key %{fingerprint}"
-  connected_scrolled: "%{target} — %{cols}×%{rows} — key %{fingerprint} — scrolled by %{offset}"
   save_to_vault: "Save to vault"
   confirm: "Confirm"
   key_changed: "Host key changed"

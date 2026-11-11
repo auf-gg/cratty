@@ -1,4 +1,3 @@
-use crate::ui::theme::MainAction;
 use rust_i18n::t;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -10,12 +9,14 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
+    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
     scroll::ScrollableElement,
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, Context, Entity, ExternalPaths, Focusable, IntoElement, Modifiers, MouseButton,
-    MouseDownEvent, Render, SharedString, Subscription, Window, div, prelude::*, px,
+    AnyElement, Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement, Modifiers,
+    MouseButton, MouseDownEvent, Render, SharedString, Subscription, WeakEntity, Window, div,
+    prelude::*, px,
 };
 
 use crate::ssh::sftp::{self, FromSftp, RemoteEntry, SftpHandle, ToSftp, TransferId};
@@ -152,11 +153,22 @@ enum Status {
     Closed { message: SharedString, failed: bool },
 }
 
+/// Path of a pane: breadcrumbs, and on a click an input to type the path.
 #[derive(Default)]
 struct PathBar {
     input: Option<Entity<InputState>>,
     stale: bool,
+    /// The input is shown instead of the breadcrumbs.
+    editing: bool,
+    /// Focus the input on the next render (it has just been shown).
+    focus: bool,
     _subscription: Option<Subscription>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Local,
+    Remote,
 }
 
 pub enum FilesEvent {
@@ -177,17 +189,20 @@ pub struct FilesView {
     compact: bool,
     title: SharedString,
     status: Status,
-    show_hidden: bool,
     local_path: PathBuf,
     local: Vec<LocalEntry>,
     local_error: Option<SharedString>,
     local_selection: Selection,
     local_bar: PathBar,
+    local_hidden: bool,
+    local_focus: FocusHandle,
     remote_path: String,
     remote: Vec<RemoteEntry>,
     remote_selection: Selection,
     remote_error: Option<SharedString>,
     remote_bar: PathBar,
+    remote_hidden: bool,
+    remote_focus: FocusHandle,
     transfers: Vec<Transfer>,
     next_id: TransferId,
     dialog: Option<Dialog>,
@@ -196,7 +211,7 @@ pub struct FilesView {
 
 impl FilesView {
     pub fn new(title: impl Into<SharedString>, config: SshConfig, cx: &mut Context<Self>) -> Self {
-        let mut this = Self::blank(title.into(), Some(config), false);
+        let mut this = Self::blank(title.into(), Some(config), false, cx);
         this.connect(cx);
         this
     }
@@ -206,12 +221,17 @@ impl FilesView {
         handle: SftpHandle,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut this = Self::blank(title.into(), None, true);
+        let mut this = Self::blank(title.into(), None, true, cx);
         this.attach_handle(handle, cx);
         this
     }
 
-    fn blank(title: SharedString, config: Option<SshConfig>, compact: bool) -> Self {
+    fn blank(
+        title: SharedString,
+        config: Option<SshConfig>,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let local_path = home_dir();
         let mut this = Self {
             _pump: gpui_kit::Task::ready(()),
@@ -220,17 +240,20 @@ impl FilesView {
             compact,
             title,
             status: Status::Connecting,
-            show_hidden: false,
             local_path: local_path.clone(),
             local: Vec::new(),
             local_error: None,
             local_selection: Selection::default(),
             local_bar: PathBar::default(),
+            local_hidden: false,
+            local_focus: cx.focus_handle(),
             remote_path: String::new(),
             remote: Vec::new(),
             remote_selection: Selection::default(),
             remote_error: None,
             remote_bar: PathBar::default(),
+            remote_hidden: false,
+            remote_focus: cx.focus_handle(),
             transfers: Vec::new(),
             next_id: 1,
             dialog: None,
@@ -348,8 +371,7 @@ impl FilesView {
         .detach();
     }
 
-    fn download_to_chosen(&mut self, cx: &mut Context<Self>) {
-        let entries = self.selected_remote();
+    fn download_to_chosen(&mut self, entries: Vec<RemoteEntry>, cx: &mut Context<Self>) {
         if entries.is_empty() {
             return;
         }
@@ -476,14 +498,14 @@ impl FilesView {
     fn visible_local(&self) -> Vec<&LocalEntry> {
         self.local
             .iter()
-            .filter(|entry| self.show_hidden || !entry.hidden)
+            .filter(|entry| self.local_hidden || !entry.hidden)
             .collect()
     }
 
     fn visible_remote(&self) -> Vec<&RemoteEntry> {
         self.remote
             .iter()
-            .filter(|entry| self.show_hidden || !entry.name.starts_with('.'))
+            .filter(|entry| self.remote_hidden || !entry.name.starts_with('.'))
             .collect()
     }
 
@@ -505,11 +527,104 @@ impl FilesView {
             .collect()
     }
 
-    fn toggle_hidden(&mut self, cx: &mut Context<Self>) {
-        self.show_hidden = !self.show_hidden;
-        self.local_selection.clear();
-        self.remote_selection.clear();
+    fn toggle_hidden(&mut self, side: Side, cx: &mut Context<Self>) {
+        match side {
+            Side::Local => {
+                self.local_hidden = !self.local_hidden;
+                self.local_selection.clear();
+            }
+            Side::Remote => {
+                self.remote_hidden = !self.remote_hidden;
+                self.remote_selection.clear();
+            }
+        }
         cx.notify();
+    }
+
+    fn refresh_side(&mut self, side: Side, cx: &mut Context<Self>) {
+        match side {
+            Side::Local => {
+                let path = self.local_path.clone();
+                self.reload_local(path);
+            }
+            Side::Remote => self.send(ToSftp::List {
+                path: self.remote_path.clone(),
+            }),
+        }
+        cx.notify();
+    }
+
+    fn go_up(&mut self, side: Side, cx: &mut Context<Self>) {
+        match side {
+            Side::Local => self.local_up(),
+            Side::Remote if matches!(self.status, Status::Ready) => self.remote_up(),
+            Side::Remote => {}
+        }
+        cx.notify();
+    }
+
+    fn open_remote_entry(&mut self, entry: RemoteEntry, cx: &mut Context<Self>) {
+        if entry.is_dir {
+            self.send(ToSftp::List { path: entry.path });
+            cx.notify();
+        } else {
+            self.open_remote_file(entry, cx);
+        }
+    }
+
+    /// Download: into the open local folder, or (compact mode, no local pane)
+    /// into a folder the user picks.
+    fn download_entries(&mut self, entries: Vec<RemoteEntry>, cx: &mut Context<Self>) {
+        if self.compact {
+            self.download_to_chosen(entries, cx);
+        } else {
+            self.download(entries, cx);
+        }
+    }
+
+    /// Keys of a focused pane: Backspace — up, Enter — open, F2 — rename,
+    /// Delete — delete.
+    fn on_pane_key(&mut self, side: Side, event: &gpui_kit::KeyDownEvent, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        if keystroke.modifiers.control || keystroke.modifiers.alt || keystroke.modifiers.platform {
+            return;
+        }
+        let handled = match (side, keystroke.key.as_str()) {
+            (_, "backspace") => {
+                self.go_up(side, cx);
+                true
+            }
+            (Side::Local, "enter") => {
+                if let [entry] = self.selected_local().as_slice()
+                    && entry.is_dir
+                {
+                    self.open_local(entry.path.clone());
+                    cx.notify();
+                }
+                true
+            }
+            (Side::Remote, "enter") => {
+                if let [entry] = self.selected_remote().as_slice() {
+                    self.open_remote_entry(entry.clone(), cx);
+                }
+                true
+            }
+            (Side::Remote, "f2") => {
+                if let [entry] = self.selected_remote().as_slice() {
+                    self.ask_rename(entry.clone(), cx);
+                }
+                true
+            }
+            (Side::Remote, "delete") => {
+                let selected = self.selected_remote();
+                self.ask_remove(selected, cx);
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            cx.stop_propagation();
+        }
     }
 
     fn open_local(&mut self, path: PathBuf) {
@@ -543,15 +658,6 @@ impl FilesView {
     fn remote_up(&mut self) {
         let parent = sftp::parent(&self.remote_path);
         self.send(ToSftp::List { path: parent });
-    }
-
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        let path = self.local_path.clone();
-        self.reload_local(path);
-        self.send(ToSftp::List {
-            path: self.remote_path.clone(),
-        });
-        cx.notify();
     }
 
     fn upload(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -674,9 +780,8 @@ impl FilesView {
         cx.notify();
     }
 
-    fn ask_remove(&mut self, cx: &mut Context<Self>) {
-        let selected = self.selected_remote();
-        if selected.is_empty() {
+    fn ask_remove(&mut self, selected: Vec<RemoteEntry>, cx: &mut Context<Self>) {
+        if selected.is_empty() || !matches!(self.status, Status::Ready) {
             return;
         }
         let message = if let [entry] = selected.as_slice() {
@@ -695,19 +800,25 @@ impl FilesView {
         cx.notify();
     }
 
-    fn ask_name(&mut self, rename: bool, cx: &mut Context<Self>) {
-        let (rename_from, initial) = if rename {
-            let selected = self.selected_remote();
-            let [entry] = selected.as_slice() else {
-                return;
-            };
-            (Some(entry.path.clone()), entry.name.clone())
-        } else {
-            (None, String::new())
-        };
+    fn ask_rename(&mut self, entry: RemoteEntry, cx: &mut Context<Self>) {
+        if !matches!(self.status, Status::Ready) {
+            return;
+        }
         self.dialog = Some(Dialog::Name {
-            rename_from,
-            initial,
+            rename_from: Some(entry.path),
+            initial: entry.name,
+            input: None,
+        });
+        cx.notify();
+    }
+
+    fn ask_new_folder(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.status, Status::Ready) {
+            return;
+        }
+        self.dialog = Some(Dialog::Name {
+            rename_from: None,
+            initial: String::new(),
             input: None,
         });
         cx.notify();
@@ -728,45 +839,175 @@ impl FilesView {
         .detach();
     }
 
+    fn bar_mut(&mut self, side: Side) -> &mut PathBar {
+        match side {
+            Side::Local => &mut self.local_bar,
+            Side::Remote => &mut self.remote_bar,
+        }
+    }
+
+    /// Shows the path input instead of the breadcrumbs.
+    fn edit_path(&mut self, side: Side, cx: &mut Context<Self>) {
+        let bar = self.bar_mut(side);
+        bar.editing = true;
+        bar.focus = true;
+        bar.stale = true;
+        cx.notify();
+    }
+
+    /// Hides the path input; what was typed and not applied is dropped.
+    fn stop_editing_path(&mut self, side: Side, cx: &mut Context<Self>) {
+        let bar = self.bar_mut(side);
+        if bar.editing {
+            bar.editing = false;
+            bar.stale = true;
+            cx.notify();
+        }
+    }
+
     fn ensure_path_bars(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.local_bar.input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("files.path_local")));
-            self.local_bar._subscription =
-                Some(cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. }) {
-                        let path = PathBuf::from(input.read(cx).value().trim());
-                        this.open_local(path);
-                        cx.notify();
-                    }
-                }));
-            self.local_bar.input = Some(input);
-            self.local_bar.stale = true;
-        }
-        if self.remote_bar.input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("files.path_server")));
-            self.remote_bar._subscription =
-                Some(cx.subscribe(&input, |this, input, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. }) {
+        for side in [Side::Local, Side::Remote] {
+            if self.bar_mut(side).input.is_some() {
+                continue;
+            }
+            let placeholder = match side {
+                Side::Local => t!("files.path_local"),
+                Side::Remote => t!("files.path_server"),
+            };
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+            let subscription = cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
+                match event {
+                    InputEvent::PressEnter { .. } => {
                         let path = input.read(cx).value().trim().to_string();
-                        this.send(ToSftp::List { path });
-                        cx.notify();
+                        match side {
+                            Side::Local => this.open_local(PathBuf::from(path)),
+                            Side::Remote => this.send(ToSftp::List { path }),
+                        }
+                        this.stop_editing_path(side, cx);
                     }
-                }));
-            self.remote_bar.input = Some(input);
-            self.remote_bar.stale = true;
+                    InputEvent::Blur => this.stop_editing_path(side, cx),
+                    _ => {}
+                }
+            });
+            let bar = self.bar_mut(side);
+            bar._subscription = Some(subscription);
+            bar.input = Some(input);
+            bar.stale = true;
         }
-        if std::mem::take(&mut self.local_bar.stale)
-            && let Some(input) = &self.local_bar.input
+        for side in [Side::Local, Side::Remote] {
+            let value = match side {
+                Side::Local => self.local_path.display().to_string(),
+                Side::Remote => self.remote_path.clone(),
+            };
+            let bar = self.bar_mut(side);
+            let (stale, focus) = (std::mem::take(&mut bar.stale), std::mem::take(&mut bar.focus));
+            let Some(input) = bar.input.clone() else {
+                continue;
+            };
+            if stale {
+                input.update(cx, |state, cx| state.set_value(value, window, cx));
+            }
+            if focus {
+                window.focus(&input.focus_handle(cx), cx);
+            }
+        }
+    }
+
+    /// Path as clickable segments; a click on a segment opens that folder, a
+    /// click on the free space switches to typing the path.
+    fn path_bar(&self, side: Side, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let bar = match side {
+            Side::Local => &self.local_bar,
+            Side::Remote => &self.remote_bar,
+        };
+        if bar.editing
+            && let Some(input) = &bar.input
         {
-            let value = self.local_path.display().to_string();
-            input.update(cx, |state, cx| state.set_value(value, window, cx));
+            return div()
+                .on_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _window, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.stop_editing_path(side, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .child(Input::new(input).small())
+                .into_any_element();
         }
-        if std::mem::take(&mut self.remote_bar.stale)
-            && let Some(input) = &self.remote_bar.input
-        {
-            let value = self.remote_path.clone();
-            input.update(cx, |state, cx| state.set_value(value, window, cx));
+
+        let segments = match side {
+            Side::Local => local_segments(&self.local_path),
+            Side::Remote => remote_segments(&self.remote_path),
+        };
+        let last = segments.len().saturating_sub(1);
+        // Long paths: the first segment, "…" and the last ones.
+        const SHOWN_TAIL: usize = 3;
+        let skip = if segments.len() > SHOWN_TAIL + 2 {
+            1..segments.len() - SHOWN_TAIL
+        } else {
+            0..0
+        };
+
+        let mut crumbs: Vec<AnyElement> = Vec::new();
+        for (index, (label, target)) in segments.into_iter().enumerate() {
+            if skip.contains(&index) {
+                if index == skip.start {
+                    crumbs.push(chevron(&theme));
+                    crumbs.push(
+                        crumb(
+                            SharedString::from(format!("{side:?}-crumb-more")),
+                            "…".into(),
+                            false,
+                            &theme,
+                        )
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            cx.stop_propagation();
+                            this.edit_path(side, cx)
+                        }))
+                        .into_any_element(),
+                    );
+                }
+                continue;
+            }
+            if index > 0 {
+                crumbs.push(chevron(&theme));
+            }
+            crumbs.push(
+                crumb(
+                    SharedString::from(format!("{side:?}-crumb-{index}")),
+                    label.into(),
+                    index == last,
+                    &theme,
+                )
+                .on_click(cx.listener(move |this, _, _window, cx| {
+                    cx.stop_propagation();
+                    match side {
+                        Side::Local => this.open_local(PathBuf::from(&target)),
+                        Side::Remote => this.send(ToSftp::List {
+                            path: target.clone(),
+                        }),
+                    }
+                    cx.notify();
+                }))
+                .into_any_element(),
+            );
         }
+
+        h_flex()
+            .id(SharedString::from(format!("{side:?}-path")))
+            .h(px(26.))
+            .px_1()
+            .gap_0p5()
+            .items_center()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .overflow_hidden()
+            .cursor_text()
+            .on_click(cx.listener(move |this, _, _window, cx| this.edit_path(side, cx)))
+            .children(crumbs)
+            .into_any_element()
     }
 
     fn ensure_dialog_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -863,8 +1104,10 @@ impl FilesView {
 
     fn local_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
+        let view = cx.entity().downgrade();
+        let ready = matches!(self.status, Status::Ready);
         let selected = self.selected_local();
-        let can_upload = !selected.is_empty() && matches!(self.status, Status::Ready);
+        let count = selected.len();
         let visible: Vec<LocalEntry> = self.visible_local().into_iter().cloned().collect();
 
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -885,14 +1128,18 @@ impl FilesView {
         }
         for (index, entry) in visible.into_iter().enumerate() {
             let is_selected = self.local_selection.contains(index);
-            let dragged = if is_selected {
-                selected.iter().map(|entry| entry.path.clone()).collect()
+            // What a drag or the context menu acts on: the selection when the row
+            // is in it, otherwise the row alone.
+            let targets: Vec<LocalEntry> = if is_selected {
+                selected.clone()
             } else {
-                vec![entry.path.clone()]
+                vec![entry.clone()]
             };
+            let dragged: Vec<PathBuf> = targets.iter().map(|entry| entry.path.clone()).collect();
             let preview = drag_label(dragged.len(), &entry.name);
             let path = entry.path.clone();
             let is_dir = entry.is_dir;
+            let view = view.clone();
             rows.push(
                 row(
                     SharedString::from(format!("local-{index}")),
@@ -918,35 +1165,30 @@ impl FilesView {
                         cx.notify();
                     }),
                 )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
+                        if !this.local_selection.contains(index) {
+                            this.local_selection.click(index, &Modifiers::default());
+                            cx.notify();
+                        }
+                    }),
+                )
                 .on_drag(Dragged::Local(dragged), move |_, _, _, cx| {
                     let label = preview.clone();
                     cx.new(|_| DragPreview(label))
                 })
+                .context_menu(move |menu, _window, _cx| local_menu(menu, &view, &targets, ready))
                 .into_any_element(),
             );
         }
 
-        let count = selected.len();
-        pane(
-            t!("files.this_computer").into(),
-            "icons/monitor.svg",
-            self.local_bar.input.clone(),
-            &theme,
-            h_flex()
-                .gap_1()
-                .child(
-                    Button::new("local-up")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::empty().path("icons/arrow-up.svg"))
-                        .tooltip(t!("files.up_level"))
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.local_up();
-                            cx.notify();
-                        })),
-                )
+        let mut toolbar = h_flex().gap_0p5().items_center();
+        if ready && count > 0 {
+            toolbar = toolbar
                 .child(
                     Button::new("upload-selected")
+                        .primary()
                         .xsmall()
                         .icon(Icon::empty().path("icons/upload.svg"))
                         .label(if count > 1 {
@@ -955,16 +1197,33 @@ impl FilesView {
                             SharedString::from(t!("files.to_server"))
                         })
                         .tooltip(t!("files.upload_selection_tip"))
-                        .main_action(can_upload)
                         .on_click(cx.listener(|this, _, _window, cx| {
                             let paths = this.selected_local().into_iter().map(|e| e.path).collect();
                             this.upload(paths, cx);
                         })),
                 )
-                .into_any_element(),
+                .child(divider(&theme));
+        }
+        let toolbar = toolbar
+            .child(
+                tool("local-hidden", "icons/eye.svg", t!("files.show_hidden"))
+                    .selected(self.local_hidden)
+                    .on_click(cx.listener(|this, _, _window, cx| this.toggle_hidden(Side::Local, cx))),
+            )
+            .child(
+                tool("local-refresh", "icons/refresh-cw.svg", t!("files.refresh"))
+                    .on_click(cx.listener(|this, _, _window, cx| this.refresh_side(Side::Local, cx))),
+            );
+
+        let list = self.pane_list(Side::Local, rows, self.local.is_empty(), cx);
+        pane(
+            t!("files.this_computer").into(),
+            "icons/monitor.svg",
+            &theme,
+            toolbar.into_any_element(),
+            self.path_bar(Side::Local, cx),
             self.local_error.clone(),
-            rows,
-            self.local.is_empty(),
+            list,
         )
         .id("local-pane")
         .drag_over::<Dragged>(|style, dragged, _, cx| match dragged {
@@ -981,6 +1240,7 @@ impl FilesView {
 
     fn remote_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
+        let view = cx.entity().downgrade();
         let ready = matches!(self.status, Status::Ready);
         let selected = self.selected_remote();
         let count = selected.len();
@@ -1004,14 +1264,15 @@ impl FilesView {
         }
         for (index, entry) in visible.into_iter().enumerate() {
             let is_selected = self.remote_selection.contains(index);
-            let dragged = if is_selected {
+            let targets: Vec<RemoteEntry> = if is_selected {
                 selected.clone()
             } else {
                 vec![entry.clone()]
             };
-            let preview = drag_label(dragged.len(), &entry.name);
-            let (path, is_dir) = (entry.path.clone(), entry.is_dir);
+            let preview = drag_label(targets.len(), &entry.name);
             let file = entry.clone();
+            let view = view.clone();
+            let dragged = targets.clone();
             rows.push(
                 row(
                     SharedString::from(format!("remote-{index}")),
@@ -1029,45 +1290,38 @@ impl FilesView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                        if event.click_count >= 2 && is_dir {
-                            this.send(ToSftp::List { path: path.clone() });
-                        } else if event.click_count >= 2 {
-                            this.open_remote_file(file.clone(), cx);
+                        if event.click_count >= 2 {
+                            this.open_remote_entry(file.clone(), cx);
                         } else {
                             this.remote_selection.click(index, &event.modifiers);
                         }
                         cx.notify();
                     }),
                 )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
+                        if !this.remote_selection.contains(index) {
+                            this.remote_selection.click(index, &Modifiers::default());
+                            cx.notify();
+                        }
+                    }),
+                )
                 .on_drag(Dragged::Remote(dragged), move |_, _, _, cx| {
                     let label = preview.clone();
                     cx.new(|_| DragPreview(label))
                 })
+                .context_menu(move |menu, _window, _cx| remote_menu(menu, &view, &targets, ready))
                 .into_any_element(),
             );
         }
 
-        pane(
-            t!("files.server").into(),
-            "icons/server.svg",
-            self.remote_bar.input.clone(),
-            &theme,
-            h_flex()
-                .gap_1()
-                .child(
-                    Button::new("remote-up")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::empty().path("icons/arrow-up.svg"))
-                        .tooltip(t!("files.up_level"))
-                        .disabled(!ready)
-                        .on_click(cx.listener(|this, _, _window, cx| {
-                            this.remote_up();
-                            cx.notify();
-                        })),
-                )
+        let mut toolbar = h_flex().gap_0p5().items_center();
+        if ready && count > 0 {
+            toolbar = toolbar
                 .child(
                     Button::new("download-selected")
+                        .primary()
                         .xsmall()
                         .icon(Icon::empty().path("icons/download.svg"))
                         .label(if count > 1 {
@@ -1076,56 +1330,45 @@ impl FilesView {
                             SharedString::from(t!("files.download"))
                         })
                         .tooltip(t!("files.download_selection_tip"))
-                        .main_action(ready && count > 0)
                         .on_click(cx.listener(|this, _, _window, cx| {
-                            if this.compact {
-                                this.download_to_chosen(cx);
-                            } else {
-                                let entries = this.selected_remote();
-                                this.download(entries, cx);
-                            }
+                            let entries = this.selected_remote();
+                            this.download_entries(entries, cx);
                         })),
                 )
-                .child(
-                    Button::new("pick-upload")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::empty().path("icons/upload.svg"))
-                        .tooltip(t!("files.pick_upload_tip"))
-                        .disabled(!ready)
-                        .on_click(cx.listener(|this, _, _window, cx| this.pick_and_upload(cx))),
-                )
-                .child(
-                    Button::new("mkdir")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::empty().path("icons/folder-plus.svg"))
-                        .tooltip(t!("files.new_folder"))
-                        .disabled(!ready)
-                        .on_click(cx.listener(|this, _, _window, cx| this.ask_name(false, cx))),
-                )
-                .child(
-                    Button::new("rename")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::empty().path("icons/pencil.svg"))
-                        .tooltip(t!("files.rename"))
-                        .disabled(!ready || count != 1)
-                        .on_click(cx.listener(|this, _, _window, cx| this.ask_name(true, cx))),
-                )
-                .child(
-                    Button::new("remove")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::new(IconName::Delete))
-                        .tooltip(t!("files.delete"))
-                        .disabled(!ready || count == 0)
-                        .on_click(cx.listener(|this, _, _window, cx| this.ask_remove(cx))),
-                )
-                .into_any_element(),
+                .child(divider(&theme));
+        }
+        let toolbar = toolbar
+            .child(
+                tool("pick-upload", "icons/upload.svg", t!("files.pick_upload_tip"))
+                    .disabled(!ready)
+                    .on_click(cx.listener(|this, _, _window, cx| this.pick_and_upload(cx))),
+            )
+            .child(
+                tool("mkdir", "icons/folder-plus.svg", t!("files.new_folder"))
+                    .disabled(!ready)
+                    .on_click(cx.listener(|this, _, _window, cx| this.ask_new_folder(cx))),
+            )
+            .child(divider(&theme))
+            .child(
+                tool("remote-hidden", "icons/eye.svg", t!("files.show_hidden"))
+                    .selected(self.remote_hidden)
+                    .on_click(cx.listener(|this, _, _window, cx| this.toggle_hidden(Side::Remote, cx))),
+            )
+            .child(
+                tool("remote-refresh", "icons/refresh-cw.svg", t!("files.refresh"))
+                    .disabled(!ready)
+                    .on_click(cx.listener(|this, _, _window, cx| this.refresh_side(Side::Remote, cx))),
+            );
+
+        let list = self.pane_list(Side::Remote, rows, ready && self.remote.is_empty(), cx);
+        pane(
+            t!("files.server").into(),
+            "icons/server.svg",
+            &theme,
+            toolbar.into_any_element(),
+            self.path_bar(Side::Remote, cx),
             self.remote_error.clone(),
-            rows,
-            ready && self.remote.is_empty(),
+            list,
         )
         .id("remote-pane")
         .drag_over::<Dragged>(|style, dragged, _, cx| match dragged {
@@ -1142,6 +1385,55 @@ impl FilesView {
             this.upload(paths.paths().to_vec(), cx);
         }))
         .into_any_element()
+    }
+
+    /// File list of a pane: takes focus on a click (for the keys), and has its
+    /// own context menu on the free space.
+    fn pane_list(
+        &self,
+        side: Side,
+        rows: Vec<AnyElement>,
+        empty: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        let view = cx.entity().downgrade();
+        let ready = matches!(self.status, Status::Ready);
+        let (focus, hidden) = match side {
+            Side::Local => (self.local_focus.clone(), self.local_hidden),
+            Side::Remote => (self.remote_focus.clone(), self.remote_hidden),
+        };
+
+        div()
+            .id(SharedString::from(format!("{side:?}-list")))
+            .track_focus(&focus)
+            .flex()
+            .flex_col()
+            .flex_grow_1()
+            .min_h(px(0.))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| window.focus(&focus, cx))
+            .on_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _window, cx| {
+                this.on_pane_key(side, event, cx)
+            }))
+            .child(
+                v_flex()
+                    .id(SharedString::from(format!("{side:?}-rows")))
+                    .flex_grow_1()
+                    .min_h(px(0.))
+                    .overflow_y_scrollbar()
+                    .children(rows)
+                    .when(empty, |this| {
+                        this.child(
+                            div().p_3().child(
+                                Label::new(t!("files.empty"))
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground),
+                            ),
+                        )
+                    }),
+            )
+            .context_menu(move |menu, _window, _cx| pane_menu(menu, &view, side, ready, hidden))
+            .into_any_element()
     }
 
     fn transfers_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1477,33 +1769,6 @@ impl Render for FilesView {
                     .size_full()
                     .children(self.status_bar(cx))
                     .child(
-                        h_flex().justify_end().items_center().px_3().pt_2().child(
-                            h_flex()
-                                .gap_1()
-                                .child(
-                                    Button::new("files-hidden")
-                                        .ghost()
-                                        .xsmall()
-                                        .selected(self.show_hidden)
-                                        .label(t!("files.hidden"))
-                                        .tooltip(t!("files.show_hidden"))
-                                        .on_click(cx.listener(|this, _, _window, cx| {
-                                            this.toggle_hidden(cx)
-                                        })),
-                                )
-                                .child(
-                                    Button::new("files-refresh")
-                                        .ghost()
-                                        .xsmall()
-                                        .icon(Icon::empty().path("icons/refresh-cw.svg"))
-                                        .label(t!("files.refresh"))
-                                        .on_click(
-                                            cx.listener(|this, _, _window, cx| this.refresh(cx)),
-                                        ),
-                                ),
-                        ),
-                    )
-                    .child(
                         div()
                             .flex()
                             .flex_row()
@@ -1534,16 +1799,14 @@ impl Render for FilesView {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn pane(
     title: SharedString,
     icon: &'static str,
-    path: Option<Entity<InputState>>,
     theme: &gpui_kit::component::Theme,
     toolbar: AnyElement,
+    path: AnyElement,
     error: Option<SharedString>,
-    rows: Vec<AnyElement>,
-    empty: bool,
+    list: AnyElement,
 ) -> gpui_kit::Div {
     v_flex()
         .size_full()
@@ -1555,24 +1818,31 @@ fn pane(
             v_flex()
                 .px_3()
                 .py_2()
-                .gap_1()
+                .gap_1p5()
                 .bg(theme.secondary)
                 .border_b_1()
                 .border_color(theme.border)
                 .child(
                     h_flex()
+                        .h(px(24.))
+                        .gap_2()
                         .justify_between()
                         .items_center()
                         .child(
                             h_flex()
                                 .gap_2()
                                 .items_center()
+                                .min_w(px(0.))
                                 .child(Icon::empty().path(icon).small())
-                                .child(Label::new(title.clone()).text_sm()),
+                                .child(
+                                    Label::new(title)
+                                        .text_sm()
+                                        .font_weight(gpui_kit::FontWeight::SEMIBOLD),
+                                ),
                         )
                         .child(toolbar),
                 )
-                .children(path.map(|input| Input::new(&input).small())),
+                .child(path),
         )
         .children(error.map(|error| {
             div()
@@ -1580,22 +1850,246 @@ fn pane(
                 .py_1()
                 .child(Label::new(error).text_xs().text_color(theme.danger))
         }))
-        .child(
-            v_flex()
-                .id(SharedString::from(format!("{title}-rows")))
-                .flex_grow_1()
-                .overflow_y_scrollbar()
-                .children(rows)
-                .when(empty, |this| {
-                    this.child(
-                        div().p_3().child(
-                            Label::new(t!("files.empty"))
-                                .text_sm()
-                                .text_color(theme.muted_foreground),
-                        ),
-                    )
-                }),
-        )
+        .child(list)
+}
+
+/// Icon button of a pane toolbar.
+fn tool(id: &'static str, icon: &'static str, tooltip: impl Into<SharedString>) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .icon(Icon::empty().path(icon))
+        .tooltip(tooltip.into())
+}
+
+/// Vertical line between groups of toolbar buttons.
+fn divider(theme: &gpui_kit::component::Theme) -> AnyElement {
+    div()
+        .w(px(1.))
+        .h(px(14.))
+        .mx_1()
+        .bg(theme.border)
+        .into_any_element()
+}
+
+fn menu_item(label: impl Into<SharedString>, icon: &'static str) -> PopupMenuItem {
+    PopupMenuItem::new(label).icon(Icon::empty().path(icon))
+}
+
+/// Menu of local files: `targets` — the clicked row, or the selection it is in.
+fn local_menu(
+    mut menu: PopupMenu,
+    view: &WeakEntity<FilesView>,
+    targets: &[LocalEntry],
+    ready: bool,
+) -> PopupMenu {
+    if let [entry] = targets
+        && entry.is_dir
+    {
+        let (view, path) = (view.clone(), entry.path.clone());
+        menu = menu.item(menu_item(t!("files.open"), "icons/folder.svg").on_click(
+            move |_, _, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.open_local(path.clone());
+                    cx.notify();
+                });
+            },
+        ));
+    }
+    let (view, paths) = (
+        view.clone(),
+        targets.iter().map(|entry| entry.path.clone()).collect::<Vec<_>>(),
+    );
+    let label = if paths.len() > 1 {
+        t!("files.to_server_count", count = paths.len())
+    } else {
+        t!("files.to_server")
+    };
+    menu.item(
+        menu_item(label, "icons/upload.svg")
+            .disabled(!ready)
+            .on_click(move |_, _, cx| {
+                let _ = view.update(cx, |this, cx| this.upload(paths.clone(), cx));
+            }),
+    )
+}
+
+/// Menu of server files: `targets` — the clicked row, or the selection it is in.
+fn remote_menu(
+    mut menu: PopupMenu,
+    view: &WeakEntity<FilesView>,
+    targets: &[RemoteEntry],
+    ready: bool,
+) -> PopupMenu {
+    if let [entry] = targets {
+        let (view, entry) = (view.clone(), entry.clone());
+        let icon = if entry.is_dir {
+            "icons/folder.svg"
+        } else {
+            "icons/file.svg"
+        };
+        menu = menu.item(menu_item(t!("files.open"), icon).disabled(!ready).on_click(
+            move |_, _, cx| {
+                let _ = view.update(cx, |this, cx| this.open_remote_entry(entry.clone(), cx));
+            },
+        ));
+    }
+    let download = {
+        let (view, entries) = (view.clone(), targets.to_vec());
+        let label = if entries.len() > 1 {
+            t!("files.download_count", count = entries.len())
+        } else {
+            t!("files.download")
+        };
+        menu_item(label, "icons/download.svg")
+            .disabled(!ready)
+            .on_click(move |_, _, cx| {
+                let _ = view.update(cx, |this, cx| this.download_entries(entries.clone(), cx));
+            })
+    };
+    let rename = {
+        let view = view.clone();
+        let entry = targets.first().cloned();
+        menu_item(t!("files.rename_key"), "icons/pencil.svg")
+            .disabled(!ready || targets.len() != 1)
+            .on_click(move |_, _, cx| {
+                if let Some(entry) = entry.clone() {
+                    let _ = view.update(cx, |this, cx| this.ask_rename(entry, cx));
+                }
+            })
+    };
+    let delete = {
+        let (view, entries) = (view.clone(), targets.to_vec());
+        menu_item(t!("files.delete_key"), "icons/delete.svg")
+            .disabled(!ready)
+            .on_click(move |_, _, cx| {
+                let _ = view.update(cx, |this, cx| this.ask_remove(entries.clone(), cx));
+            })
+    };
+    menu.item(download)
+        .item(PopupMenuItem::separator())
+        .item(rename)
+        .item(delete)
+}
+
+/// Menu on the free space of a file list.
+fn pane_menu(
+    mut menu: PopupMenu,
+    view: &WeakEntity<FilesView>,
+    side: Side,
+    ready: bool,
+    hidden: bool,
+) -> PopupMenu {
+    if side == Side::Remote {
+        let (upload, mkdir) = (view.clone(), view.clone());
+        menu = menu
+            .item(
+                menu_item(t!("files.upload_files"), "icons/upload.svg")
+                    .disabled(!ready)
+                    .on_click(move |_, _, cx| {
+                        let _ = upload.update(cx, |this, cx| this.pick_and_upload(cx));
+                    }),
+            )
+            .item(
+                menu_item(t!("files.new_folder"), "icons/folder-plus.svg")
+                    .disabled(!ready)
+                    .on_click(move |_, _, cx| {
+                        let _ = mkdir.update(cx, |this, cx| this.ask_new_folder(cx));
+                    }),
+            )
+            .item(PopupMenuItem::separator());
+    }
+    let (refresh, toggle) = (view.clone(), view.clone());
+    menu.item(
+        menu_item(t!("files.refresh"), "icons/refresh-cw.svg")
+            .disabled(side == Side::Remote && !ready)
+            .on_click(move |_, _, cx| {
+                let _ = refresh.update(cx, |this, cx| this.refresh_side(side, cx));
+            }),
+    )
+    .item(
+        PopupMenuItem::new(t!("files.show_hidden"))
+            .checked(hidden)
+            .on_click(move |_, _, cx| {
+                let _ = toggle.update(cx, |this, cx| this.toggle_hidden(side, cx));
+            }),
+    )
+}
+
+fn crumb(
+    id: SharedString,
+    label: SharedString,
+    current: bool,
+    theme: &gpui_kit::component::Theme,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let (hover, foreground) = (theme.list_hover, theme.foreground);
+    div()
+        .id(id)
+        .px_1()
+        .rounded_sm()
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .text_sm()
+        .cursor_pointer()
+        .text_color(if current {
+            theme.foreground
+        } else {
+            theme.muted_foreground
+        })
+        .hover(move |style| style.bg(hover).text_color(foreground))
+        .child(label)
+}
+
+fn chevron(theme: &gpui_kit::component::Theme) -> AnyElement {
+    Icon::empty()
+        .path("icons/chevron-right.svg")
+        .xsmall()
+        .text_color(theme.muted_foreground)
+        .into_any_element()
+}
+
+/// Breadcrumbs of a local path: (label, full path), from the root.
+fn local_segments(path: &Path) -> Vec<(String, String)> {
+    let mut segments: Vec<(String, String)> = path
+        .ancestors()
+        .filter(|ancestor| !ancestor.as_os_str().is_empty())
+        .map(|ancestor| {
+            let full = ancestor.display().to_string();
+            let label = match ancestor.file_name() {
+                Some(name) => name.to_string_lossy().into_owned(),
+                // The root: "C:\" shows as "C:", "/" stays "/".
+                None => {
+                    let trimmed = full.trim_end_matches(['\\', '/']);
+                    if trimmed.is_empty() {
+                        full.clone()
+                    } else {
+                        trimmed.to_string()
+                    }
+                }
+            };
+            (label, full)
+        })
+        .collect();
+    segments.reverse();
+    segments
+}
+
+/// Breadcrumbs of a server path: (label, full path), from the root.
+fn remote_segments(path: &str) -> Vec<(String, String)> {
+    let absolute = path.starts_with('/');
+    let mut segments = Vec::new();
+    if absolute {
+        segments.push(("/".to_string(), "/".to_string()));
+    }
+    let mut current = String::new();
+    for part in path.split('/').filter(|part| !part.is_empty()) {
+        if absolute || !current.is_empty() {
+            current.push('/');
+        }
+        current.push_str(part);
+        segments.push((part.to_string(), current.clone()));
+    }
+    segments
 }
 
 fn up_row(
@@ -1867,6 +2361,30 @@ mod tests {
 
         selection.click(0, &mods(false, false));
         assert_eq!(selection.rows.iter().copied().collect::<Vec<_>>(), vec![0]);
+    }
+
+    #[test]
+    fn server_path_breadcrumbs() {
+        let pairs = |path| {
+            remote_segments(path)
+                .into_iter()
+                .map(|(label, full)| format!("{label}={full}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pairs("/opt/stacks"), ["/=/", "opt=/opt", "stacks=/opt/stacks"]);
+        assert_eq!(pairs("/"), ["/=/"]);
+        assert_eq!(pairs("home/user/"), ["home=home", "user=home/user"]);
+    }
+
+    #[test]
+    fn local_path_breadcrumbs() {
+        let root = if cfg!(windows) { r"C:\" } else { "/" };
+        let path = Path::new(root).join("Users").join("me");
+        let segments = local_segments(&path);
+        let labels: Vec<&str> = segments.iter().map(|(label, _)| label.as_str()).collect();
+        let root_label = if cfg!(windows) { "C:" } else { "/" };
+        assert_eq!(labels, [root_label, "Users", "me"]);
+        assert_eq!(segments.last().map(|(_, full)| full.clone()), Some(path.display().to_string()));
     }
 
     #[test]

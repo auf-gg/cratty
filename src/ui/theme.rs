@@ -369,6 +369,17 @@ pub fn terminal_base(cx: &App) -> Palette {
         .map_or(palette::CRATTY, |active| active.palette)
 }
 
+/// White or near-black text, whichever reads better on `background`.
+fn readable_on(background: Hsla) -> Hsla {
+    let rgba: gpui_kit::Rgba = background.into();
+    let luminance = 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
+    if luminance > 0.6 {
+        c(0x15110e)
+    } else {
+        c(0xffffff)
+    }
+}
+
 fn c(hex: u32) -> Hsla {
     rgb(hex).into()
 }
@@ -410,6 +421,10 @@ pub fn apply(settings: &crate::ui::settings::Settings, window: Option<&mut Windo
         if let Some(entry) = entry.as_ref().filter(|entry| entry.config.is_none()) {
             builtin_colors(&entry.id, &mut theme.colors);
         }
+        // Text over the danger color (the hovered window close button, danger
+        // buttons). Themes rarely set it, and the fallback (the text of primary
+        // buttons) is often dark — unreadable on red.
+        theme.colors.danger_foreground = readable_on(theme.colors.danger);
         let ui_font = settings.ui_font.trim();
         if !ui_font.is_empty() {
             theme.font_family = ui_font.to_owned().into();
@@ -620,6 +635,14 @@ fn graphite(t: &mut ThemeColor) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_on_danger_is_readable() {
+        let white = c(0xffffff);
+        assert_eq!(readable_on(c(0xfe4450)), white);
+        assert_eq!(readable_on(c(0xb91c1c)), white);
+        assert_ne!(readable_on(c(0xffd0d0)), white);
+    }
 
     #[test]
     fn mode_from_settings_tolerates_typos() {

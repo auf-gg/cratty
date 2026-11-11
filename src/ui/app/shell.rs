@@ -55,6 +55,7 @@ impl AppView {
                             ))
                             .child(
                                 div()
+                                    .relative()
                                     .flex()
                                     .flex_row()
                                     .flex_grow_1()
@@ -67,9 +68,6 @@ impl AppView {
                                             .h_full()
                                             .child(self.pane_group(index, cx)),
                                     )
-                                    .when(editor.is_some(), |this| {
-                                        this.child(self.edge_handle("edge-editor", Edge::Editor, cx))
-                                    })
                                     .children(editor.as_ref().map(|editor| {
                                         div()
                                             .w(px(self.settings.editor_width))
@@ -79,7 +77,15 @@ impl AppView {
                                             .border_color(theme.border)
                                             .bg(solid)
                                             .child(editor.view.clone())
-                                    })),
+                                    }))
+                                    .when(editor.is_some(), |this| {
+                                        this.child(self.edge_handle(
+                                            "edge-editor",
+                                            Edge::Editor,
+                                            self.settings.editor_width,
+                                            cx,
+                                        ))
+                                    }),
                             )
                             .into_any_element()
                     }

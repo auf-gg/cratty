@@ -18,6 +18,8 @@ pub enum Update {
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),
     Plan(Vec<PlanEntry>),
+    /// The agent changed its settings itself, such as a fallback to another model.
+    Config(Vec<ConfigOption>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -60,6 +62,70 @@ impl PermissionOption {
     pub fn allows(&self) -> bool {
         self.kind.starts_with("allow")
     }
+}
+
+/// A setting of the session the agent offers: model, reasoning level, mode…
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigOption {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// `model`, `thought_level`, `mode`, `model_config`, or none.
+    pub category: Option<String>,
+    pub current: String,
+    pub choices: Vec<ConfigChoice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigChoice {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// The select options of a `configOptions` list; other kinds are left out, since Cratty
+/// advertises no others. Groups are flattened.
+pub fn config_options(list: &Value) -> Vec<ConfigOption> {
+    let Some(list) = list.as_array() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter(|option| {
+            option
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("select")
+                == "select"
+        })
+        .filter_map(|option| {
+            let choice = |item: &Value| {
+                Some(ConfigChoice {
+                    value: string(item, "value")?,
+                    name: string(item, "name").unwrap_or_default(),
+                    description: string(item, "description").filter(|text| !text.is_empty()),
+                })
+            };
+            let mut choices = Vec::new();
+            for item in option.get("options")?.as_array()? {
+                match item.get("options").and_then(Value::as_array) {
+                    Some(group) => choices.extend(group.iter().filter_map(choice)),
+                    None => choices.extend(choice(item)),
+                }
+            }
+            Some(ConfigOption {
+                id: string(option, "id")?,
+                name: string(option, "name").unwrap_or_default(),
+                description: string(option, "description").filter(|text| !text.is_empty()),
+                category: string(option, "category"),
+                current: string(option, "currentValue")?,
+                choices,
+            })
+        })
+        .collect()
+}
+
+pub fn set_config(session: &str, id: &str, value: &str) -> Value {
+    json!({ "sessionId": session, "configId": id, "value": value })
 }
 
 /// A way to sign in: the agent started with these extra arguments, in a terminal.
@@ -244,6 +310,7 @@ pub fn update(params: &Value) -> Option<Update> {
                 })
                 .collect(),
         ),
+        "config_option_update" => Update::Config(config_options(update.get("configOptions")?)),
         _ => return None,
     })
 }
@@ -379,6 +446,28 @@ mod tests {
         assert_eq!(done.status.as_deref(), Some("completed"));
         assert_eq!(done.output.as_deref(), Some("exit code: 0"));
         assert_eq!(done.title, None);
+    }
+
+    #[test]
+    fn settings_are_read_with_groups_flattened() {
+        let options = config_options(&json!([
+            {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "a",
+             "options": [{"value": "a", "name": "A", "description": "fast"}, {"value": "b", "name": "B"}]},
+            {"id": "effort", "name": "Effort", "category": "thought_level", "currentValue": "low",
+             "options": [{"group": "g", "name": "G", "options": [{"value": "low", "name": "Low"}]}]},
+            {"id": "brave", "name": "Brave", "type": "boolean", "currentValue": true},
+        ]));
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].choices[0].description.as_deref(), Some("fast"));
+        assert_eq!(options[1].choices[0].value, "low");
+        assert_eq!(options[1].category.as_deref(), Some("thought_level"));
+        assert_eq!(set_config("s", "model", "b")["configId"], "model");
+
+        let update = update_of(
+            json!({"sessionUpdate": "config_option_update", "configOptions": [
+            {"id": "model", "name": "Model", "currentValue": "b", "options": [{"value": "b", "name": "B"}]}]}),
+        );
+        assert!(matches!(update, Some(Update::Config(list)) if list[0].current == "b"));
     }
 
     #[test]

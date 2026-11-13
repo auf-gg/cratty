@@ -19,7 +19,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 
 pub use agents::{AgentCommand, AgentKind};
 pub use protocol::{
-    LoginMethod, PermissionAsk, PermissionOption, PlanEntry, ToolCall, ToolCallUpdate, Update,
+    ConfigChoice, ConfigOption, LoginMethod, PermissionAsk, PermissionOption, PlanEntry, ToolCall,
+    ToolCallUpdate, Update,
 };
 
 /// Starting may download the agent first (npx), so it gets a long time.
@@ -64,6 +65,11 @@ pub enum ToAgent {
     Switch(Option<String>),
     /// Delete a saved conversation, where the agent can.
     Delete(String),
+    /// Change a setting of the session, such as the model.
+    SetConfig {
+        id: String,
+        value: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,6 +89,10 @@ pub enum FromAgent {
     TurnEnded {
         stop_reason: String,
     },
+    /// The session's settings, whole: at start, after a change, or when the agent changes them.
+    Config(Vec<ConfigOption>),
+    /// Something went wrong that does not end the turn, such as a refused setting.
+    Notice(String),
     /// A prompt failed; the session goes on.
     TurnFailed(String),
     /// The agent wants the user to sign in, in one of these ways.
@@ -242,6 +252,7 @@ enum Pending {
     Load(String),
     Prompt,
     Delete,
+    SetConfig,
 }
 
 /// Talks ACP over the agent's standard streams until the window closes the session
@@ -352,6 +363,11 @@ where
                         None => call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending),
                     }
                 }
+                Some(ToAgent::SetConfig { id, value }) => {
+                    if let Some(current) = &session {
+                        call("session/set_config_option", protocol::set_config(current, &id, &value), Pending::SetConfig, &mut pending);
+                    }
+                }
                 Some(ToAgent::Delete(old)) => {
                     if caps.delete {
                         call("session/delete", protocol::delete_session(&old), Pending::Delete, &mut pending);
@@ -376,10 +392,13 @@ where
                         }
                     }
                     Some(Pending::Load(id)) => match result {
-                        Ok(_) => {
+                        Ok(loaded) => {
                             session = Some(id.clone());
                             started = true;
                             events.send(FromAgent::Ready { agent: agent_name.clone(), session: id, resumed: true }).await?;
+                            if let Some(list) = loaded.get("configOptions") {
+                                events.send(FromAgent::Config(protocol::config_options(list))).await?;
+                            }
                         }
                         Err(error) if error.code == protocol::AUTH_REQUIRED => {
                             events.send(FromAgent::LoginRequired(logins.clone())).await?;
@@ -389,8 +408,8 @@ where
                         Err(_) => call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending),
                     },
                     Some(Pending::NewSession) => match result {
-                        Ok(result) => {
-                            let id = result
+                        Ok(created) => {
+                            let id = created
                                 .get("sessionId")
                                 .and_then(Value::as_str)
                                 .context("the agent gave no session id")?
@@ -398,6 +417,9 @@ where
                             session = Some(id.clone());
                             started = true;
                             events.send(FromAgent::Ready { agent: agent_name.clone(), session: id, resumed: false }).await?;
+                            if let Some(list) = created.get("configOptions") {
+                                events.send(FromAgent::Config(protocol::config_options(list))).await?;
+                            }
                         }
                         Err(error) => {
                             if error.code == protocol::AUTH_REQUIRED {
@@ -426,6 +448,16 @@ where
                     }
                     // Deleting the old conversation is a courtesy: its outcome changes nothing.
                     Some(Pending::Delete) | None => {}
+                    Some(Pending::SetConfig) => match result {
+                        Ok(result) => {
+                            if let Some(list) = result.get("configOptions") {
+                                events.send(FromAgent::Config(protocol::config_options(list))).await?;
+                            }
+                        }
+                        Err(error) => {
+                            events.send(FromAgent::Notice(format!("{} ({})", error.message, error.code))).await?;
+                        }
+                    },
                 },
                 Some(Incoming::Request { id, method, params }) => {
                     if method == "session/request_permission" {

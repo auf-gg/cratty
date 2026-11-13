@@ -459,3 +459,60 @@ async fn sign_in_is_offered_the_agent_s_way() {
     assert_eq!(methods[0].args, vec!["--cli", "auth", "login"]);
     assert!(client.done.await.unwrap().is_err());
 }
+
+#[tokio::test]
+async fn settings_come_with_the_session_and_can_be_changed() {
+    let (mut client, mut agent) = connect();
+    let init = agent.receive().await;
+    agent
+        .answer(&init, serde_json::from_str(INIT_LOADING).unwrap())
+        .await;
+    let new = agent.receive().await;
+    agent
+        .answer(&new, json!({"sessionId": "s1", "configOptions": [
+            {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "a",
+             "options": [{"value": "a", "name": "A"}, {"value": "b", "name": "B"}]}]}))
+        .await;
+    assert_eq!(client.next().await, ready("s1", false));
+    let FromAgent::Config(options) = client.next().await else {
+        panic!("expected the settings");
+    };
+    assert_eq!(options[0].current, "a");
+
+    client
+        .commands
+        .unbounded_send(ToAgent::SetConfig {
+            id: "model".into(),
+            value: "b".into(),
+        })
+        .unwrap();
+    let set = agent.receive().await;
+    assert_eq!(set["method"], "session/set_config_option");
+    assert_eq!(set["params"]["sessionId"], "s1");
+    assert_eq!(set["params"]["configId"], "model");
+    assert_eq!(set["params"]["value"], "b");
+    agent
+        .answer(&set, json!({"configOptions": [
+            {"id": "model", "name": "Model", "currentValue": "b", "options": [{"value": "a", "name": "A"}, {"value": "b", "name": "B"}]}]}))
+        .await;
+    let FromAgent::Config(options) = client.next().await else {
+        panic!("expected the new settings");
+    };
+    assert_eq!(options[0].current, "b");
+
+    // A refused change is told, and the session goes on.
+    client
+        .commands
+        .unbounded_send(ToAgent::SetConfig {
+            id: "model".into(),
+            value: "zzz".into(),
+        })
+        .unwrap();
+    let set = agent.receive().await;
+    agent
+        .send(json!({"jsonrpc": "2.0", "id": set["id"], "error": {"code": -32602, "message": "Invalid value"}}))
+        .await;
+    assert!(
+        matches!(client.next().await, FromAgent::Notice(text) if text.contains("Invalid value"))
+    );
+}

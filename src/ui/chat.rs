@@ -26,8 +26,8 @@ use rust_i18n::t;
 
 use crate::acp::agents::Missing;
 use crate::acp::{
-    self, AgentCommand, AgentKind, FromAgent, LoginMethod, PermissionAsk, PlanEntry, Setup,
-    ToAgent, Update,
+    self, AgentCommand, AgentKind, ConfigOption, FromAgent, LoginMethod, PermissionAsk, PlanEntry,
+    Setup, ToAgent, Update,
 };
 use crate::ssh::LocalProgram;
 
@@ -50,6 +50,8 @@ enum State {
 enum Menu {
     Agents,
     Chats,
+    /// The values of the session setting at this index.
+    Setting(usize),
 }
 
 enum Entry {
@@ -132,6 +134,8 @@ pub struct ChatView {
     /// Ways to sign in, when the agent asked for it.
     login: Vec<LoginMethod>,
     menu: Option<Menu>,
+    /// The session's settings the agent offers: model, reasoning level, mode…
+    config: Vec<ConfigOption>,
     /// Made with the window on first render.
     input: Option<Entity<TextareaState>>,
     focus_pending: bool,
@@ -166,6 +170,7 @@ impl ChatView {
             entries: Vec::new(),
             login: Vec::new(),
             menu: None,
+            config: Vec::new(),
             input: None,
             focus_pending: true,
             scroll: ScrollHandle::new(),
@@ -221,6 +226,7 @@ impl ChatView {
         self.saved = false;
         self.first_message = None;
         self.login.clear();
+        self.config.clear();
         self.resuming = self.setup.resume.is_some();
         self.state = if self.resuming {
             State::Loading
@@ -292,6 +298,7 @@ impl ChatView {
             self.session = None;
             self.saved = false;
             self.first_message = None;
+            self.config.clear();
             self.resuming = target.is_some();
             self.state = if self.resuming {
                 State::Loading
@@ -348,6 +355,32 @@ impl ChatView {
         self.start(cx);
     }
 
+    /// Asks the agent for another value of a setting; the answer brings the new state.
+    fn set_setting(&mut self, index: usize, value: String, cx: &mut Context<Self>) {
+        self.menu = None;
+        let Some(option) = self.config.get_mut(index) else {
+            return;
+        };
+        if option.current == value {
+            cx.notify();
+            return;
+        }
+        if let Some(commands) = &self.commands {
+            let _ = commands.unbounded_send(ToAgent::SetConfig {
+                id: option.id.clone(),
+                value: value.clone(),
+            });
+            // Shown at once; the agent's answer corrects it if it refused.
+            option.current = value;
+        }
+        cx.notify();
+    }
+
+    /// Settings can change while the agent answers, but not while a chat loads.
+    fn can_configure(&self) -> bool {
+        matches!(self.state, State::Ready | State::Working)
+    }
+
     fn toggle_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
         self.menu = if self.menu == Some(menu) {
             None
@@ -391,6 +424,11 @@ impl ChatView {
                 self.session = Some(session);
             }
             FromAgent::LoginRequired(methods) => self.login = methods,
+            FromAgent::Config(options) => self.config = options,
+            FromAgent::Notice(text) => self.entries.push(Entry::Notice {
+                text: text.into(),
+                error: true,
+            }),
             FromAgent::Update(update) => self.apply_update(update),
             FromAgent::Permission { request, ask } => self.entries.push(Entry::Permission {
                 request,
@@ -458,6 +496,7 @@ impl ChatView {
                 }
             }
             Update::UserText(_) => {}
+            Update::Config(options) => self.config = options,
             Update::ToolCall(call) => self.entries.push(Entry::Tool(ToolEntry {
                 id: call.id,
                 title: tool_title(&call.title),
@@ -919,6 +958,113 @@ impl ChatView {
             .into_any_element()
     }
 
+    /// The row of settings under the top row: a button per setting with its value.
+    fn settings_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.config.is_empty() {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let enabled = self.can_configure();
+        let buttons: Vec<AnyElement> = self
+            .config
+            .iter()
+            .enumerate()
+            .map(|(index, option)| {
+                let value = option
+                    .choices
+                    .iter()
+                    .find(|choice| choice.value == option.current)
+                    .map(|choice| choice.name.clone())
+                    .unwrap_or_else(|| option.current.clone());
+                let menu = Menu::Setting(index);
+                div()
+                    .id(("chat-setting", index))
+                    .h(px(24.))
+                    .px_2()
+                    .gap_1()
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .text_xs()
+                    .when(self.menu == Some(menu), |this| this.bg(theme.secondary))
+                    .when(enabled, |this| {
+                        this.cursor_pointer()
+                            .hover(|style| style.bg(theme.secondary_hover))
+                            .on_click(
+                                cx.listener(move |this, _, _window, cx| this.toggle_menu(menu, cx)),
+                            )
+                    })
+                    .when(!enabled, |this| this.opacity(0.6))
+                    .child(
+                        div()
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from(option.name.clone())),
+                    )
+                    .child(div().child(SharedString::from(value)))
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            h_flex()
+                .flex_shrink_0()
+                .flex_wrap()
+                .px_2()
+                .py_1()
+                .gap_1()
+                .border_b_1()
+                .border_color(theme.border)
+                .children(buttons)
+                .into_any_element(),
+        )
+    }
+
+    fn setting_menu(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let Some(option) = self.config.get(index) else {
+            return div().into_any_element();
+        };
+        let rows: Vec<AnyElement> = option
+            .choices
+            .iter()
+            .enumerate()
+            .map(|(number, choice)| {
+                let selected = choice.value == option.current;
+                let value = choice.value.clone();
+                Self::menu_row(("chat-choice", number), cx)
+                    .child(
+                        div()
+                            .w(px(12.))
+                            .flex_shrink_0()
+                            .text_color(theme.primary)
+                            .child(if selected { "✓" } else { "" }),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child(SharedString::from(choice.name.clone())),
+                            )
+                            .children(choice.description.clone().map(|text| {
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(SharedString::from(text))
+                            })),
+                    )
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.set_setting(index, value.clone(), cx)
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        v_flex().children(rows).into_any_element()
+    }
+
     fn menu_row(
         id: impl Into<gpui_kit::ElementId>,
         cx: &Context<Self>,
@@ -1073,6 +1219,7 @@ impl ChatView {
         let body = match menu {
             Menu::Agents => self.agents_menu(cx),
             Menu::Chats => self.chats_menu(cx),
+            Menu::Setting(index) => self.setting_menu(index, cx),
         };
         Some(
             div()
@@ -1287,11 +1434,13 @@ impl Render for ChatView {
             );
 
         let top = self.top_row(cx);
+        let settings = self.settings_row(cx);
         let menu = self.open_menu(cx);
         v_flex()
             .relative()
             .size_full()
             .child(top)
+            .children(settings)
             .child(body)
             .child(composer)
             .children(menu)

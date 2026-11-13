@@ -409,6 +409,11 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Where tools send commands for this session; `None` once it is closed.
+    pub fn ssh_commands(&self) -> Option<futures::channel::mpsc::UnboundedSender<ToSsh>> {
+        self.session.as_ref().map(|session| session.commands.clone())
+    }
+
     pub fn open_sftp(&self) -> Option<crate::ssh::sftp::SftpHandle> {
         self.session.as_ref().map(SshSession::open_sftp)
     }

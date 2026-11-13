@@ -174,6 +174,8 @@ async fn serve(
 
     let (mut reader, writer) = channel.split();
     let mut exit_status = None;
+    // Opened with the first file request of a tool.
+    let mut files: Option<mpsc::UnboundedSender<super::remote::FileRequest>> = None;
 
     let reason = loop {
         tokio::select! {
@@ -224,6 +226,12 @@ async fn serve(
                             .await;
                     }
                 },
+                Some(ToSsh::Exec(request)) => super::remote::spawn_exec(session.clone(), request),
+                Some(ToSsh::Files(request)) => {
+                    let queue = files
+                        .get_or_insert_with(|| super::remote::spawn_files(session.clone()));
+                    let _ = queue.unbounded_send(request);
+                }
                 Some(ToSsh::Disconnect) | None => {
                     let _ = tokio::time::timeout(GOODBYE_TIMEOUT, writer.eof()).await;
                     break CloseReason::Local;

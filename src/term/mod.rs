@@ -402,6 +402,44 @@ impl Terminal {
         })
     }
 
+    /// The last `count` rows of the scrollback and the screen as plain text: what the user
+    /// sees, for a tool that helps them. Wrapped rows are joined back into one line.
+    pub fn recent_text(&self, count: usize) -> String {
+        use alacritty_terminal::index::{Column, Line as GridLine};
+
+        let grid = self.term.grid();
+        let columns = self.term.columns();
+        let bottom = self.term.bottommost_line().0;
+        let top = self.term.topmost_line().0.max(bottom + 1 - count.max(1) as i32);
+
+        let mut text = String::new();
+        let mut joined = true;
+        for row in top..=bottom {
+            let cells = &grid[GridLine(row)];
+            let mut line = String::new();
+            for column in 0..columns {
+                let cell = &cells[Column(column)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                line.push(cell.c);
+                if let Some(extra) = cell.zerowidth() {
+                    line.extend(extra);
+                }
+            }
+            let wraps = columns > 0 && cells[Column(columns - 1)].flags.contains(Flags::WRAPLINE);
+            if !joined {
+                text.push('\n');
+            }
+            text.push_str(if wraps { &line } else { line.trim_end() });
+            joined = wraps;
+        }
+        text.trim_end().to_owned()
+    }
+
     pub fn cursor_point(&self) -> Option<(usize, usize)> {
         if !self.term.mode().contains(TermMode::SHOW_CURSOR) {
             return None;
@@ -546,6 +584,15 @@ mod tests {
             Terminal::new(PtySize::new(cols, rows), Responder::new(tx)),
             rx,
         )
+    }
+
+    #[test]
+    fn recent_text_joins_wrapped_rows_and_reaches_into_scrollback() {
+        let (mut term, _rx) = terminal(10, 3);
+        term.advance(b"one\r\ntwo\r\nthree\r\n0123456789abc\r\n$ ");
+        assert_eq!(term.recent_text(100), "one\ntwo\nthree\n0123456789abc\n$");
+        assert_eq!(term.recent_text(3), "0123456789abc\n$");
+        assert_eq!(term.recent_text(1), "$");
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod auth;
 pub mod forward;
 pub mod keygen;
 pub mod known_hosts;
+pub mod remote;
 pub mod route;
 mod session;
 pub mod sftp;
@@ -136,6 +137,10 @@ pub enum ToSsh {
     Input(Bytes),
     Resize(PtySize),
     SetForward { index: usize, enabled: bool },
+    /// A command in its own channel, apart from the terminal (see `remote`).
+    Exec(remote::ExecRequest),
+    /// A file operation for a tool (see `remote`).
+    Files(remote::FileRequest),
     Disconnect,
 }
 
@@ -359,6 +364,13 @@ async fn local_pty_loop(
                     }
                     // A local tab has no SFTP or forwards — ignore them.
                     Some(ToSsh::OpenSftp(_)) | Some(ToSsh::SetForward { .. }) => {}
+                    // Tools get the server, not this computer: a local tab has none.
+                    Some(ToSsh::Exec(request)) => {
+                        let _ = request.reply.send(Err(remote::LOCAL_TAB.to_owned()));
+                    }
+                    Some(ToSsh::Files(request)) => {
+                        let _ = request.reply.send(Err(remote::LOCAL_TAB.to_owned()));
+                    }
                     Some(ToSsh::Disconnect) => {
                         // A kill order is not "exit now": first read
                         // the rest of the output; EOF will come from the PTY itself.

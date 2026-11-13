@@ -218,11 +218,8 @@ async fn serve(
     result
 }
 
-async fn serve_channel(
-    mut channel: Channel<client::Msg>,
-    mut commands: impl futures::Stream<Item = ToSftp> + Unpin,
-    events: &mut mpsc::Sender<FromSftp>,
-) -> Result<()> {
+/// Starts the SFTP subsystem on a freshly opened session channel.
+pub(super) async fn start(mut channel: Channel<client::Msg>) -> Result<SftpSession> {
     channel
         .request_subsystem(true, "sftp")
         .await
@@ -238,11 +235,17 @@ async fn serve_channel(
         }
     }
 
-    let sftp = Arc::new(
-        SftpSession::new(channel.into_stream())
-            .await
-            .map_err(|error| anyhow!(t!("ssh.sftp_start_failed", error = error)))?,
-    );
+    SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|error| anyhow!(t!("ssh.sftp_start_failed", error = error)))
+}
+
+async fn serve_channel(
+    channel: Channel<client::Msg>,
+    mut commands: impl futures::Stream<Item = ToSftp> + Unpin,
+    events: &mut mpsc::Sender<FromSftp>,
+) -> Result<()> {
+    let sftp = Arc::new(start(channel).await?);
     let home = sftp
         .canonicalize(".")
         .await
@@ -411,7 +414,7 @@ async fn read_file(sftp: &SftpSession, path: &str) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-async fn write_file(sftp: &SftpSession, path: &str, data: &[u8]) -> Result<()> {
+pub(super) async fn write_file(sftp: &SftpSession, path: &str, data: &[u8]) -> Result<()> {
     let mut file = sftp
         .create(path.to_string())
         .await
@@ -445,7 +448,7 @@ pub fn join(dir: &str, name: &str) -> String {
     }
 }
 
-async fn list(sftp: &SftpSession, path: &str) -> Result<(String, Vec<RemoteEntry>)> {
+pub(super) async fn list(sftp: &SftpSession, path: &str) -> Result<(String, Vec<RemoteEntry>)> {
     let path = if path.is_empty() { "." } else { path };
     let path = sftp
         .canonicalize(path)

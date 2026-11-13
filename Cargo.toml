@@ -101,4 +101,5 @@ getrandom = { version = "0.4.3", default-features = false, features = ["sys_rng"
 alacritty_terminal = "0.26.0"
 gpui-kit = { version = "0.9", default-features = false, features = ["component", "assets", "syntect", "test-support"] }
 rand = { version = "0.10.2", features = ["thread_rng"] }
-tokio = { version = "1.53.1", features = ["rt", "macros", "time", "net", "sync", "test-util"] }
+# `process` — the test sshd runs exec requests with the local `sh`.
+tokio = { version = "1.53.1", features = ["rt", "macros", "time", "net", "sync", "test-util", "process"] }

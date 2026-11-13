@@ -25,6 +25,7 @@ struct Observed {
     tunnels: Vec<(String, u32)>,
     agent_requested: bool,
     handle: Option<server::Handle>,
+    execs: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +138,11 @@ impl FakeSshd {
         self.lock().tunnels.clone()
     }
 
+    /// Commands of exec requests, in the order they came.
+    pub fn execs(&self) -> Vec<String> {
+        self.lock().execs.clone()
+    }
+
     pub fn agent_requested(&self) -> bool {
         self.lock().agent_requested
     }
@@ -205,6 +211,7 @@ impl server::Server for Factory {
             mode: self.mode,
             asked_prompts: 0,
             tunnels: std::collections::HashSet::new(),
+            execs: HashMap::new(),
         }
     }
 }
@@ -215,6 +222,8 @@ struct Shell {
     mode: AuthMode,
     asked_prompts: usize,
     tunnels: std::collections::HashSet<ChannelId>,
+    /// Exec channels: input for the command's standard input; dropped on EOF.
+    execs: HashMap<ChannelId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
 }
 
 impl Shell {
@@ -433,6 +442,101 @@ impl server::Handler for Shell {
         Ok(())
     }
 
+    /// Runs the command with the local `sh`, like a real server with a POSIX login shell.
+    async fn exec_request(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        use std::process::Stdio;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let command = String::from_utf8_lossy(data).into_owned();
+        self.observe(|observed| observed.execs.push(command.clone()));
+        let spawned = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn();
+        let Ok(mut child) = spawned else {
+            session.channel_failure(channel)?;
+            return Ok(());
+        };
+        session.channel_success(channel)?;
+
+        let (input, mut inputs) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        self.execs.insert(channel, input);
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        tokio::spawn(async move {
+            while let Some(chunk) = inputs.recv().await {
+                if stdin.write_all(&chunk).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let handle = session.handle();
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let mut stderr = child.stderr.take().expect("piped stderr");
+        tokio::spawn(async move {
+            let out = async {
+                let mut buffer = vec![0u8; 8192];
+                while let Ok(read @ 1..) = stdout.read(&mut buffer).await {
+                    if handle.data(channel, buffer[..read].to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+            };
+            let err = async {
+                let mut buffer = vec![0u8; 8192];
+                while let Ok(read @ 1..) = stderr.read(&mut buffer).await {
+                    if handle
+                        .extended_data(channel, 1, buffer[..read].to_vec())
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            };
+            tokio::join!(out, err);
+            let code = child
+                .wait()
+                .await
+                .ok()
+                .and_then(|status| status.code())
+                .unwrap_or(255);
+            let _ = handle.exit_status_request(channel, code as u32).await;
+            let _ = handle.eof(channel).await;
+            let _ = handle.close(channel).await;
+        });
+        Ok(())
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.execs.remove(&channel);
+        Ok(())
+    }
+
+    /// No SFTP here: clients fall back to commands.
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        _name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_failure(channel)?;
+        Ok(())
+    }
+
     async fn window_change_request(
         &mut self,
         _channel: ChannelId,
@@ -453,6 +557,10 @@ impl server::Handler for Shell {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.tunnels.contains(&channel) {
+            return Ok(());
+        }
+        if let Some(input) = self.execs.get(&channel) {
+            let _ = input.send(data.to_vec());
             return Ok(());
         }
         let mut echo = Vec::with_capacity(data.len());

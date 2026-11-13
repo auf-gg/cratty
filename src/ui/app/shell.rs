@@ -250,7 +250,7 @@ impl AppView {
                 .unwrap_or_else(|| self.current_id())
         };
         self.form.editing = None;
-        self.form.auth = HostAuth::Auto;
+        self.form.auth = HostAuth::Password;
         self.form.via.clear();
         self.form.forwards.clear();
         self.form.icon.clear();
@@ -259,6 +259,12 @@ impl AppView {
         self.editor_open = true;
         self.error = None;
         cx.notify();
+    }
+
+    /// The new host form for a chosen vault: from that vault's menu, while a tab is open too.
+    pub(super) fn new_host_in(&mut self, vault: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_host(window, cx);
+        self.form.vault = vault.to_owned();
     }
 
     fn close_editor(&mut self, cx: &mut Context<Self>) {

@@ -470,7 +470,7 @@ impl AppView {
                 user,
                 password,
                 key_path,
-                auth: HostAuth::Auto,
+                auth: HostAuth::Password,
                 via: Vec::new(),
                 forwards: Vec::new(),
                 forward_draft,

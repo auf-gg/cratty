@@ -18,6 +18,7 @@ vaults:
   collapse_tooltip: "Collapse"
   expand_tooltip: "Expand"
   actions_tooltip: "Vault actions"
+  menu_new_host: "New host…"
   menu_import: "Import from ~/.ssh/config"
   menu_lock: "Lock"
   menu_unlock: "Unlock"

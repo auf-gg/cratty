@@ -745,6 +745,14 @@ impl AppView {
                     .icon(Icon::empty().path("icons/ellipsis.svg"))
                     .tooltip(t!("vaults.actions_tooltip").to_string())
                     .dropdown_menu(move |menu, _window, _cx| {
+                        let new_host = {
+                            let (view, id) = (view.clone(), menu_id.clone());
+                            PopupMenuItem::new(t!("vaults.menu_new_host").to_string())
+                                .disabled(!unlocked)
+                                .on_click(move |_, window, cx| {
+                                    view.update(cx, |this, cx| this.new_host_in(&id, window, cx));
+                                })
+                        };
                         let import = {
                             let (view, id) = (view.clone(), menu_id.clone());
                             PopupMenuItem::new(t!("vaults.menu_import").to_string())
@@ -788,7 +796,9 @@ impl AppView {
                                 },
                             )
                         };
-                        menu.item(edit)
+                        menu.item(new_host)
+                            .item(PopupMenuItem::separator())
+                            .item(edit)
                             .item(import)
                             .item(toggle)
                             .item(PopupMenuItem::separator())

@@ -18,6 +18,7 @@ vaults:
   collapse_tooltip: "折叠"
   expand_tooltip: "展开"
   actions_tooltip: "保险库操作"
+  menu_new_host: "新建主机…"
   menu_import: "从 ~/.ssh/config 导入"
   menu_lock: "锁定"
   menu_unlock: "解锁"

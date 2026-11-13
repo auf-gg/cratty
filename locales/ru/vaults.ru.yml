@@ -18,6 +18,7 @@ vaults:
   collapse_tooltip: "Свернуть"
   expand_tooltip: "Развернуть"
   actions_tooltip: "Действия с хранилищем"
+  menu_new_host: "Новый хост…"
   menu_import: "Импорт из ~/.ssh/config"
   menu_lock: "Заблокировать"
   menu_unlock: "Разблокировать"

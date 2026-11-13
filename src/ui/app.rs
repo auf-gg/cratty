@@ -669,7 +669,7 @@ impl AppView {
         }
     }
 
-    fn save_current(&mut self, cx: &mut Context<Self>) {
+    fn save_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (target, credentials) = match self.read_form(cx) {
             Ok(parts) => parts,
             Err(error) => {
@@ -727,6 +727,10 @@ impl AppView {
             host.order = 0;
         }
         host.auth = credentials.auth;
+        // A password typed in the form replaces the saved one; an empty field keeps it.
+        if let Some(password) = credentials.password {
+            host.secrets.set(proto::SecretPurpose::Password, password);
+        }
         host.via = self.form.via.clone();
         host.forwards = self.form.forwards.clone();
         let saved_target = host.target();
@@ -744,6 +748,9 @@ impl AppView {
         });
         if self.error.is_none() {
             self.form.editing = Some(saved_target);
+            self.form
+                .password
+                .update(cx, |state, cx| state.set_value("", window, cx));
             // The host's key file goes straight into the vault.
             self.sync_key_files(&vault_id);
         }
@@ -805,6 +812,10 @@ impl AppView {
         self.form
             .key_path
             .update(cx, |state, cx| state.set_value(key, window, cx));
+        // The saved password stays in the vault; the field is only for a new one.
+        self.form
+            .password
+            .update(cx, |state, cx| state.set_value("", window, cx));
 
         self.error = None;
         cx.notify();

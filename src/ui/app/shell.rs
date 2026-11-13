@@ -536,7 +536,7 @@ impl AppView {
                                     .primary()
                                     .label(t!("shell.save"))
                                     .on_click(
-                                        cx.listener(|this, _, _window, cx| this.save_current(cx)),
+                                        cx.listener(|this, _, window, cx| this.save_current(window, cx)),
                                     ),
                             )
                             .child(

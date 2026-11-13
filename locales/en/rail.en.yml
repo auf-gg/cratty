@@ -12,6 +12,7 @@ rail:
   menu_files: "Files (SFTP)"
   menu_edit: "Edit"
   menu_delete: "Delete…"
+  menu_rename: "Rename"
   delete_host_title: "Delete host \"%{target}\"?"
   delete_host_body: "The entry and its saved passwords will be removed from the vault. Open sessions will stay connected."
   delete: "Delete"

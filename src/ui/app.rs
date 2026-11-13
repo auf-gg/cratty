@@ -29,6 +29,7 @@ mod settings_ui;
 mod shell;
 mod snippets_ui;
 mod sync_ui;
+mod tabs_ui;
 mod theme_ui;
 mod update_ui;
 mod vault_edit;
@@ -97,6 +98,8 @@ impl Render for EdgeDrag {
 
 struct SessionTab {
     title: SharedString,
+    /// Title before the user renamed the tab; `None` while it has its own.
+    default_title: Option<SharedString>,
     vault: Option<String>,
     kind: TabKind,
     request: connect::Request,
@@ -167,6 +170,11 @@ impl SessionTab {
 pub struct AppView {
     tabs: Vec<SessionTab>,
     active: Option<usize>,
+    /// Tabs of the previous run waiting for their vault to be unlocked.
+    pending_tabs: Vec<settings::SavedTab>,
+    /// Tabs of the previous run are being opened: do not write the list halfway.
+    reopening: bool,
+    renaming: Option<tabs_ui::Renaming>,
 
     section: Section,
     /// The unpinned panel is slid out because the mouse is at the window edge.
@@ -425,6 +433,9 @@ impl AppView {
         let mut this = Self {
             tabs: Vec::new(),
             active: None,
+            pending_tabs: Vec::new(),
+            reopening: false,
+            renaming: None,
             section: Section::Hosts,
             rail_peek: false,
             panel_peek: false,
@@ -551,6 +562,7 @@ impl AppView {
             this.unlock_with_os_key_for(&id, false, cx);
         }
 
+        this.restore_tabs(cx);
         let args: Vec<String> = std::env::args().skip(1).collect();
         this.open_from_command_line(&args, cx);
 
@@ -1067,6 +1079,7 @@ impl AppView {
 
         self.tabs.push(SessionTab {
             title: title.into(),
+            default_title: None,
             vault,
             kind: TabKind::Terminal {
                 view,
@@ -1081,6 +1094,7 @@ impl AppView {
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
+        self.remember_tabs();
         self.apply_appearance(cx);
         self.focus_active(cx);
     }
@@ -1124,6 +1138,7 @@ impl AppView {
 
         self.tabs.push(SessionTab {
             title: title.into(),
+            default_title: None,
             vault,
             kind: TabKind::Files {
                 view,
@@ -1135,6 +1150,7 @@ impl AppView {
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
+        self.remember_tabs();
         cx.notify();
     }
 
@@ -1173,6 +1189,7 @@ impl AppView {
 
         self.tabs.push(SessionTab {
             title: t!("app.local_tab").into(),
+            default_title: None,
             vault: None,
             kind: TabKind::Terminal {
                 view,
@@ -1191,6 +1208,7 @@ impl AppView {
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
+        self.remember_tabs();
         self.apply_appearance(cx);
         self.focus_active(cx);
     }
@@ -1398,6 +1416,7 @@ impl AppView {
         );
         self.tabs.push(SessionTab {
             title: name.clone().into(),
+            default_title: None,
             vault: None,
             kind: TabKind::Editor {
                 view,
@@ -1413,6 +1432,7 @@ impl AppView {
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
+        self.remember_tabs();
         cx.notify();
     }
 
@@ -1439,6 +1459,8 @@ impl AppView {
             return;
         }
         self.tabs.remove(index);
+        // Indices after the removed tab have shifted.
+        self.renaming = None;
         self.active = match self.tabs.len() {
             0 => None,
             len => Some(index.min(len - 1)),
@@ -1446,6 +1468,7 @@ impl AppView {
         if self.active.is_none() {
             self.showing_page = true;
         }
+        self.remember_tabs();
         self.focus_active(cx);
     }
 
@@ -1453,6 +1476,7 @@ impl AppView {
         if index < self.tabs.len() {
             self.active = Some(index);
             self.showing_page = false;
+            self.remember_tabs();
             self.focus_active(cx);
         }
     }

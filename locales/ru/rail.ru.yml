@@ -12,6 +12,7 @@ rail:
   menu_files: "Файлы (SFTP)"
   menu_edit: "Изменить"
   menu_delete: "Удалить…"
+  menu_rename: "Переименовать"
   delete_host_title: "Удалить хост «%{target}»?"
   delete_host_body: "Запись и сохранённые для неё пароли будут удалены из хранилища. Открытые сеансы останутся подключёнными."
   delete: "Удалить"

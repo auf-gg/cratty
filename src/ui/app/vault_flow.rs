@@ -339,6 +339,7 @@ impl AppView {
                 self.sync_can_save_secrets(cx);
                 self.start_sync_watch(id, cx);
                 self.sync_now(id, cx);
+                self.reopen_ready_tabs(cx);
             }
             Err(error) => {
                 if is_current {

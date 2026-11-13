@@ -49,6 +49,11 @@ settings:
     now_unavailable: "需要已解锁的保管库和文件夹路径"
     note: "条目会加密后保存到该文件夹，可通过 Dropbox、Syncthing 或网络驱动器共享。路径留空则停用同步。"
     note_excluded: "标记为“不同步”的条目不会保存到该文件夹。"
+  tabs:
+    title: "标签页"
+    restore: "启动时重新打开上次运行的标签页"
+    restore_note: "SSH 会话、本地终端和文件管理器会重新打开并重新连接。已锁定保管库中主机的标签页会在保管库解锁后打开。连接时输入的密码不会被记住。"
+    rename_note: "要重命名标签页，请在左侧面板中双击它，或右键单击并选择“重命名”。清空名称即可恢复原名称。"
   data:
     title: "数据位置"
     vault: "保管库“%{name}”：%{path}"

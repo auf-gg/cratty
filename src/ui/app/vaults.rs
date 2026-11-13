@@ -645,19 +645,46 @@ impl AppView {
         )
     }
 
-    pub(super) fn vault_header(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn vault_header(
+        &self,
+        ix: usize,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme().clone();
         let slot = &self.vaults[ix];
         let id = slot.id.clone();
         let unlocked = slot.session.state().is_unlocked();
         let view = cx.entity();
 
-        let (lock_id, name_id, menu_id) = (id.clone(), id.clone(), id.clone());
+        let (lock_id, name_id, menu_id, fold_id) = (id.clone(), id.clone(), id.clone(), id.clone());
         h_flex()
             .h(px(26.))
             .px_1()
             .gap_1()
             .items_center()
+            .child(
+                Button::new(SharedString::from(format!("vault-fold-{id}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(
+                        Icon::empty()
+                            .path(if collapsed {
+                                "icons/chevron-right.svg"
+                            } else {
+                                "icons/chevron-down.svg"
+                            })
+                            .text_color(theme.muted_foreground),
+                    )
+                    .tooltip(if collapsed {
+                        t!("vaults.expand_tooltip").to_string()
+                    } else {
+                        t!("vaults.collapse_tooltip").to_string()
+                    })
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.toggle_vault_collapsed(&fold_id, cx)
+                    })),
+            )
             .child(
                 Button::new(SharedString::from(format!("vault-lock-{id}")))
                     .ghost()

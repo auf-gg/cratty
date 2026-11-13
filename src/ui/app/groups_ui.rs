@@ -30,6 +30,22 @@ impl AppView {
             .contains(&collapse_key(vault, group))
     }
 
+    pub(super) fn is_vault_collapsed(&self, vault: &str) -> bool {
+        self.settings.collapsed_vaults.iter().any(|id| id == vault)
+    }
+
+    pub(super) fn toggle_vault_collapsed(&mut self, vault: &str, cx: &mut Context<Self>) {
+        let collapsed = &mut self.settings.collapsed_vaults;
+        match collapsed.iter().position(|id| id == vault) {
+            Some(index) => {
+                collapsed.remove(index);
+            }
+            None => collapsed.push(vault.to_owned()),
+        }
+        self.error = settings::save(&self.settings).err().map(SharedString::from);
+        cx.notify();
+    }
+
     fn toggle_group(&mut self, vault: &str, group: &str, cx: &mut Context<Self>) {
         let key = collapse_key(vault, group);
         let collapsed = &mut self.settings.collapsed_groups;

@@ -344,6 +344,9 @@ impl AppView {
             .when(tab == SettingsTab::General, |this| {
                 this.child(self.prediction_block(cx))
             })
+            .when(tab == SettingsTab::General, |this| {
+                this.child(self.tabs_block(cx))
+            })
             .when(tab == SettingsTab::Security, |this| {
                 this.child(
                     Self::section(t!("settings.autolock.title"), cx)

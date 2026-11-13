@@ -200,7 +200,10 @@ impl AppView {
     fn vault_group(&self, ix: usize, query: &str, cx: &mut Context<Self>) -> AnyElement {
         let slot = &self.vaults[ix];
         let id = slot.id.clone();
+        // While searching, vaults are expanded: otherwise matches are not visible.
+        let collapsed = query.is_empty() && self.is_vault_collapsed(&id);
         let rows: Vec<AnyElement> = match slot.session.unlocked() {
+            _ if collapsed => Vec::new(),
             None => vec![self.locked_row(ix, cx)],
             Some(unlocked) => {
                 let saved: Vec<HostRecord> = unlocked
@@ -256,14 +259,14 @@ impl AppView {
         v_flex()
             .gap_px()
             .child(Self::host_drop_target(
-                div().rounded(px(7.)).child(self.vault_header(ix, cx)),
+                div().rounded(px(7.)).child(self.vault_header(ix, collapsed, cx)),
                 &id,
                 "",
                 None,
                 cx,
             ))
             .children(rows)
-            .children(self.ungroup_zone(&id, cx))
+            .children(if collapsed { None } else { self.ungroup_zone(&id, cx) })
             .into_any_element()
     }
 
@@ -333,14 +336,35 @@ impl AppView {
             Self::dot(theme.success)
         };
 
-        Self::rail_row(
+        let row = Self::rail_row(
             SharedString::from(format!("rail-tab-{index}")),
             selected,
             cx,
         )
         .h(px(30.))
-        .child(div().w(px(16.)).flex().justify_center().child(marker))
-        .child(
+        .child(div().w(px(16.)).flex().justify_center().child(marker));
+
+        if let Some(renaming) = self.renaming.as_ref().filter(|renaming| renaming.index == index) {
+            return row
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .capture_key_down(cx.listener(
+                            |this, event: &gpui_kit::KeyDownEvent, _window, cx| {
+                                if event.keystroke.key == "escape" {
+                                    cx.stop_propagation();
+                                    this.finish_rename(false, true, cx);
+                                }
+                            },
+                        ))
+                        .child(Input::new(&renaming.input).small()),
+                )
+                .into_any_element();
+        }
+
+        let view = cx.entity();
+        row.child(
             div().flex_1().min_w(px(0.)).overflow_hidden().child(
                 Label::new(tab.title.clone())
                     .text_sm()
@@ -364,7 +388,32 @@ impl AppView {
             MouseButton::Middle,
             cx.listener(move |this, _, _window, cx| this.close_tab(index, cx)),
         )
-        .on_click(cx.listener(move |this, _, _window, cx| this.select(index, cx)))
+        .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+            if event.click_count() >= 2 {
+                this.start_rename(index, window, cx);
+            } else {
+                this.select(index, cx);
+            }
+        }))
+        .context_menu(move |menu, _window, _cx| {
+            let rename = {
+                let view = view.clone();
+                PopupMenuItem::new(t!("rail.menu_rename"))
+                    .icon(Icon::empty().path("icons/pencil.svg"))
+                    .on_click(move |_, window, cx| {
+                        view.update(cx, |this, cx| this.start_rename(index, window, cx));
+                    })
+            };
+            let close = {
+                let view = view.clone();
+                PopupMenuItem::new(t!("rail.close"))
+                    .icon(Icon::new(IconName::Close))
+                    .on_click(move |_, _window, cx| {
+                        view.update(cx, |this, cx| this.close_tab(index, cx));
+                    })
+            };
+            menu.item(rename).item(PopupMenuItem::separator()).item(close)
+        })
         .into_any_element()
     }
 

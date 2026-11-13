@@ -64,6 +64,20 @@ pub fn parse_target(raw: &str) -> Result<Request, String> {
     Ok(Request { alias, user, port })
 }
 
+/// The address as typed: `parse_target` reads it back into the same request.
+impl std::fmt::Display for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(user) = &self.user {
+            write!(f, "{user}@")?;
+        }
+        match self.port {
+            Some(port) if self.alias.contains(':') => write!(f, "[{}]:{port}", self.alias),
+            Some(port) => write!(f, "{}:{port}", self.alias),
+            None => write!(f, "{}", self.alias),
+        }
+    }
+}
+
 fn parse_port(raw: Option<&str>, whole: &str) -> Result<Option<u16>, String> {
     match raw {
         None => Ok(None),
@@ -492,6 +506,21 @@ mod tests {
             parse_target("example.com"),
             Ok(request("example.com", None, None))
         );
+    }
+
+    #[test]
+    fn request_text_reads_back_the_same() {
+        for raw in [
+            "example.com",
+            "root@10.0.0.1:2222",
+            "alias",
+            "admin@[fe80::1]:2200",
+            "fe80::1",
+        ] {
+            let parsed = parse_target(raw).expect(raw);
+            assert_eq!(parsed.to_string(), raw);
+            assert_eq!(parse_target(&parsed.to_string()), Ok(parsed));
+        }
     }
 
     #[test]

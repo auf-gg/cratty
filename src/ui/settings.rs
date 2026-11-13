@@ -68,6 +68,40 @@ pub struct Settings {
     /// Collapsed host groups in the left panel: "vault/group".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collapsed_groups: Vec<String>,
+    /// Vaults collapsed in the left panel, by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collapsed_vaults: Vec<String>,
+    /// Reopen the tabs that were open when the app was closed.
+    #[serde(default)]
+    pub restore_tabs: bool,
+    /// Tabs to reopen at the next start; kept only while `restore_tabs` is on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_tabs: Vec<SavedTab>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SavedTabKind {
+    Ssh,
+    Local,
+    Files,
+}
+
+/// An open tab, as much as is needed to open it again. No secrets: credentials
+/// come from the vault again, or are asked for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedTab {
+    pub kind: SavedTabKind,
+    /// `user@host:port`; empty for a local terminal.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault: Option<String>,
+    /// Name given by the user; none — the default title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub active: bool,
 }
 
 fn default_pinned() -> bool {
@@ -152,6 +186,9 @@ impl Default for Settings {
             panel_pinned: true,
             language: String::new(),
             collapsed_groups: Vec::new(),
+            collapsed_vaults: Vec::new(),
+            restore_tabs: false,
+            open_tabs: Vec::new(),
         }
     }
 }
@@ -428,10 +465,42 @@ mod tests {
             panel_pinned: true,
             language: "zh-CN".into(),
             collapsed_groups: vec!["vault/prod".into()],
+            collapsed_vaults: vec!["v2".into()],
+            restore_tabs: true,
+            open_tabs: vec![
+                SavedTab {
+                    kind: SavedTabKind::Ssh,
+                    target: "root@prod:2222".into(),
+                    vault: Some("v1".into()),
+                    name: Some("Database".into()),
+                    active: true,
+                },
+                SavedTab {
+                    kind: SavedTabKind::Local,
+                    target: String::new(),
+                    vault: None,
+                    name: None,
+                    active: false,
+                },
+            ],
         };
         let text = serde_json::to_string(&settings).expect("fails to serialize");
         let parsed: Settings = serde_json::from_str(&text).expect("fails to parse");
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn saved_tab_keeps_only_what_is_set() {
+        let local = SavedTab {
+            kind: SavedTabKind::Local,
+            target: String::new(),
+            vault: None,
+            name: None,
+            active: false,
+        };
+        assert_eq!(serde_json::to_string(&local).expect("write"), r#"{"kind":"local"}"#);
+        let off = serde_json::to_string(&Settings::default()).expect("write");
+        assert!(!off.contains("open_tabs"), "an empty list must not be written");
     }
 
     #[test]

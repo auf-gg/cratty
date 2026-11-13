@@ -49,6 +49,11 @@ settings:
     now_unavailable: "Requires an unlocked vault and a folder path"
     note: "Entries are saved to the folder encrypted and can be shared via Dropbox, Syncthing or a network drive. An empty path disables sync."
     note_excluded: "Entries marked \"Don't sync\" are not saved to the folder."
+  tabs:
+    title: "Tabs"
+    restore: "Reopen tabs from the last run at startup"
+    restore_note: "SSH sessions, local terminals and file managers open again and reconnect. Tabs of hosts from a locked vault open once it is unlocked. Passwords typed while connecting are not remembered."
+    rename_note: "To rename a tab, double-click it in the left panel or right-click it and choose Rename. Clear the name to get the original one back."
   data:
     title: "Data location"
     vault: "Vault \"%{name}\": %{path}"

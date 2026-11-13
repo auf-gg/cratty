@@ -15,6 +15,8 @@ vaults:
   picker_label: "Vault:"
   lock_tooltip: "Lock vault"
   unlock_tooltip: "Unlock vault"
+  collapse_tooltip: "Collapse"
+  expand_tooltip: "Expand"
   actions_tooltip: "Vault actions"
   menu_import: "Import from ~/.ssh/config"
   menu_lock: "Lock"

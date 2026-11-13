@@ -3,7 +3,7 @@ app:
   label_example: "Например, Production"
   no_group: "Без группы"
   host_placeholder: "Доменное имя или IP-адрес"
-  username: "Имя пользователя"
+  username: "Имя пользователя (по умолчанию root)"
   password: "Пароль"
   key_path: "Путь к файлу ключа"
   proxy_label_example: "Например, Офис"

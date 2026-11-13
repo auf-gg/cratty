@@ -3,7 +3,7 @@ app:
   label_example: "例如:Production"
   no_group: "无分组"
   host_placeholder: "域名或 IP 地址"
-  username: "用户名"
+  username: "用户名（默认 root）"
   password: "密码"
   key_path: "密钥文件路径"
   proxy_label_example: "例如:办公室"

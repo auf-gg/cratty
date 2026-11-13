@@ -3,7 +3,7 @@ app:
   label_example: "e.g. Production"
   no_group: "No group"
   host_placeholder: "Domain name or IP address"
-  username: "Username"
+  username: "Username (root if empty)"
   password: "Password"
   key_path: "Key file path"
   proxy_label_example: "e.g. Office"

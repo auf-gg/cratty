@@ -88,10 +88,9 @@ fn parse_port(raw: Option<&str>, whole: &str) -> Result<Option<u16>, String> {
     }
 }
 
+/// User when neither the host nor ~/.ssh/config names one.
 pub fn default_user() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "root".to_string())
+    "root".to_string()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -595,6 +594,12 @@ mod tests {
         assert_eq!(target.host, "example.com");
         assert_eq!(target.user, "dan");
         assert_eq!(target.port, 22);
+    }
+
+    #[test]
+    fn without_a_user_anywhere_it_is_root() {
+        let target = resolve(&request("example.com", None, None), &HostSettings::default());
+        assert_eq!(target.user, "root");
     }
 
     #[test]

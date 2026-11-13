@@ -231,7 +231,22 @@ async fn run_process(
 /// The user's keys are copied in with OpenCode's own export and import, through memory,
 /// each time the agent starts, so keys added meanwhile come along. Keys already there
 /// are left as they are. Failing to copy is not an error: the agent starts anyway.
-async fn share_credentials(command: &AgentCommand) {
+/// The same, for a button: runs to the end on a thread of its own. `true` when the
+/// copy went through.
+pub fn sync_credentials(command: &AgentCommand) -> bool {
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+    else {
+        return false;
+    };
+    let done = runtime.block_on(share_credentials(command));
+    runtime.shutdown_background();
+    done
+}
+
+async fn share_credentials(command: &AgentCommand) -> bool {
     use tokio::process::Command;
 
     let copy = async {
@@ -265,9 +280,12 @@ async fn share_credentials(command: &AgentCommand) {
         let mut stdin = import.stdin.take()?;
         stdin.write_all(&exported.stdout).await.ok()?;
         drop(stdin);
-        import.wait().await.ok()
+        import.wait().await.ok().filter(|status| status.success())
     };
-    let _ = tokio::time::timeout(Duration::from_secs(30), copy).await;
+    matches!(
+        tokio::time::timeout(Duration::from_secs(30), copy).await,
+        Ok(Some(_))
+    )
 }
 
 enum Incoming {

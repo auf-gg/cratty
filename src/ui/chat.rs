@@ -143,6 +143,9 @@ pub struct ChatView {
     /// The search box of a long setting menu, made with the window when first needed.
     filter: Option<Entity<InputState>>,
     _filter_events: Option<Subscription>,
+    /// The sign-ins are being copied from the user's OpenCode.
+    syncing: bool,
+    _sync: Option<Task<()>>,
     /// A new chat has not had the default model applied yet.
     apply_default: bool,
     focus_pending: bool,
@@ -181,6 +184,8 @@ impl ChatView {
             input: None,
             filter: None,
             _filter_events: None,
+            syncing: false,
+            _sync: None,
             apply_default: false,
             focus_pending: true,
             scroll: ScrollHandle::new(),
@@ -1198,6 +1203,47 @@ impl ChatView {
             .cursor_pointer()
     }
 
+    /// Copies the sign-ins again from the user's OpenCode; the running OpenCode chat
+    /// starts over with them, since an agent reads them only when it starts.
+    fn sync_sign_ins(&mut self, cx: &mut Context<Self>) {
+        if self.syncing {
+            return;
+        }
+        let Some(command) = self
+            .agents
+            .iter()
+            .find(|(kind, _)| *kind == AgentKind::OpenCode)
+            .and_then(|(_, found)| found.as_ref().ok())
+            .cloned()
+        else {
+            return;
+        };
+        self.syncing = true;
+        let work = cx
+            .background_executor()
+            .spawn(async move { acp::sync_credentials(&command) });
+        self._sync = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let done = work.await;
+            let _ = this.update(cx, |this, cx| {
+                this.syncing = false;
+                this.menu = None;
+                if this.command.kind == AgentKind::OpenCode {
+                    this.restart(cx);
+                }
+                this.entries.push(Entry::Notice {
+                    text: if done {
+                        t!("chat.synced").into()
+                    } else {
+                        t!("chat.sync_failed").into()
+                    },
+                    error: !done,
+                });
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn agents_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let rows: Vec<AnyElement> =
@@ -1243,7 +1289,46 @@ impl ChatView {
                     }
                 })
                 .collect();
-        v_flex().children(rows).into_any_element()
+        let opencode = self
+            .agents
+            .iter()
+            .any(|(kind, found)| *kind == AgentKind::OpenCode && found.is_ok());
+        let sync = opencode.then(|| {
+            Self::menu_row("chat-sync", cx)
+                .child(
+                    div().w(px(12.)).flex_shrink_0().child(
+                        Icon::empty()
+                            .path("icons/refresh-cw.svg")
+                            .xsmall()
+                            .text_color(theme.primary),
+                    ),
+                )
+                .child(
+                    v_flex()
+                        .child(
+                            Label::new(if self.syncing {
+                                t!("chat.syncing")
+                            } else {
+                                t!("chat.sync")
+                            })
+                            .text_sm(),
+                        )
+                        .child(
+                            Label::new(t!("chat.sync_hint"))
+                                .text_xs()
+                                .text_color(theme.muted_foreground),
+                        ),
+                )
+                .when(self.syncing, |this| this.opacity(0.6))
+                .on_click(cx.listener(|this, _, _window, cx| this.sync_sign_ins(cx)))
+        });
+        v_flex()
+            .children(rows)
+            .when(sync.is_some(), |this| {
+                this.child(div().my_1().h(px(1.)).bg(theme.border))
+            })
+            .children(sync)
+            .into_any_element()
     }
 
     fn chats_menu(&self, cx: &mut Context<Self>) -> AnyElement {

@@ -39,3 +39,8 @@ chat:
   ask_again: "重新询问"
   search: "搜索…"
   nothing_found: "没有找到。"
+  sync: "同步登录"
+  syncing: "正在同步登录…"
+  sync_hint: "重新从你的 OpenCode 复制密钥"
+  synced: "登录已同步。"
+  sync_failed: "无法同步登录。"

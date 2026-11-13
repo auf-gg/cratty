@@ -39,3 +39,8 @@ chat:
   ask_again: "Ask again"
   search: "Search…"
   nothing_found: "Nothing found."
+  sync: "Sync sign-ins"
+  syncing: "Syncing sign-ins…"
+  sync_hint: "Copies the keys again from your OpenCode"
+  synced: "Sign-ins synced."
+  sync_failed: "Sign-ins could not be synced."

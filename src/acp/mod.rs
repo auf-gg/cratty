@@ -5,6 +5,7 @@
 
 pub mod agents;
 pub mod protocol;
+pub mod sessions;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -17,7 +18,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 pub use agents::{AgentCommand, AgentKind};
-pub use protocol::{PermissionAsk, PermissionOption, PlanEntry, ToolCall, ToolCallUpdate, Update};
+pub use protocol::{
+    LoginMethod, PermissionAsk, PermissionOption, PlanEntry, ToolCall, ToolCallUpdate, Update,
+};
 
 /// Starting may download the agent first (npx), so it gets a long time.
 const START_TIMEOUT: Duration = Duration::from_secs(300);
@@ -43,6 +46,8 @@ pub struct Setup {
     pub mcp: McpServer,
     /// What the user runs to sign in, for the error that asks for it.
     pub login: String,
+    /// A saved session to continue: the agent replays its conversation first.
+    pub resume: Option<String>,
 }
 
 #[derive(Debug)]
@@ -54,13 +59,19 @@ pub enum ToAgent {
         request: u64,
         option: Option<String>,
     },
+    /// Leave the current conversation for a new one; the agent deletes the old one if
+    /// it can.
+    NewSession,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum FromAgent {
-    /// The session is ready for prompts.
+    /// A session is ready for prompts. `resumed` when it is the saved one, whose
+    /// conversation has just been replayed as updates.
     Ready {
         agent: String,
+        session: String,
+        resumed: bool,
     },
     Update(Update),
     Permission {
@@ -72,6 +83,8 @@ pub enum FromAgent {
     },
     /// A prompt failed; the session goes on.
     TurnFailed(String),
+    /// The agent wants the user to sign in, in one of these ways.
+    LoginRequired(Vec<LoginMethod>),
     /// The agent has stopped, or could not start.
     Closed {
         error: Option<String>,
@@ -122,9 +135,13 @@ async fn run_process(
     mut events: mpsc::Sender<FromAgent>,
 ) {
     let mut process = tokio::process::Command::new(&command.program);
+    for name in agents::foreign_config(command.kind) {
+        process.env_remove(name);
+    }
     process
         .args(&command.args)
         .env("PATH", &command.path)
+        .envs(command.env.iter().map(|(name, value)| (name, value)))
         .current_dir(&setup.cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -153,7 +170,7 @@ async fn run_process(
 
     let tail = Arc::new(Mutex::new(VecDeque::<u8>::new()));
     let keeper = tail.clone();
-    tokio::spawn(async move {
+    let reading_stderr = tokio::spawn(async move {
         let mut stderr = stderr;
         let mut buffer = [0u8; 4096];
         while let Ok(read @ 1..) = stderr.read(&mut buffer).await {
@@ -174,6 +191,8 @@ async fn run_process(
     {
         let _ = child.kill().await;
     }
+    // What the agent printed last explains why it stopped: read it to the end.
+    let _ = tokio::time::timeout(Duration::from_millis(500), reading_stderr).await;
     let error = result.err().map(|error| {
         let tail = tail
             .lock()
@@ -217,7 +236,9 @@ struct RpcError {
 enum Pending {
     Initialize,
     NewSession,
+    Load,
     Prompt,
+    Delete,
 }
 
 /// Talks ACP over the agent's standard streams until the window closes the session
@@ -275,8 +296,12 @@ where
         Pending::Initialize,
         &mut pending,
     );
+    // Set while a session is ready; `None` while one is being made or loaded.
     let mut session: Option<String> = None;
+    let mut started = false;
     let mut agent_name = String::new();
+    let mut caps = protocol::AgentCaps::default();
+    let mut logins: Vec<LoginMethod> = Vec::new();
     let mut permissions: HashMap<u64, Value> = HashMap::new();
     let mut next_permission = 0u64;
     let starting = tokio::time::sleep(START_TIMEOUT);
@@ -284,7 +309,7 @@ where
 
     let outcome = loop {
         tokio::select! {
-            _ = &mut starting, if session.is_none() => {
+            _ = &mut starting, if !started => {
                 break Err(anyhow!("the agent did not start in {} s", START_TIMEOUT.as_secs()));
             }
             command = commands.next() => match command {
@@ -310,36 +335,67 @@ where
                 }
                 Some(ToAgent::Permission { request, option }) => {
                     if let Some(id) = permissions.remove(&request) {
-                        let outcome = match option {
-                            Some(option) => protocol::permission_outcome(Some(&option)),
-                            // Refusing without a reject option: answer as a cancelled turn.
-                            None => protocol::permission_outcome(None),
-                        };
-                        reply(id, Ok(outcome));
+                        reply(id, Ok(protocol::permission_outcome(option.as_deref())));
                     }
+                }
+                Some(ToAgent::NewSession) => {
+                    if let Some(old) = session.take()
+                        && caps.delete
+                    {
+                        call("session/delete", protocol::delete_session(&old), Pending::Delete, &mut pending);
+                    }
+                    call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending);
                 }
             },
             message = incoming.next() => match message {
                 None => break Err(anyhow!("the agent exited")),
                 Some(Incoming::Response { id, result }) => match pending.remove(&id) {
                     Some(Pending::Initialize) => {
-                        let result = result.map_err(|error| rpc_error(error, setup))?;
+                        let result = result.map_err(|error| rpc_error(error, setup, &logins))?;
                         let version = result.get("protocolVersion").and_then(Value::as_u64);
                         if version != Some(protocol::PROTOCOL_VERSION) {
                             break Err(anyhow!("the agent speaks ACP version {version:?}, Cratty speaks {}", protocol::PROTOCOL_VERSION));
                         }
                         agent_name = agent_title(&result);
-                        call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending);
+                        caps = protocol::agent_caps(&result);
+                        logins = protocol::login_methods(&result);
+                        match setup.resume.as_deref().filter(|_| caps.load) {
+                            Some(saved) => call("session/load", protocol::load_session(saved, &setup.cwd, &setup.mcp), Pending::Load, &mut pending),
+                            None => call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending),
+                        }
                     }
-                    Some(Pending::NewSession) => {
-                        let result = result.map_err(|error| rpc_error(error, setup))?;
-                        let id = result
-                            .get("sessionId")
-                            .and_then(Value::as_str)
-                            .context("the agent gave no session id")?;
-                        session = Some(id.to_owned());
-                        events.send(FromAgent::Ready { agent: agent_name.clone() }).await?;
-                    }
+                    Some(Pending::Load) => match result {
+                        Ok(_) => {
+                            let id = setup.resume.clone().unwrap_or_default();
+                            session = Some(id.clone());
+                            started = true;
+                            events.send(FromAgent::Ready { agent: agent_name.clone(), session: id, resumed: true }).await?;
+                        }
+                        Err(error) if error.code == protocol::AUTH_REQUIRED => {
+                            events.send(FromAgent::LoginRequired(logins.clone())).await?;
+                            break Err(rpc_error(error, setup, &logins));
+                        }
+                        // The saved session is gone: start a new one.
+                        Err(_) => call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending),
+                    },
+                    Some(Pending::NewSession) => match result {
+                        Ok(result) => {
+                            let id = result
+                                .get("sessionId")
+                                .and_then(Value::as_str)
+                                .context("the agent gave no session id")?
+                                .to_owned();
+                            session = Some(id.clone());
+                            started = true;
+                            events.send(FromAgent::Ready { agent: agent_name.clone(), session: id, resumed: false }).await?;
+                        }
+                        Err(error) => {
+                            if error.code == protocol::AUTH_REQUIRED {
+                                events.send(FromAgent::LoginRequired(logins.clone())).await?;
+                            }
+                            break Err(rpc_error(error, setup, &logins));
+                        }
+                    },
                     Some(Pending::Prompt) => {
                         let event = match result {
                             Ok(result) => FromAgent::TurnEnded {
@@ -349,11 +405,17 @@ where
                                     .unwrap_or("end_turn")
                                     .to_owned(),
                             },
-                            Err(error) => FromAgent::TurnFailed(format!("{:#}", rpc_error(error, setup))),
+                            Err(error) => {
+                                if error.code == protocol::AUTH_REQUIRED {
+                                    events.send(FromAgent::LoginRequired(logins.clone())).await?;
+                                }
+                                FromAgent::TurnFailed(format!("{:#}", rpc_error(error, setup, &logins)))
+                            }
                         };
                         events.send(event).await?;
                     }
-                    None => {}
+                    // Deleting the old conversation is a courtesy: its outcome changes nothing.
+                    Some(Pending::Delete) | None => {}
                 },
                 Some(Incoming::Request { id, method, params }) => {
                     if method == "session/request_permission" {
@@ -431,15 +493,16 @@ async fn read_messages<R: AsyncRead + Unpin>(reader: R, incoming: mpsc::Unbounde
     }
 }
 
-fn rpc_error(error: RpcError, setup: &Setup) -> anyhow::Error {
-    if error.code == protocol::AUTH_REQUIRED {
-        anyhow!(
+fn rpc_error(error: RpcError, setup: &Setup, logins: &[LoginMethod]) -> anyhow::Error {
+    match error.code {
+        // The window offers the agent's own ways to sign in.
+        protocol::AUTH_REQUIRED if !logins.is_empty() => anyhow!("{}", error.message),
+        protocol::AUTH_REQUIRED => anyhow!(
             "{}: sign in by running `{}` in a terminal, then start the chat again",
             error.message,
             setup.login
-        )
-    } else {
-        anyhow!("{} ({})", error.message, error.code)
+        ),
+        _ => anyhow!("{} ({})", error.message, error.code),
     }
 }
 

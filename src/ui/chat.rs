@@ -16,12 +16,15 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, Context, Entity, Focusable, Hsla, IntoElement, Render, ScrollHandle, SharedString,
-    Subscription, Task, WeakEntity, Window, div, prelude::*, px,
+    AnyElement, Context, Entity, EventEmitter, Focusable, Hsla, IntoElement, Render, ScrollHandle,
+    SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use rust_i18n::t;
 
-use crate::acp::{self, AgentCommand, FromAgent, PermissionAsk, PlanEntry, Setup, ToAgent, Update};
+use crate::acp::{
+    self, AgentCommand, FromAgent, LoginMethod, PermissionAsk, PlanEntry, Setup, ToAgent, Update,
+};
+use crate::ssh::LocalProgram;
 
 /// Lines of tool output shown when a tool row is opened.
 const OUTPUT_LINES: usize = 40;
@@ -29,6 +32,8 @@ const OUTPUT_LINES: usize = 40;
 #[derive(Clone, Debug, PartialEq)]
 enum State {
     Starting,
+    /// The saved conversation is coming back from the agent.
+    Loading,
     Ready,
     Working,
     Closed(Option<SharedString>),
@@ -63,60 +68,104 @@ struct ToolEntry {
     open: bool,
 }
 
+pub enum ChatEvent {
+    /// Put the conversation away: the panel offers the agents again.
+    Close,
+    /// Run the agent's sign-in in a terminal.
+    Login(LocalProgram),
+}
+
+impl EventEmitter<ChatEvent> for ChatView {}
+
 pub struct ChatView {
     command: AgentCommand,
     setup: Setup,
+    /// The server the conversation is about: the key of its saved session.
+    server: String,
     commands: Option<mpsc::UnboundedSender<ToAgent>>,
     _pump: Option<Task<()>>,
     agent_name: SharedString,
     state: State,
+    /// Continuing a saved session was asked for and has not been answered yet.
+    resuming: bool,
+    /// The session in use, and whether it is the server's saved one yet: a new session
+    /// is saved after its first answer, so an untouched one does not replace the old.
+    session: Option<String>,
+    saved: bool,
     entries: Vec<Entry>,
-    input: Entity<TextareaState>,
+    /// Ways to sign in, when the agent asked for it.
+    login: Vec<LoginMethod>,
+    /// Made with the window on first render.
+    input: Option<Entity<TextareaState>>,
+    focus_pending: bool,
     scroll: ScrollHandle,
-    _input_events: Subscription,
+    _input_events: Option<Subscription>,
 }
 
 impl ChatView {
+    /// Starts the agent: with `setup.resume`, the saved conversation comes back first.
     pub fn new(
         command: AgentCommand,
         setup: Setup,
-        window: &mut Window,
+        server: String,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .submit_on_enter(true)
-                .placeholder(t!("chat.placeholder"))
-        });
-        let input_events =
-            cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = event {
-                    this.send(window, cx);
-                }
-            });
         let agent_name = SharedString::from(command.kind.title());
         let mut chat = Self {
             command,
             setup,
+            server,
             commands: None,
             _pump: None,
             agent_name,
             state: State::Starting,
+            resuming: false,
+            session: None,
+            saved: false,
             entries: Vec::new(),
-            input,
+            login: Vec::new(),
+            input: None,
+            focus_pending: true,
             scroll: ScrollHandle::new(),
-            _input_events: input_events,
+            _input_events: None,
         };
         chat.start(cx);
         chat
     }
 
-    pub fn focus_input(&self, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.input.focus_handle(cx), cx);
+    fn ensure_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextareaState> {
+        if let Some(input) = &self.input {
+            return input.clone();
+        }
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .submit_on_enter(true)
+                .placeholder(t!("chat.placeholder"))
+        });
+        self._input_events =
+            Some(
+                cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { shift: false, .. } = event {
+                        this.send(window, cx);
+                    }
+                }),
+            );
+        self.input = Some(input.clone());
+        input
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        self.state = State::Starting;
+        self.resuming = self.setup.resume.is_some();
+        self.state = if self.resuming {
+            State::Loading
+        } else {
+            State::Starting
+        };
+        self.login.clear();
         match acp::spawn(self.command.clone(), self.setup.clone()) {
             Ok(handle) => {
                 let acp::AgentHandle { commands, events } = handle;
@@ -151,12 +200,41 @@ impl ChatView {
         cx.notify();
     }
 
-    /// Starts over: a new agent process and an empty conversation.
+    /// Starts the agent again after it stopped, continuing the server's saved
+    /// conversation if it has one with this agent.
     fn restart(&mut self, cx: &mut Context<Self>) {
+        self.setup.resume = acp::sessions::get(&self.server)
+            .filter(|(kind, _)| *kind == self.command.kind)
+            .map(|(_, session)| session);
         self.commands = None;
         self._pump = None;
         self.entries.clear();
         self.start(cx);
+    }
+
+    /// Leaves the conversation for a new one with the same agent.
+    fn new_conversation(&mut self, cx: &mut Context<Self>) {
+        match (&self.commands, &self.state) {
+            (Some(commands), State::Ready) => {
+                if commands.unbounded_send(ToAgent::NewSession).is_ok() {
+                    // The agent deletes the old conversation: do not offer it again.
+                    acp::sessions::forget(&self.server);
+                    self.entries.clear();
+                    self.state = State::Starting;
+                    self.focus_pending = true;
+                }
+            }
+            (_, State::Closed(_)) => {
+                acp::sessions::forget(&self.server);
+                self.setup.resume = None;
+                self.commands = None;
+                self._pump = None;
+                self.entries.clear();
+                self.start(cx);
+            }
+            _ => {}
+        }
+        cx.notify();
     }
 
     fn at_bottom(&self) -> bool {
@@ -168,12 +246,26 @@ impl ChatView {
 
     fn apply(&mut self, event: FromAgent) {
         match event {
-            FromAgent::Ready { agent } => {
+            FromAgent::Ready {
+                agent,
+                session,
+                resumed,
+            } => {
                 if !agent.is_empty() {
                     self.agent_name = agent.into();
                 }
+                if self.resuming && !resumed {
+                    self.entries.push(Entry::Notice {
+                        text: t!("chat.not_resumed").into(),
+                        error: false,
+                    });
+                }
+                self.resuming = false;
                 self.state = State::Ready;
+                self.saved = resumed;
+                self.session = Some(session);
             }
+            FromAgent::LoginRequired(methods) => self.login = methods,
             FromAgent::Update(update) => self.apply_update(update),
             FromAgent::Permission { request, ask } => self.entries.push(Entry::Permission {
                 request,
@@ -182,6 +274,12 @@ impl ChatView {
             }),
             FromAgent::TurnEnded { stop_reason } => {
                 self.state = State::Ready;
+                if !self.saved
+                    && let Some(session) = &self.session
+                {
+                    acp::sessions::remember(&self.server, self.command.kind, session);
+                    self.saved = true;
+                }
                 let note = match stop_reason.as_str() {
                     "end_turn" | "cancelled" => None,
                     "max_tokens" => Some(t!("chat.stop_max_tokens")),
@@ -227,7 +325,14 @@ impl ChatView {
                     open: false,
                 }),
             },
-            // The window shows the user's own message when it is sent.
+            // A replayed conversation brings the user's messages back; live, the window
+            // shows them itself when they are sent.
+            Update::UserText(chunk) if self.state == State::Loading => {
+                match self.entries.last_mut() {
+                    Some(Entry::User(text)) => *text = format!("{text}{chunk}").into(),
+                    _ => self.entries.push(Entry::User(chunk.into())),
+                }
+            }
             Update::UserText(_) => {}
             Update::ToolCall(call) => self.entries.push(Entry::Tool(ToolEntry {
                 id: call.id,
@@ -291,7 +396,10 @@ impl ChatView {
         if self.state != State::Ready {
             return;
         }
-        let text = self.input.read(cx).value().trim().to_owned();
+        let Some(input) = self.input.clone() else {
+            return;
+        };
+        let text = input.read(cx).value().trim().to_owned();
         if text.is_empty() {
             return;
         }
@@ -306,9 +414,14 @@ impl ChatView {
         }
         self.entries.push(Entry::User(text.into()));
         self.state = State::Working;
-        self.input
-            .update(cx, |input, cx| input.set_value("", window, cx));
+        input.update(cx, |input, cx| input.set_value("", window, cx));
         self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
+    /// A note in the conversation from the window, such as how to sign in by hand.
+    pub fn add_notice(&mut self, text: SharedString, cx: &mut Context<Self>) {
+        self.entries.push(Entry::Notice { text, error: false });
         cx.notify();
     }
 
@@ -574,10 +687,15 @@ fn input_detail(input: &serde_json::Value) -> Option<String> {
 }
 
 impl Render for ChatView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = self.ensure_input(window, cx);
+        if std::mem::take(&mut self.focus_pending) {
+            window.focus(&input.focus_handle(cx), cx);
+        }
         let theme = cx.theme().clone();
         let (status, color) = match &self.state {
             State::Starting => (t!("chat.starting"), theme.warning),
+            State::Loading => (t!("chat.loading"), theme.warning),
             State::Ready => (t!("chat.ready"), theme.success),
             State::Working => (t!("chat.working"), theme.warning),
             State::Closed(Some(_)) => (t!("chat.failed"), theme.danger),
@@ -612,12 +730,21 @@ impl Render for ChatView {
                     ),
             )
             .child(
-                Button::new("chat-restart")
+                Button::new("chat-new")
                     .ghost()
                     .xsmall()
-                    .icon(Icon::empty().path("icons/refresh-cw.svg"))
+                    .icon(Icon::empty().path("icons/plus.svg"))
                     .tooltip(t!("chat.new"))
-                    .on_click(cx.listener(|this, _, _window, cx| this.restart(cx))),
+                    .disabled(!matches!(self.state, State::Ready | State::Closed(_)))
+                    .on_click(cx.listener(|this, _, _window, cx| this.new_conversation(cx))),
+            )
+            .child(
+                Button::new("chat-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::empty().path("icons/close.svg"))
+                    .tooltip(t!("chat.close"))
+                    .on_click(cx.listener(|_, _, _window, cx| cx.emit(ChatEvent::Close))),
             );
 
         let entries: Vec<AnyElement> = self
@@ -628,7 +755,59 @@ impl Render for ChatView {
             .collect();
         let empty = entries.is_empty();
 
+        // Shown whenever the agent asked for a sign-in: at start, or at the first prompt.
+        let login = (!self.login.is_empty()).then(|| {
+            v_flex()
+                .gap_2()
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.warning)
+                .child(
+                    Label::new(SharedString::from(
+                        t!("chat.login_title", agent = self.command.kind.title()).to_string(),
+                    ))
+                    .text_sm(),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(t!("chat.login_hint").to_string())),
+                )
+                .children(self.login.iter().enumerate().map(|(number, method)| {
+                    let program = self.command.program_with(&method.args);
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            h_flex().child(
+                                Button::new(("chat-login", number))
+                                    .outline()
+                                    .xsmall()
+                                    .label(method.name.clone())
+                                    .on_click(cx.listener(move |_, _, _window, cx| {
+                                        cx.emit(ChatEvent::Login(program.clone()))
+                                    })),
+                            ),
+                        )
+                        .children(method.description.clone().map(|description| {
+                            Label::new(description)
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                        }))
+                }))
+                .child(
+                    h_flex().child(
+                        Button::new("chat-login-done")
+                            .primary()
+                            .xsmall()
+                            .label(t!("chat.login_done"))
+                            .on_click(cx.listener(|this, _, _window, cx| this.restart(cx))),
+                    ),
+                )
+        });
         let failure = match &self.state {
+            State::Closed(Some(_)) if login.is_some() => None,
             State::Closed(Some(error)) => Some(
                 v_flex()
                     .gap_2()
@@ -668,7 +847,7 @@ impl Render for ChatView {
                     .px_4()
                     .py_3()
                     .gap_3()
-                    .when(empty && failure.is_none(), |this| {
+                    .when(empty && failure.is_none() && !closed, |this| {
                         this.child(
                             Label::new(t!("chat.intro"))
                                 .text_xs()
@@ -676,6 +855,7 @@ impl Render for ChatView {
                         )
                     })
                     .children(entries)
+                    .children(login)
                     .children(failure),
             );
 
@@ -700,7 +880,7 @@ impl Render for ChatView {
             .gap_2()
             .border_t_1()
             .border_color(theme.border)
-            .child(Textarea::new(&self.input).h(px(72.)).disabled(closed))
+            .child(Textarea::new(&input).h(px(72.)).disabled(closed))
             .child(
                 h_flex()
                     .gap_2()

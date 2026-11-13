@@ -27,6 +27,11 @@ pub(super) struct PendingCall {
     ask: Box<CallAsk>,
 }
 
+pub(super) struct ChatPanel {
+    view: Entity<crate::ui::chat::ChatView>,
+    _events: Subscription,
+}
+
 impl AppView {
     /// Starts the MCP server if it is not running yet.
     fn ensure_mcp(&mut self, cx: &mut Context<Self>) -> bool {
@@ -151,24 +156,24 @@ impl AppView {
         }));
     }
 
+    /// Starts the AI tab's conversation; with `resume`, the server's saved one.
     fn start_chat(
         &mut self,
         index: usize,
         command: crate::acp::AgentCommand,
-        window: &mut Window,
+        resume: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if self.tabs.get(index).is_some_and(|tab| tab.agents.is_none()) {
             self.allow_agents(index, cx);
         }
-        let Some(token) = self
-            .tabs
-            .get(index)
-            .and_then(|tab| tab.agents.as_ref())
-            .map(|access| access.token.clone())
-        else {
+        let Some(tab) = self.tabs.get(index) else {
             return;
         };
+        let Some(token) = tab.agents.as_ref().map(|access| access.token.clone()) else {
+            return;
+        };
+        let server = session_panel::address(&tab.request);
         let Some(address) = self.mcp.as_ref().map(|running| running.address().as_text()) else {
             return;
         };
@@ -194,13 +199,99 @@ impl AppView {
                 ],
             },
             login: command.kind.login_command().into(),
+            resume,
         };
-        let chat = cx.new(|cx| crate::ui::chat::ChatView::new(command, setup, window, cx));
-        chat.update(cx, |chat, cx| chat.focus_input(window, cx));
+        let title = command.kind.title();
+        let view = cx.new(|cx| crate::ui::chat::ChatView::new(command, setup, server, cx));
+        let events = cx.subscribe(
+            &view,
+            move |this, view, event: &crate::ui::chat::ChatEvent, cx| {
+                this.on_chat_event(&view, event, title, cx)
+            },
+        );
         if let Some(tab) = self.tabs.get_mut(index) {
-            tab.chat = Some(chat);
+            tab.chat = Some(ChatPanel {
+                view,
+                _events: events,
+            });
+            tab.chat_restored = true;
         }
         cx.notify();
+    }
+
+    fn on_chat_event(
+        &mut self,
+        view: &Entity<crate::ui::chat::ChatView>,
+        event: &crate::ui::chat::ChatEvent,
+        agent: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            crate::ui::chat::ChatEvent::Close => {
+                if let Some(tab) = self
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.chat.as_ref().is_some_and(|chat| &chat.view == view))
+                {
+                    // Dropping the view ends the agent; the saved session stays.
+                    tab.chat = None;
+                }
+                cx.notify();
+            }
+            crate::ui::chat::ChatEvent::Login(program) => {
+                let title = t!("chat.login_tab", agent = agent).to_string();
+                if let Err(error) = self.open_program_tab(program, title, cx) {
+                    // No local terminal here (Windows): the user runs it by hand.
+                    let line = command_line(program);
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(line.clone()));
+                    let text = t!(
+                        "chat.login_manual",
+                        error = error.to_string(),
+                        command = line
+                    );
+                    view.update(cx, |view, cx| view.add_notice(text.into(), cx));
+                }
+            }
+        }
+    }
+
+    /// A local terminal tab running a program, such as an agent's sign-in.
+    fn open_program_tab(
+        &mut self,
+        program: &crate::ssh::LocalProgram,
+        title: String,
+        cx: &mut Context<Self>,
+    ) -> std::io::Result<()> {
+        let session = crate::ssh::spawn_local_program(DEFAULT_PTY, "xterm-256color", program)?;
+        let view = cx.new(|cx| TerminalView::new(title.clone(), DEFAULT_PTY, session, cx));
+        let events = self.subscribe_terminal(&view, None, title.clone(), cx);
+        self.tabs.push(SessionTab {
+            title: title.into(),
+            default_title: None,
+            vault: None,
+            kind: TabKind::Terminal {
+                view,
+                _events: events,
+                files: None,
+                editor: None,
+                split: Default::default(),
+            },
+            request: connect::Request {
+                alias: String::new(),
+                user: None,
+                port: None,
+            },
+            credentials: connect::Credentials::default(),
+            local: true,
+            agents: None,
+            chat: None,
+            chat_restored: false,
+        });
+        self.active = Some(self.tabs.len() - 1);
+        self.showing_page = false;
+        self.apply_appearance(cx);
+        self.focus_active(cx);
+        Ok(())
     }
 
     /// The AI tab of the session panel: the conversation, or a choice of agent.
@@ -211,7 +302,10 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let Some(chat) = &tab.chat {
-            return div().size_full().child(chat.clone()).into_any_element();
+            return div()
+                .size_full()
+                .child(chat.view.clone())
+                .into_any_element();
         }
         let theme = cx.theme().clone();
         let mut panel = v_flex()
@@ -238,59 +332,98 @@ impl AppView {
                 .text_xs()
                 .text_color(theme.muted_foreground),
         );
-        match &self.agent_kinds {
-            None => {
-                let this = cx.entity().downgrade();
-                cx.defer(move |cx| {
-                    let _ = this.update(cx, |this, cx| this.scan_agents(cx));
-                });
-                panel = panel.child(
+        let Some(kinds) = &self.agent_kinds else {
+            let this = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = this.update(cx, |this, cx| this.scan_agents(cx));
+            });
+            return panel
+                .child(
                     Label::new(t!("chat.looking"))
                         .text_xs()
                         .text_color(theme.muted_foreground),
-                );
+                )
+                .into_any_element();
+        };
+        let found = |kind: crate::acp::AgentKind| {
+            kinds
+                .iter()
+                .find(|(each, _)| *each == kind)
+                .and_then(|(_, found)| found.as_ref().ok())
+                .cloned()
+        };
+
+        // The server's saved conversation: brought back by itself the first time the
+        // tab shows it, on request after that.
+        let server = session_panel::address(&tab.request);
+        let saved = crate::acp::sessions::get(&server)
+            .and_then(|(kind, session)| Some((found(kind)?, session)));
+        // Another tab of the same server may have the conversation open already.
+        let open_elsewhere = self
+            .tabs
+            .iter()
+            .any(|other| other.chat.is_some() && session_panel::address(&other.request) == server);
+        if let Some((command, session)) = &saved {
+            if !tab.chat_restored && !open_elsewhere {
+                let (command, session) = (command.clone(), session.clone());
+                let this = cx.entity().downgrade();
+                cx.defer(move |cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        this.start_chat(index, command, Some(session), cx)
+                    });
+                });
             }
-            Some(kinds) => {
-                for (kind, found) in kinds {
-                    let row =
-                        match found {
-                            Ok(command) => {
-                                let command = command.clone();
-                                v_flex().gap_1().child(
-                                    Button::new(SharedString::from(format!(
-                                        "chat-start-{}",
-                                        kind.title()
-                                    )))
-                                    .outline()
-                                    .small()
-                                    .label(t!("chat.start_with", agent = kind.title()))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.start_chat(index, command.clone(), window, cx)
-                                    })),
-                                )
-                            }
-                            Err(missing) => v_flex().gap_1().child(
-                                Label::new(SharedString::from(
-                                    t!(
-                                        "chat.missing",
-                                        agent = kind.title(),
-                                        program = missing.install
-                                    )
-                                    .to_string(),
-                                ))
-                                .text_xs()
-                                .text_color(theme.muted_foreground),
-                            ),
-                        };
-                    panel = panel.child(row);
-                }
-                panel = panel.child(
-                    Label::new(t!("chat.sign_in"))
-                        .text_xs()
-                        .text_color(theme.muted_foreground),
-                );
-            }
+            let (command, session) = (command.clone(), session.clone());
+            panel = panel.child(
+                Button::new("chat-continue")
+                    .primary()
+                    .small()
+                    .label(t!("chat.continue", agent = command.kind.title()))
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.start_chat(index, command.clone(), Some(session.clone()), cx)
+                    })),
+            );
         }
+
+        for (kind, found) in kinds {
+            let row = match found {
+                Ok(command) => {
+                    let command = command.clone();
+                    let label = if saved.is_some() {
+                        t!("chat.start_new_with", agent = kind.title())
+                    } else {
+                        t!("chat.start_with", agent = kind.title())
+                    };
+                    v_flex().gap_1().child(
+                        Button::new(SharedString::from(format!("chat-start-{}", kind.id())))
+                            .outline()
+                            .small()
+                            .label(label)
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.start_chat(index, command.clone(), None, cx)
+                            })),
+                    )
+                }
+                Err(missing) => v_flex().gap_1().child(
+                    Label::new(SharedString::from(
+                        t!(
+                            "chat.missing",
+                            agent = kind.title(),
+                            program = missing.install
+                        )
+                        .to_string(),
+                    ))
+                    .text_xs()
+                    .text_color(theme.muted_foreground),
+                ),
+            };
+            panel = panel.child(row);
+        }
+        panel = panel.child(
+            Label::new(t!("chat.sign_in"))
+                .text_xs()
+                .text_color(theme.muted_foreground),
+        );
         panel
             .children(
                 self.mcp_error
@@ -700,6 +833,21 @@ impl AppView {
                 .into_any_element(),
         )
     }
+}
+
+/// A program as one line for a POSIX shell, for running it by hand.
+fn command_line(program: &crate::ssh::LocalProgram) -> String {
+    use crate::ssh::remote::quote;
+
+    let mut words: Vec<String> = program
+        .env
+        .iter()
+        .filter(|(name, _)| name != "PATH")
+        .map(|(name, value)| format!("{name}={}", quote(&value.to_string_lossy())))
+        .collect();
+    words.push(quote(&program.program.to_string_lossy()));
+    words.extend(program.args.iter().map(|arg| quote(arg)));
+    words.join(" ")
 }
 
 /// The first lines of a text for the dialog, and how many lines were left out.

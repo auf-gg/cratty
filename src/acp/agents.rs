@@ -16,6 +16,18 @@ pub enum AgentKind {
 impl AgentKind {
     pub const ALL: [AgentKind; 2] = [AgentKind::Claude, AgentKind::OpenCode];
 
+    /// How the kind is written down in `sessions.json`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::OpenCode => "opencode",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.id() == id)
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Self::Claude => "Claude Code",
@@ -40,6 +52,22 @@ pub struct AgentCommand {
     pub args: Vec<String>,
     /// The search path the agent gets, with the login shell's entries.
     pub path: OsString,
+    /// Where the agent keeps its sessions: Cratty's own folder, so they stay out of
+    /// the history of the agent the user runs by hand.
+    pub env: Vec<(String, OsString)>,
+}
+
+impl AgentCommand {
+    /// The same agent started with other arguments, such as its sign-in, for a terminal.
+    pub fn program_with(&self, args: &[String]) -> crate::ssh::LocalProgram {
+        let mut env = self.env.clone();
+        env.push(("PATH".into(), self.path.clone()));
+        crate::ssh::LocalProgram {
+            program: self.program.clone(),
+            args: self.args.iter().chain(args).cloned().collect(),
+            env,
+        }
+    }
 }
 
 /// Why an agent cannot start: the program the user should install.
@@ -50,11 +78,20 @@ pub struct Missing {
 
 pub fn find(kind: AgentKind) -> Result<AgentCommand, Missing> {
     let path = search_path().clone();
+    let mut env = agent_env(kind);
+    // The adapter's own copy of Claude Code comes as an optional npm package, which an
+    // npx install may leave out; the user's installed `claude` is there and up to date.
+    if kind == AgentKind::Claude
+        && let Some(claude) = which("claude", &path)
+    {
+        env.push(("CLAUDE_CODE_EXECUTABLE".into(), claude.into_os_string()));
+    }
     let command = |program: PathBuf, args: &[&str]| AgentCommand {
         kind,
         program,
         args: args.iter().map(|arg| (*arg).to_owned()).collect(),
         path: path.clone(),
+        env: env.clone(),
     };
     match kind {
         // The ACP adapter for Claude Code: installed on its own, or through npx.
@@ -75,11 +112,57 @@ pub fn find(kind: AgentKind) -> Result<AgentCommand, Missing> {
     }
 }
 
+/// Cratty's folder for agents: their working folder, their sign-in and their
+/// sessions. Sessions hold what commands printed on servers, so only the user reads it.
+pub fn agents_dir() -> Result<PathBuf> {
+    let base = crate::store::VaultStore::default_base().context("no data folder")?;
+    let dir = base.join("agents");
+    std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
+    restrict(&dir);
+    Ok(dir)
+}
+
+#[cfg(unix)]
+fn restrict(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+fn restrict(_dir: &Path) {}
+
+/// Claude Code keeps everything, its sign-in included, in its config folder; OpenCode
+/// keeps sessions in its database and its sign-in apart, so that sign-in is shared.
+fn agent_env(kind: AgentKind) -> Vec<(String, OsString)> {
+    let Ok(dir) = agents_dir() else {
+        return Vec::new();
+    };
+    match kind {
+        AgentKind::Claude => vec![(
+            "CLAUDE_CONFIG_DIR".into(),
+            dir.join("claude").into_os_string(),
+        )],
+        AgentKind::OpenCode => vec![(
+            "OPENCODE_DB".into(),
+            dir.join("opencode.db").into_os_string(),
+        )],
+    }
+}
+
+/// Variables that would give the agent another configuration than Cratty's, taken out
+/// of the environment it inherits. OpenCode's inline configuration outranks the working
+/// folder's, so it could turn the agent's own tools back on.
+pub fn foreign_config(kind: AgentKind) -> &'static [&'static str] {
+    match kind {
+        AgentKind::Claude => &[],
+        AgentKind::OpenCode => &["OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG"],
+    }
+}
+
 /// The folder agents run in. It is empty but for their configuration: their own
 /// tools, which would act on this computer, are off, and Cratty's MCP tools are on.
 pub fn prepare_workdir() -> Result<PathBuf> {
-    let base = crate::store::VaultStore::default_base().context("no data folder")?;
-    let dir = base.join("agent");
+    let dir = agents_dir()?.join("workdir");
     std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
     for (name, text) in [
         ("AGENTS.md", INSTRUCTIONS),

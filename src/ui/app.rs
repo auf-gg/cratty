@@ -111,7 +111,10 @@ struct SessionTab {
     /// AI agents may use this tab's connection (see `crate::mcp`). Kept on reconnect.
     agents: Option<ai_ui::AgentAccess>,
     /// The conversation of the AI tab. Kept on reconnect, like the access it uses.
-    chat: Option<Entity<crate::ui::chat::ChatView>>,
+    chat: Option<ai_ui::ChatPanel>,
+    /// The server's saved conversation was brought back once: closing it does not
+    /// bring it back again.
+    chat_restored: bool,
 }
 
 enum TabKind {
@@ -1115,6 +1118,7 @@ impl AppView {
             local: false,
             agents: None,
             chat: None,
+            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1173,6 +1177,7 @@ impl AppView {
             local: false,
             agents: None,
             chat: None,
+            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1233,6 +1238,7 @@ impl AppView {
             local: true,
             agents: None,
             chat: None,
+            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1459,6 +1465,7 @@ impl AppView {
             local: false,
             agents: None,
             chat: None,
+            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;

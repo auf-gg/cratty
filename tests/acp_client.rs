@@ -11,7 +11,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHal
 const DEADLINE: Duration = Duration::from_secs(10);
 
 fn setup() -> Setup {
+    setup_resuming(None)
+}
+
+fn setup_resuming(resume: Option<&str>) -> Setup {
     Setup {
+        resume: resume.map(str::to_owned),
         cwd: "/tmp/cratty-agent".into(),
         mcp: McpServer {
             name: "cratty".into(),
@@ -75,6 +80,14 @@ impl Agent {
     }
 }
 
+fn ready(session: &str, resumed: bool) -> FromAgent {
+    FromAgent::Ready {
+        agent: "Fake Agent 1.0".into(),
+        session: session.into(),
+        resumed,
+    }
+}
+
 struct Client {
     commands: mpsc::UnboundedSender<ToAgent>,
     events: mpsc::Receiver<FromAgent>,
@@ -91,13 +104,17 @@ impl Client {
 }
 
 fn connect() -> (Client, Agent) {
+    connect_with(setup())
+}
+
+fn connect_with(setup: Setup) -> (Client, Agent) {
     let (client_side, agent_side) = tokio::io::duplex(64 * 1024);
     let (client_read, client_write) = tokio::io::split(client_side);
     let (agent_read, agent_write) = tokio::io::split(agent_side);
     let (commands, commands_rx) = mpsc::unbounded();
     let (events_tx, events) = mpsc::channel(64);
     let done = tokio::spawn(async move {
-        acp::run(client_read, client_write, &setup(), commands_rx, events_tx).await
+        acp::run(client_read, client_write, &setup, commands_rx, events_tx).await
     });
     (
         Client {
@@ -116,12 +133,7 @@ fn connect() -> (Client, Agent) {
 async fn prompt_turn_streams_text_tools_and_permission() {
     let (mut client, mut agent) = connect();
     agent.start().await;
-    assert_eq!(
-        client.next().await,
-        FromAgent::Ready {
-            agent: "Fake Agent 1.0".into()
-        }
-    );
+    assert_eq!(client.next().await, ready("s1", false));
 
     client
         .commands
@@ -278,4 +290,118 @@ async fn agent_exit_is_an_error() {
     drop(agent);
     let error = client.done.await.unwrap().unwrap_err().to_string();
     assert!(error.contains("exited"), "{error}");
+}
+
+const INIT_LOADING: &str = r#"{"protocolVersion": 1, "agentInfo": {"title": "Fake Agent", "name": "fake", "version": "1.0"},
+    "agentCapabilities": {"loadSession": true, "sessionCapabilities": {"delete": {}}},
+    "authMethods": [{"id": "login", "name": "Claude Subscription", "type": "terminal", "args": ["--cli", "auth", "login"]}]}"#;
+
+#[tokio::test]
+async fn saved_session_comes_back_with_its_conversation() {
+    let (mut client, mut agent) = connect_with(setup_resuming(Some("old-1")));
+    let init = agent.receive().await;
+    agent
+        .answer(&init, serde_json::from_str(INIT_LOADING).unwrap())
+        .await;
+
+    let load = agent.receive().await;
+    assert_eq!(load["method"], "session/load");
+    assert_eq!(load["params"]["sessionId"], "old-1");
+    assert_eq!(load["params"]["mcpServers"][0]["name"], "cratty");
+    assert_eq!(
+        load["params"]["_meta"]["claudeCode"]["options"]["tools"],
+        json!([])
+    );
+    agent
+        .send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "old-1", "update":
+            {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "disk?"}}}}))
+        .await;
+    agent
+        .send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "old-1", "update":
+            {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "42% used"}}}}))
+        .await;
+    agent.answer(&load, json!({})).await;
+
+    assert_eq!(
+        client.next().await,
+        FromAgent::Update(Update::UserText("disk?".into()))
+    );
+    assert_eq!(
+        client.next().await,
+        FromAgent::Update(Update::AgentText("42% used".into()))
+    );
+    assert_eq!(client.next().await, ready("old-1", true));
+
+    // Prompts go to the loaded session.
+    client
+        .commands
+        .unbounded_send(ToAgent::Prompt("and now?".into()))
+        .unwrap();
+    let prompt = agent.receive().await;
+    assert_eq!(prompt["params"]["sessionId"], "old-1");
+}
+
+#[tokio::test]
+async fn lost_session_gives_way_to_a_new_one() {
+    let (mut client, mut agent) = connect_with(setup_resuming(Some("gone")));
+    let init = agent.receive().await;
+    agent
+        .answer(&init, serde_json::from_str(INIT_LOADING).unwrap())
+        .await;
+    let load = agent.receive().await;
+    agent
+        .send(json!({"jsonrpc": "2.0", "id": load["id"], "error": {"code": -32002, "message": "Resource not found"}}))
+        .await;
+    let new = agent.receive().await;
+    assert_eq!(new["method"], "session/new");
+    agent.answer(&new, json!({"sessionId": "fresh"})).await;
+    assert_eq!(client.next().await, ready("fresh", false));
+}
+
+#[tokio::test]
+async fn agent_without_loading_starts_anew() {
+    let (mut client, mut agent) = connect_with(setup_resuming(Some("old-1")));
+    agent.start().await;
+    assert_eq!(client.next().await, ready("s1", false));
+}
+
+#[tokio::test]
+async fn new_conversation_deletes_the_old_one() {
+    let (mut client, mut agent) = connect();
+    let init = agent.receive().await;
+    agent
+        .answer(&init, serde_json::from_str(INIT_LOADING).unwrap())
+        .await;
+    let new = agent.receive().await;
+    agent.answer(&new, json!({"sessionId": "first"})).await;
+    assert_eq!(client.next().await, ready("first", false));
+
+    client.commands.unbounded_send(ToAgent::NewSession).unwrap();
+    let delete = agent.receive().await;
+    assert_eq!(delete["method"], "session/delete");
+    assert_eq!(delete["params"]["sessionId"], "first");
+    let second = agent.receive().await;
+    assert_eq!(second["method"], "session/new");
+    agent.answer(&delete, json!({})).await;
+    agent.answer(&second, json!({"sessionId": "second"})).await;
+    assert_eq!(client.next().await, ready("second", false));
+}
+
+#[tokio::test]
+async fn sign_in_is_offered_the_agent_s_way() {
+    let (mut client, mut agent) = connect();
+    let init = agent.receive().await;
+    agent
+        .answer(&init, serde_json::from_str(INIT_LOADING).unwrap())
+        .await;
+    let new = agent.receive().await;
+    agent
+        .send(json!({"jsonrpc": "2.0", "id": new["id"], "error": {"code": -32000, "message": "Authentication required"}}))
+        .await;
+    let FromAgent::LoginRequired(methods) = client.next().await else {
+        panic!("expected a sign-in request");
+    };
+    assert_eq!(methods[0].name, "Claude Subscription");
+    assert_eq!(methods[0].args, vec!["--cli", "auth", "login"]);
+    assert!(client.done.await.unwrap().is_err());
 }

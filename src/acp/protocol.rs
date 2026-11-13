@@ -62,6 +62,23 @@ impl PermissionOption {
     }
 }
 
+/// A way to sign in: the agent started with these extra arguments, in a terminal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginMethod {
+    pub name: String,
+    pub description: Option<String>,
+    pub args: Vec<String>,
+}
+
+/// What the agent can do beyond the baseline.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentCaps {
+    /// `session/load`: a saved session comes back with its conversation.
+    pub load: bool,
+    /// `session/delete`.
+    pub delete: bool,
+}
+
 /// The agent asks whether a tool call of its own may run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PermissionAsk {
@@ -75,9 +92,11 @@ pub fn initialize() -> Value {
         "protocolVersion": PROTOCOL_VERSION,
         // No file system and no terminal: the agent works on the server through
         // Cratty's MCP tools, never on this computer through the client.
+        // Sign-in runs the agent in a terminal: Cratty opens a local terminal tab for it.
         "clientCapabilities": {
             "fs": { "readTextFile": false, "writeTextFile": false },
             "terminal": false,
+            "auth": { "terminal": true },
         },
         "clientInfo": {
             "name": "cratty",
@@ -85,6 +104,62 @@ pub fn initialize() -> Value {
             "version": env!("CARGO_PKG_VERSION"),
         },
     })
+}
+
+pub fn agent_caps(initialize: &Value) -> AgentCaps {
+    let caps = initialize.get("agentCapabilities");
+    AgentCaps {
+        load: caps
+            .and_then(|caps| caps.get("loadSession"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        delete: caps
+            .and_then(|caps| caps.get("sessionCapabilities"))
+            .and_then(|caps| caps.get("delete"))
+            .is_some_and(|delete| !delete.is_null()),
+    }
+}
+
+/// The terminal sign-in methods the agent offers in its `initialize` answer.
+pub fn login_methods(initialize: &Value) -> Vec<LoginMethod> {
+    initialize
+        .get("authMethods")
+        .and_then(Value::as_array)
+        .map(|methods| {
+            methods
+                .iter()
+                .filter(|method| method.get("type").and_then(Value::as_str) == Some("terminal"))
+                .filter_map(|method| {
+                    Some(LoginMethod {
+                        name: string(method, "name")?,
+                        description: string(method, "description"),
+                        args: method
+                            .get("args")
+                            .and_then(Value::as_array)
+                            .map(|args| {
+                                args.iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `session/load` takes the same as `session/new`, plus the session; the agent asks for
+/// its options again on load.
+pub fn load_session(session: &str, cwd: &str, mcp: &McpServer) -> Value {
+    let mut params = new_session(cwd, mcp);
+    params["sessionId"] = json!(session);
+    params
+}
+
+pub fn delete_session(session: &str) -> Value {
+    json!({ "sessionId": session })
 }
 
 pub fn new_session(cwd: &str, mcp: &McpServer) -> Value {
@@ -343,6 +418,45 @@ mod tests {
         assert_eq!(options["tools"], json!([]));
         assert_eq!(options["allowedTools"], json!(["mcp__cratty"]));
         assert_eq!(initialize()["clientCapabilities"]["terminal"], false);
+        assert_eq!(initialize()["clientCapabilities"]["auth"]["terminal"], true);
+
+        let load = load_session("ses_1", "/tmp/w", &mcp);
+        assert_eq!(load["sessionId"], "ses_1");
+        assert_eq!(load["_meta"], params["_meta"]);
+    }
+
+    #[test]
+    fn capabilities_and_sign_in_methods_are_read() {
+        let answer = json!({
+            "protocolVersion": 1,
+            "agentCapabilities": {"loadSession": true, "sessionCapabilities": {"delete": {}, "close": {}}},
+            "authMethods": [
+                {"id": "claude-ai-login", "name": "Claude Subscription", "type": "terminal",
+                 "args": ["--cli", "auth", "login", "--claudeai"], "description": "Use Claude subscription"},
+                {"id": "agent", "name": "Agent login"},
+            ],
+        });
+        assert_eq!(
+            agent_caps(&answer),
+            AgentCaps {
+                load: true,
+                delete: true
+            }
+        );
+        assert_eq!(agent_caps(&json!({})), AgentCaps::default());
+        assert_eq!(
+            login_methods(&answer),
+            vec![LoginMethod {
+                name: "Claude Subscription".into(),
+                description: Some("Use Claude subscription".into()),
+                args: vec![
+                    "--cli".into(),
+                    "auth".into(),
+                    "login".into(),
+                    "--claudeai".into()
+                ],
+            }]
+        );
     }
 
     #[test]

@@ -19,13 +19,16 @@ impl Address {
 }
 
 #[cfg(windows)]
-pub fn default_address() -> Result<Address> {
+fn pipe_user() -> String {
     let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".to_owned());
-    let user: String = user
-        .chars()
+    user.chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    Ok(Address::Pipe(format!(r"\\.\pipe\cratty-agent-{user}")))
+        .collect()
+}
+
+#[cfg(windows)]
+pub fn default_address() -> Result<Address> {
+    Ok(Address::Pipe(format!(r"\\.\pipe\cratty-agent-{}", pipe_user())))
 }
 
 #[cfg(unix)]
@@ -36,6 +39,22 @@ pub fn default_address() -> Result<Address> {
             .context(t!("agent.no_socket_dir"))?,
     };
     Ok(Address::Socket(dir.join("agent.sock")))
+}
+
+/// Where the first running copy of the app waits for the next ones (see `crate::instance`).
+#[cfg(windows)]
+pub fn instance_address() -> Result<Address> {
+    Ok(Address::Pipe(format!(r"\\.\pipe\cratty-instance-{}", pipe_user())))
+}
+
+#[cfg(unix)]
+pub fn instance_address() -> Result<Address> {
+    let dir = match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(runtime) => PathBuf::from(runtime).join("cratty"),
+        None => crate::store::VaultStore::default_base()
+            .context(t!("agent.no_socket_dir"))?,
+    };
+    Ok(Address::Socket(dir.join("instance.sock")))
 }
 
 #[cfg(unix)]

@@ -551,13 +551,20 @@ impl AppView {
             this.unlock_with_os_key_for(&id, false, cx);
         }
 
-        if let Some(raw) = std::env::args().nth(1) {
-            this.open(&raw, &connect::Credentials::default(), None, cx);
-        }
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        this.open_from_command_line(&args, cx);
 
         this.start_update_checks(cx);
 
         this
+    }
+
+    /// `cratty user@host:2222` connects right away: at startup, or when a later copy
+    /// hands its command line over to this one.
+    fn open_from_command_line(&mut self, args: &[String], cx: &mut Context<Self>) {
+        if let Some(raw) = args.first() {
+            self.open(raw, &connect::Credentials::default(), None, cx);
+        }
     }
 
     fn read_form(
@@ -2246,7 +2253,15 @@ impl Render for AppView {
     }
 }
 
-pub fn open_main_window(cx: &mut App) -> Result<()> {
+/// `primary` is set when this copy owns the single-instance address: later copies
+/// hand their command line to it.
+pub fn open_main_window(
+    primary: Option<(
+        crate::instance::Primary,
+        futures::channel::mpsc::UnboundedReceiver<crate::instance::Request>,
+    )>,
+    cx: &mut App,
+) -> Result<()> {
     crate::ui::font::MonoFont::init(cx);
     gpui_kit::init(cx);
     crate::ui::theme::init(cx);
@@ -2286,7 +2301,7 @@ pub fn open_main_window(cx: &mut App) -> Result<()> {
     .detach();
 
     let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
-    gpui_kit::open_window(
+    let (handle, view) = gpui_kit::open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(640.), px(400.))),
@@ -2303,6 +2318,24 @@ pub fn open_main_window(cx: &mut App) -> Result<()> {
         cx,
         |window, cx| cx.new(|cx| AppView::new(window, cx)),
     )?;
+
+    if let Some((primary, mut requests)) = primary {
+        cx.spawn(async move |cx| {
+            // Listening stops together with this task, when the app quits.
+            let _primary = primary;
+            while let Some(args) = requests.next().await {
+                let shown = handle.update(cx, |_, window, cx| {
+                    window.activate_window();
+                    cx.activate(true);
+                    view.update(cx, |view, cx| view.open_from_command_line(&args, cx));
+                });
+                if shown.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
 
     Ok(())
 }

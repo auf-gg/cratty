@@ -74,6 +74,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_WindowsProgramming",
     "Win32_System_SystemInformation",
     "Wdk_System_SystemServices",
+    # AllowSetForegroundWindow — a second copy lets the first one bring its window forward.
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.dev]

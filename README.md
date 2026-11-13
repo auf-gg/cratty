@@ -84,6 +84,8 @@ cratty                  # open the window
 cratty user@host:2222   # open the window and connect immediately
 ```
 
+Only one copy runs at a time: starting Cratty again brings the open window forward and opens the address from the command line there.
+
 | Environment variable | Purpose |
 | --- | --- |
 | `CRATTY_PASSWORD` | Password used to connect without a prompt (for automation and tests). |

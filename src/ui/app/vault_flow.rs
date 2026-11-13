@@ -430,15 +430,12 @@ impl AppView {
                     .child(Input::new(&self.vault_form.repeat))
                     .when(import_count > 0, |this| {
                         this.child(
-                            Button::new("vault-import")
-                                .ghost()
-                                .xsmall()
-                                .selected(self.vault_form.import)
-                                .label(SharedString::from(
-                                    t!("vaults.import_entries", count = import_count).to_string(),
-                                ))
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.vault_form.import = !this.vault_form.import;
+                            Checkbox::new("vault-import")
+                                .small()
+                                .checked(self.vault_form.import)
+                                .label(t!("vaults.import_entries", count = import_count).to_string())
+                                .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                    this.vault_form.import = *checked;
                                     cx.notify();
                                 })),
                         )
@@ -486,41 +483,32 @@ impl AppView {
                             .text_color(warning),
                     )
                     .child({
-                        let groups: Vec<&str> = code.split('-').collect();
-                        let split = groups.len().min(4);
-                        let top = groups[..split].join("-");
-                        let bottom = groups[split..].join("-");
-
-                        v_flex()
+                        // Numbered, three to a row: the order matters when writing them down.
+                        let mono = mono_family(cx);
+                        h_flex()
                             .w_full()
+                            .flex_wrap()
                             .p_2()
-                            .gap_1()
                             .rounded_md()
                             .border_1()
                             .border_color(border)
-                            .child(
-                                Label::new(SharedString::from(top))
-                                    .text_sm()
-                                    .font_family(mono_family(cx)),
-                            )
-                            .when(!bottom.is_empty(), |this| {
-                                this.child(
-                                    Label::new(SharedString::from(bottom))
+                            .children(code.split_whitespace().enumerate().map(|(ix, word)| {
+                                div().w_1_3().py_0p5().child(
+                                    Label::new(SharedString::from(format!("{:>2}. {word}", ix + 1)))
                                         .text_sm()
-                                        .font_family(mono_family(cx)),
+                                        .font_family(mono.clone()),
                                 )
-                            })
+                            }))
                     })
                     .child(
-                        Button::new("vault-code-confirm")
-                            .ghost()
-                            .xsmall()
-                            .selected(confirmed)
+                        Checkbox::new("vault-code-confirm")
+                            .small()
+                            .checked(confirmed)
                             .label(t!("vaults.recovery_saved").to_string())
                             .tooltip(t!("vaults.recovery_saved_tooltip").to_string())
-                            .on_click(cx.listener(|this, _, _window, cx| {
+                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
                                 if let Some(Stage::Recovery { confirmed, .. }) = &mut this.stage {
-                                    *confirmed = !*confirmed;
+                                    *confirmed = *checked;
                                 }
                                 cx.notify();
                             })),
@@ -559,7 +547,7 @@ impl AppView {
                 .child(Input::new(&self.vault_form.password))
                 .when(!self.vault().has_os_key(), |this| {
                     this.child(
-                        gpui_kit::component::checkbox::Checkbox::new("vault-remember")
+                        Checkbox::new("vault-remember")
                             .small()
                             .label(t!("vaults.remember").to_string())
                             .checked(self.vault_form.remember)

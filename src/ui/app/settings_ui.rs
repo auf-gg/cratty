@@ -131,20 +131,19 @@ impl AppView {
                         cx,
                     ))
                     .child(
-                        Button::new("opacity-blur")
-                            .ghost()
+                        Checkbox::new("opacity-blur")
                             .small()
-                            .selected(self.settings.blur)
-                            .label(t!("settings.opacity.blur"))
+                            .checked(self.settings.blur)
+                            .label(t!("settings.opacity.blur").to_string())
                             .tooltip(if crate::platform::blur_supported() {
                                 t!("settings.opacity.blur_tooltip")
                             } else {
                                 t!("settings.opacity.blur_unavailable")
                             })
                             .disabled(solid || !crate::platform::blur_supported())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_blur(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _: &bool, window, cx| {
+                                this.toggle_blur(window, cx)
+                            })),
                     ),
             )
             .child(

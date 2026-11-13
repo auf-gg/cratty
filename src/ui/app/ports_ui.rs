@@ -1,6 +1,7 @@
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputState},
     label::Label,
@@ -111,15 +112,14 @@ impl AppView {
                                 .flex_grow_1(),
                             )
                             .child(
-                                Button::new(SharedString::from(format!("forward-auto-{index}")))
-                                    .ghost()
+                                Checkbox::new(SharedString::from(format!("forward-auto-{index}")))
                                     .xsmall()
-                                    .selected(rule.enabled)
-                                    .label(t!("ports.autostart"))
+                                    .checked(rule.enabled)
+                                    .label(t!("ports.autostart").to_string())
                                     .tooltip(t!("ports.autostart_tooltip"))
-                                    .on_click(cx.listener(move |this, _, _window, cx| {
+                                    .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
                                         if let Some(rule) = this.form.forwards.get_mut(index) {
-                                            rule.enabled = !rule.enabled;
+                                            rule.enabled = *checked;
                                         }
                                         cx.notify();
                                     })),

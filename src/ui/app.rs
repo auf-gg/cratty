@@ -1,6 +1,7 @@
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
@@ -1973,29 +1974,26 @@ impl AppView {
             v_flex()
                 .gap_2()
                 .child(
-                    h_flex()
-                        .flex_wrap()
+                    v_flex()
                         .gap_1()
                         .child(
-                            Button::new("record-device-only")
-                                .ghost()
+                            Checkbox::new("record-device-only")
                                 .small()
-                                .selected(device_only)
-                                .label(t!("app.dont_sync"))
+                                .checked(device_only)
+                                .label(t!("app.dont_sync").to_string())
                                 .tooltip(t!("app.dont_sync_tip"))
-                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                .on_click(cx.listener(move |this, _: &bool, _window, cx| {
                                     let target = for_bind.clone();
                                     this.toggle_device_only(&v_bind, &target, cx);
                                 })),
                         )
                         .child(
-                            Button::new("record-forward-agent")
-                                .ghost()
+                            Checkbox::new("record-forward-agent")
                                 .small()
-                                .selected(forward_agent)
-                                .label(t!("app.forward_agent"))
+                                .checked(forward_agent)
+                                .label(t!("app.forward_agent").to_string())
                                 .tooltip(t!("app.forward_agent_tip"))
-                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                .on_click(cx.listener(move |this, _: &bool, _window, cx| {
                                     let target = for_forward.clone();
                                     this.toggle_forward_agent(&v_forward, &target, cx);
                                 })),

@@ -252,15 +252,46 @@ pub fn spawn_ssh(config: SshConfig) -> std::io::Result<SshSession> {
 /// Local terminal: the same event protocol as an SSH session, only
 /// with a PTY on this machine instead of the network. No vault is needed: a local tab
 /// holds no secrets, so it is available on the lock screen too.
+/// A program for a local terminal instead of the user's shell, such as an AI agent's
+/// sign-in, with variables added to this process's environment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalProgram {
+    /// Absolute path: it is not looked up on PATH.
+    pub program: std::path::PathBuf,
+    pub args: Vec<String>,
+    pub env: Vec<(String, std::ffi::OsString)>,
+}
+
 #[cfg(unix)]
 pub fn spawn_local(size: PtySize, term: &str) -> std::io::Result<SshSession> {
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
+    let shell = LocalProgram {
+        program: shell.into(),
+        args: Vec::new(),
+        env: Vec::new(),
+    };
+    spawn_local_program(size, term, &shell)
+}
+
+#[cfg(unix)]
+pub fn spawn_local_program(
+    size: PtySize,
+    term: &str,
+    program: &LocalProgram,
+) -> std::io::Result<SshSession> {
     use std::os::fd::FromRawFd;
 
+    let (argv, envp) = exec_strings(program, term)?;
     let master = open_pty()?;
     set_winsize(master, &size);
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let child = unsafe { spawn_pty_child(master, &shell, term)? };
+    let child = match unsafe { spawn_pty_child(master, &argv, &envp) } {
+        Ok(child) => child,
+        Err(error) => {
+            unsafe { libc::close(master) };
+            return Err(error);
+        }
+    };
 
     // Non-blocking mode is required by the tokio reactor (AsyncFd).
     unsafe {
@@ -482,16 +513,64 @@ fn set_winsize(fd: libc::c_int, size: &PtySize) {
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) };
 }
 
+/// The program's arguments and its whole environment as C strings, made before
+/// `fork`: the child must not allocate.
+#[cfg(unix)]
+fn exec_strings(
+    program: &LocalProgram,
+    term: &str,
+) -> std::io::Result<(Vec<std::ffi::CString>, Vec<std::ffi::CString>)> {
+    use std::ffi::{CString, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+
+    let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
+    let mut argv = vec![CString::new(program.program.as_os_str().as_bytes()).map_err(|_| invalid())?];
+    for arg in &program.args {
+        argv.push(CString::new(arg.as_bytes()).map_err(|_| invalid())?);
+    }
+
+    let mut set: Vec<(&OsStr, &OsStr)> = vec![(OsStr::new("TERM"), OsStr::new(term))];
+    for (name, value) in &program.env {
+        set.push((OsStr::new(name), value.as_os_str()));
+    }
+    let inherited = std::env::vars_os().collect::<Vec<_>>();
+    let mut envp = Vec::new();
+    for (name, value) in inherited
+        .iter()
+        .map(|(name, value)| (name.as_os_str(), value.as_os_str()))
+        .filter(|(name, _)| !set.iter().any(|(own, _)| own == name))
+        .chain(set.iter().copied())
+    {
+        let mut entry = name.as_bytes().to_vec();
+        entry.push(b'=');
+        entry.extend_from_slice(value.as_bytes());
+        // A variable with a NUL byte cannot be passed on; leave it out.
+        if let Ok(entry) = CString::new(entry) {
+            envp.push(entry);
+        }
+    }
+    Ok((argv, envp))
+}
+
 /// Forks a child process with `slave` as the controlling terminal and
-/// runs an interactive shell in it. Called once, before any
-/// async tasks, so there are no races on the fd.
+/// runs the program in it. Called once, before any async tasks, so there
+/// are no races on the fd.
 #[cfg(unix)]
 unsafe fn spawn_pty_child(
     master: libc::c_int,
-    shell: &str,
-    term: &str,
+    argv: &[std::ffi::CString],
+    envp: &[std::ffi::CString],
 ) -> std::io::Result<libc::pid_t> {
-    use std::ffi::CString;
+    let argv_ptrs: Vec<*const libc::c_char> = argv
+        .iter()
+        .map(|arg| arg.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+    let envp_ptrs: Vec<*const libc::c_char> = envp
+        .iter()
+        .map(|var| var.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
 
     let slave = unsafe { open_pty_slave(master)? };
     let pid = unsafe { libc::fork() };
@@ -511,14 +590,11 @@ unsafe fn spawn_pty_child(
                 libc::close(slave);
             }
             libc::close(master);
-            // Rust sets SIGPIPE to SIG_IGN — the shell needs the default.
+            // Rust sets SIGPIPE to SIG_IGN — the program needs the default.
             libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-            std::env::set_var("TERM", term);
+            libc::execve(argv_ptrs[0], argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
+            libc::_exit(127);
         }
-        let shell = CString::new(shell).unwrap_or_else(|_| CString::new("/bin/sh").unwrap());
-        let argv = [shell.as_ptr(), std::ptr::null()];
-        unsafe { libc::execv(shell.as_ptr(), argv.as_ptr()) };
-        unsafe { libc::_exit(127) };
     }
     unsafe { libc::close(slave) };
     Ok(pid)
@@ -552,6 +628,15 @@ unsafe fn open_pty_slave(master: libc::c_int) -> std::io::Result<libc::c_int> {
 /// big piece of work. The button in the UI is disabled there.
 #[cfg(not(unix))]
 pub fn spawn_local(_size: PtySize, _term: &str) -> std::io::Result<SshSession> {
+    Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
+}
+
+#[cfg(not(unix))]
+pub fn spawn_local_program(
+    _size: PtySize,
+    _term: &str,
+    _program: &LocalProgram,
+) -> std::io::Result<SshSession> {
     Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
 }
 
@@ -612,6 +697,37 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(closed, "the session did not close after Disconnect");
+        session.join();
+    }
+
+    /// A program with added variables, instead of the shell: it prints and exits.
+    #[test]
+    fn local_program_gets_its_arguments_and_variables() {
+        let program = LocalProgram {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo \"$CRATTY_PROBE:$1:$TERM\"".into(), "sh".into(), "arg".into()],
+            env: vec![("CRATTY_PROBE".into(), "value".into())],
+        };
+        let mut session =
+            spawn_local_program(PtySize::new(60, 10), "dumb", &program).expect("open PTY");
+
+        let mut output = String::new();
+        let mut closed = false;
+        for _ in 0..100 {
+            while let Ok(event) = session.events.try_recv() {
+                match event {
+                    FromSsh::Output(data) => output.push_str(&String::from_utf8_lossy(&data)),
+                    FromSsh::Closed(_) => closed = true,
+                    _ => {}
+                }
+            }
+            if closed {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(output.contains("value:arg:dumb"), "{output:?}");
+        assert!(closed, "the program's exit must close the session");
         session.join();
     }
 }

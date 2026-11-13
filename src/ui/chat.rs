@@ -12,7 +12,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
-    input::{InputEvent, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     label::Label,
     scroll::ScrollableElement,
     text::TextView,
@@ -26,13 +26,15 @@ use rust_i18n::t;
 
 use crate::acp::agents::Missing;
 use crate::acp::{
-    self, AgentCommand, AgentKind, ConfigOption, FromAgent, LoginMethod, PermissionAsk, PlanEntry,
-    Setup, ToAgent, Update,
+    self, AgentCommand, AgentKind, ConfigChoice, ConfigOption, FromAgent, LoginMethod,
+    PermissionAsk, PlanEntry, Setup, ToAgent, Update,
 };
 use crate::ssh::LocalProgram;
 
 /// Lines of tool output shown when a tool row is opened.
 const OUTPUT_LINES: usize = 40;
+/// A setting with more values than this gets a search box in its menu.
+const SEARCH_FROM: usize = 8;
 /// Height of the row with the agent and chat menus; the menus open under it.
 const TOP_ROW: f32 = 44.;
 
@@ -138,6 +140,11 @@ pub struct ChatView {
     config: Vec<ConfigOption>,
     /// Made with the window on first render.
     input: Option<Entity<TextareaState>>,
+    /// The search box of a long setting menu, made with the window when first needed.
+    filter: Option<Entity<InputState>>,
+    _filter_events: Option<Subscription>,
+    /// A new chat has not had the default model applied yet.
+    apply_default: bool,
     focus_pending: bool,
     scroll: ScrollHandle,
     _input_events: Option<Subscription>,
@@ -172,6 +179,9 @@ impl ChatView {
             menu: None,
             config: Vec::new(),
             input: None,
+            filter: None,
+            _filter_events: None,
+            apply_default: false,
             focus_pending: true,
             scroll: ScrollHandle::new(),
             _input_events: None,
@@ -371,9 +381,40 @@ impl ChatView {
                 value: value.clone(),
             });
             // Shown at once; the agent's answer corrects it if it refused.
+            if option.category.as_deref() == Some("model") {
+                acp::sessions::set_default_model(self.command.kind, &value);
+            }
             option.current = value;
         }
         cx.notify();
+    }
+
+    /// Starts a new chat with the model the user picked last. Chats already open keep
+    /// theirs: nothing is sent to them.
+    fn apply_default_model(&mut self) {
+        if !std::mem::take(&mut self.apply_default) {
+            return;
+        }
+        let Some(wanted) = acp::sessions::default_model(self.command.kind) else {
+            return;
+        };
+        let Some(option) = self
+            .config
+            .iter_mut()
+            .find(|option| option.category.as_deref() == Some("model"))
+        else {
+            return;
+        };
+        if option.current == wanted || !option.choices.iter().any(|choice| choice.value == wanted) {
+            return;
+        }
+        if let Some(commands) = &self.commands {
+            let _ = commands.unbounded_send(ToAgent::SetConfig {
+                id: option.id.clone(),
+                value: wanted.clone(),
+            });
+            option.current = wanted;
+        }
     }
 
     /// Settings can change while the agent answers, but not while a chat loads.
@@ -381,12 +422,23 @@ impl ChatView {
         matches!(self.state, State::Ready | State::Working)
     }
 
-    fn toggle_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
+    fn toggle_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = if self.menu == Some(menu) {
             None
         } else {
             Some(menu)
         };
+        // A long list opens with an empty search box that has the keyboard.
+        if let (Some(Menu::Setting(index)), Some(filter)) =
+            (self.menu, self.ensure_filter(window, cx))
+            && self
+                .config
+                .get(index)
+                .is_some_and(|option| option.choices.len() > SEARCH_FROM)
+        {
+            filter.update(cx, |filter, cx| filter.set_value("", window, cx));
+            window.focus(&filter.focus_handle(cx), cx);
+        }
         cx.notify();
     }
 
@@ -422,9 +474,14 @@ impl ChatView {
                 self.state = State::Ready;
                 self.saved = resumed;
                 self.session = Some(session);
+                // Only a new chat takes the default model; a saved one keeps its own.
+                self.apply_default = !resumed;
             }
             FromAgent::LoginRequired(methods) => self.login = methods,
-            FromAgent::Config(options) => self.config = options,
+            FromAgent::Config(options) => {
+                self.config = options;
+                self.apply_default_model();
+            }
             FromAgent::Notice(text) => self.entries.push(Entry::Notice {
                 text: text.into(),
                 error: true,
@@ -908,7 +965,9 @@ impl ChatView {
             .when(enabled, |this| {
                 this.cursor_pointer()
                     .hover(|style| style.bg(theme.secondary_hover))
-                    .on_click(cx.listener(move |this, _, _window, cx| this.toggle_menu(menu, cx)))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.toggle_menu(menu, window, cx)),
+                    )
             })
             .when(!enabled, |this| this.opacity(0.6))
             .child(content)
@@ -992,9 +1051,9 @@ impl ChatView {
                     .when(enabled, |this| {
                         this.cursor_pointer()
                             .hover(|style| style.bg(theme.secondary_hover))
-                            .on_click(
-                                cx.listener(move |this, _, _window, cx| this.toggle_menu(menu, cx)),
-                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.toggle_menu(menu, window, cx)
+                            }))
                     })
                     .when(!enabled, |this| this.opacity(0.6))
                     .child(
@@ -1020,16 +1079,62 @@ impl ChatView {
         )
     }
 
+    fn ensure_filter(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<InputState>> {
+        if self.filter.is_none() {
+            let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("chat.search")));
+            self._filter_events = Some(cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }));
+            self.filter = Some(filter);
+        }
+        self.filter.clone()
+    }
+
+    /// Values of a setting that match the search words, in any case, in the name,
+    /// the description or the value itself.
+    fn matching(option: &ConfigOption, query: &str) -> Vec<(usize, ConfigChoice)> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        option
+            .choices
+            .iter()
+            .enumerate()
+            .filter(|(_, choice)| {
+                let text = format!(
+                    "{} {} {}",
+                    choice.name,
+                    choice.description.as_deref().unwrap_or_default(),
+                    choice.value
+                )
+                .to_lowercase();
+                words.iter().all(|word| text.contains(word))
+            })
+            .map(|(number, choice)| (number, choice.clone()))
+            .collect()
+    }
+
     fn setting_menu(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let Some(option) = self.config.get(index) else {
             return div().into_any_element();
         };
-        let rows: Vec<AnyElement> = option
-            .choices
+        let query = self
+            .filter
+            .as_ref()
+            .filter(|_| option.choices.len() > SEARCH_FROM)
+            .map(|filter| filter.read(cx).value().to_string())
+            .unwrap_or_default();
+        let shown = Self::matching(option, &query);
+        let nothing = shown.is_empty();
+        let rows: Vec<AnyElement> = shown
             .iter()
-            .enumerate()
             .map(|(number, choice)| {
+                let number = *number;
                 let selected = choice.value == option.current;
                 let value = choice.value.clone();
                 Self::menu_row(("chat-choice", number), cx)
@@ -1062,7 +1167,18 @@ impl ChatView {
                     .into_any_element()
             })
             .collect();
-        v_flex().children(rows).into_any_element()
+        v_flex()
+            .children(rows)
+            .when(nothing, |this| {
+                this.child(
+                    div().px_2().py_1().child(
+                        Label::new(t!("chat.nothing_found"))
+                            .text_xs()
+                            .text_color(theme.muted_foreground),
+                    ),
+                )
+            })
+            .into_any_element()
     }
 
     fn menu_row(
@@ -1216,6 +1332,17 @@ impl ChatView {
     fn open_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let menu = self.menu?;
         let theme = cx.theme().clone();
+        let search = match (menu, &self.filter) {
+            (Menu::Setting(index), Some(filter))
+                if self
+                    .config
+                    .get(index)
+                    .is_some_and(|option| option.choices.len() > SEARCH_FROM) =>
+            {
+                Some(div().p_1().child(Input::new(filter).small()))
+            }
+            _ => None,
+        };
         let body = match menu {
             Menu::Agents => self.agents_menu(cx),
             Menu::Chats => self.chats_menu(cx),
@@ -1249,16 +1376,25 @@ impl ChatView {
                         .left(px(8.))
                         .right(px(8.))
                         .max_h(px(360.))
-                        // Plain scrolling: the scrollbar wrapper would stretch the box to
-                        // its full height.
-                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
                         .p_1()
                         .rounded_lg()
                         .border_1()
                         .border_color(theme.border)
                         .bg(theme.popover)
                         .shadow_lg()
-                        .child(body),
+                        .children(search)
+                        .child(
+                            // Plain scrolling: the scrollbar wrapper would stretch the box
+                            // to its full height.
+                            div()
+                                .id("chat-menu-list")
+                                .flex_1()
+                                .min_h(px(0.))
+                                .overflow_y_scroll()
+                                .child(body),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -1456,6 +1592,39 @@ mod tests {
         assert_eq!(tool_title("mcp__cratty__run_command"), "run_command");
         assert_eq!(tool_title("cratty_read_file"), "read_file");
         assert_eq!(tool_title("Bash"), "Bash");
+    }
+
+    #[test]
+    fn search_matches_all_words_in_name_description_or_value() {
+        let choice = |value: &str, name: &str, description: Option<&str>| ConfigChoice {
+            value: value.into(),
+            name: name.into(),
+            description: description.map(str::to_owned),
+        };
+        let option = ConfigOption {
+            id: "model".into(),
+            name: "Model".into(),
+            description: None,
+            category: Some("model".into()),
+            current: "a".into(),
+            choices: vec![
+                choice("google/gemini-2.5-flash", "google/Gemini 2.5 Flash", None),
+                choice("anthropic/sonnet", "Claude Sonnet", Some("Balanced")),
+                choice("google/gemini-2.5-pro", "google/Gemini 2.5 Pro", None),
+            ],
+        };
+        let found = |query: &str| -> Vec<usize> {
+            ChatView::matching(&option, query)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        };
+        assert_eq!(found(""), [0, 1, 2]);
+        assert_eq!(found("GEMINI flash"), [0]);
+        assert_eq!(found("2.5"), [0, 2]);
+        assert_eq!(found("balanced"), [1]);
+        assert_eq!(found("anthropic"), [1]);
+        assert!(found("gpt").is_empty());
     }
 
     #[test]

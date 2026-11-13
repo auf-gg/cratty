@@ -37,3 +37,5 @@ chat:
   no_agents: "未在此电脑上找到 AI 代理。"
   trusted: "此处的命令和文件修改无需询问即会执行。"
   ask_again: "重新询问"
+  search: "搜索…"
+  nothing_found: "没有找到。"

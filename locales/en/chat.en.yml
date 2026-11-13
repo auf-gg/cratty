@@ -37,3 +37,5 @@ chat:
   no_agents: "No AI agent was found on this computer."
   trusted: "Commands and file changes run here without asking."
   ask_again: "Ask again"
+  search: "Search…"
+  nothing_found: "Nothing found."

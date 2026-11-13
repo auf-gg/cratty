@@ -23,6 +23,9 @@ struct Book {
     /// The agent picked last, for every server.
     #[serde(default)]
     agent: Option<String>,
+    /// The model picked last, by agent: new chats start with it.
+    #[serde(default)]
+    models: BTreeMap<String, String>,
     /// By server address, such as `root@prod-01:2222`.
     #[serde(default)]
     servers: BTreeMap<String, Vec<Saved>>,
@@ -56,6 +59,20 @@ pub fn choose_agent(kind: AgentKind) {
     with_book(|book, path| {
         if book.agent.as_deref() != Some(kind.id()) {
             book.agent = Some(kind.id().into());
+            save(book, path);
+        }
+    })
+}
+
+/// The model new chats with the agent start with, if the user picked one.
+pub fn default_model(kind: AgentKind) -> Option<String> {
+    with_book(|book, _| book.models.get(kind.id()).cloned())
+}
+
+pub fn set_default_model(kind: AgentKind, model: &str) {
+    with_book(|book, path| {
+        if book.models.get(kind.id()).map(String::as_str) != Some(model) {
+            book.models.insert(kind.id().into(), model.into());
             save(book, path);
         }
     })
@@ -187,6 +204,7 @@ fn load(path: &Path) -> Book {
     Book {
         version: VERSION,
         agent: None,
+        models: BTreeMap::new(),
         servers,
     }
 }
@@ -237,6 +255,19 @@ mod tests {
         assert_eq!(claude, ["c", "a"]);
         assert_eq!(chats_in(&book, "root@prod", AgentKind::OpenCode).len(), 1);
         assert!(chats_in(&book, "db", AgentKind::Claude).is_empty());
+    }
+
+    #[test]
+    fn default_model_is_kept_per_agent() {
+        let mut book = Book::default();
+        book.models.insert("claude".into(), "opus".into());
+        assert_eq!(book.models.get("claude").map(String::as_str), Some("opus"));
+        let text = serde_json::to_string(&book).unwrap();
+        let back: Book = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.models["claude"], "opus");
+        // A file from before the models were kept still reads.
+        let old: Book = serde_json::from_str(r#"{"version":2,"servers":{}}"#).unwrap();
+        assert!(old.models.is_empty());
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod agent;
 pub mod i18n;
 pub mod instance;
 pub mod keychain;
+pub mod mcp;
 pub mod platform;
 pub mod selfhst;
 pub mod ssh;

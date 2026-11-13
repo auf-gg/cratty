@@ -13,6 +13,7 @@ use gpui_kit::{
     prelude::*, px, size,
 };
 
+mod ai_ui;
 mod fonts_ui;
 mod groups_ui;
 mod icons_ui;
@@ -107,6 +108,8 @@ struct SessionTab {
     /// Local tab without a vault: reconnects into a new PTY,
     /// rather than to the SSH address from `request`.
     local: bool,
+    /// AI agents may use this tab's connection (see `crate::mcp`). Kept on reconnect.
+    agents: Option<ai_ui::AgentAccess>,
 }
 
 enum TabKind {
@@ -237,6 +240,13 @@ pub struct AppView {
     agent_task: Option<gpui_kit::Task<()>>,
     agent_error: Option<SharedString>,
     sign_queue: std::collections::VecDeque<PendingSign>,
+    /// MCP server for AI agents: started when agent access is first allowed on a tab.
+    mcp: Option<crate::mcp::Running>,
+    mcp_task: Option<gpui_kit::Task<()>>,
+    mcp_error: Option<SharedString>,
+    /// Agent calls waiting for the user's approval, oldest first.
+    agent_queue: std::collections::VecDeque<ai_ui::PendingCall>,
+    agent_notice: Option<SharedString>,
     importing: Option<PendingImport>,
     sync_input: Entity<InputState>,
     sync_status: Option<SharedString>,
@@ -510,6 +520,11 @@ impl AppView {
             agent_task: None,
             agent_error: None,
             sign_queue: std::collections::VecDeque::new(),
+            mcp: None,
+            mcp_task: None,
+            mcp_error: None,
+            agent_queue: std::collections::VecDeque::new(),
+            agent_notice: None,
             importing: None,
             sync_input,
             sync_status: None,
@@ -1091,6 +1106,7 @@ impl AppView {
             request,
             credentials,
             local: false,
+            agents: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1147,6 +1163,7 @@ impl AppView {
             request,
             credentials,
             local: false,
+            agents: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1205,6 +1222,7 @@ impl AppView {
             },
             credentials: connect::Credentials::default(),
             local: true,
+            agents: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1429,6 +1447,7 @@ impl AppView {
             },
             credentials: connect::Credentials::default(),
             local: false,
+            agents: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1458,7 +1477,10 @@ impl AppView {
         if index >= self.tabs.len() {
             return;
         }
-        self.tabs.remove(index);
+        let tab = self.tabs.remove(index);
+        if let Some(access) = tab.agents {
+            self.drop_agent_calls(&access.token);
+        }
         // Indices after the removed tab have shifted.
         self.renaming = None;
         self.active = match self.tabs.len() {
@@ -2169,6 +2191,7 @@ impl Render for AppView {
         };
 
         let sign_dialog = self.sign_dialog(cx);
+        let agent_dialog = self.agent_dialog(cx);
         let delete_dialog = self.delete_vault_dialog(cx);
         let forget_dialog = self.forget_host_dialog(cx);
         let vault_editor = self.vault_editor_dialog(cx);
@@ -2268,6 +2291,7 @@ impl Render for AppView {
                     ),
             )
             .children(sign_dialog)
+            .children(agent_dialog)
             .children(delete_dialog)
             .children(forget_dialog)
             .children(vault_editor)

@@ -2,12 +2,16 @@
 // In debug builds the console stays so eprintln output and panics are visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use cratty::{instance, ui};
+use cratty::{instance, mcp, ui};
 use gpui_kit::App;
 
 fn main() {
-    // Only one copy runs: copies would overwrite each other's vault records and settings.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // An AI agent started us as its MCP server: pass messages to the running copy.
+    if args.first().map(String::as_str) == Some(mcp::bridge::FLAG) {
+        std::process::exit(mcp::bridge::run());
+    }
+    // Only one copy runs: copies would overwrite each other's vault records and settings.
     if instance::hand_over(&args) {
         return;
     }

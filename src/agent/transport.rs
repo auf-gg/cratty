@@ -49,12 +49,26 @@ pub fn instance_address() -> Result<Address> {
 
 #[cfg(unix)]
 pub fn instance_address() -> Result<Address> {
-    let dir = match std::env::var_os("XDG_RUNTIME_DIR") {
+    Ok(Address::Socket(runtime_dir()?.join("instance.sock")))
+}
+
+/// Where AI agents reach the running app through `cratty --mcp-bridge` (see `crate::mcp`).
+#[cfg(windows)]
+pub fn mcp_address() -> Result<Address> {
+    Ok(Address::Pipe(format!(r"\\.\pipe\cratty-mcp-{}", pipe_user())))
+}
+
+#[cfg(unix)]
+pub fn mcp_address() -> Result<Address> {
+    Ok(Address::Socket(runtime_dir()?.join("mcp.sock")))
+}
+
+#[cfg(unix)]
+fn runtime_dir() -> Result<PathBuf> {
+    Ok(match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(runtime) => PathBuf::from(runtime).join("cratty"),
-        None => crate::store::VaultStore::default_base()
-            .context(t!("agent.no_socket_dir"))?,
-    };
-    Ok(Address::Socket(dir.join("instance.sock")))
+        None => crate::store::VaultStore::default_base().context(t!("agent.no_socket_dir"))?,
+    })
 }
 
 #[cfg(unix)]

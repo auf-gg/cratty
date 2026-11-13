@@ -8,7 +8,7 @@ use futures::channel::{mpsc, oneshot};
 use russh::keys::ssh_key::HashAlg;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub use transport::{Address, Listener, default_address, instance_address};
+pub use transport::{Address, Listener, default_address, instance_address, mcp_address};
 
 pub struct Running {
     address: Address,

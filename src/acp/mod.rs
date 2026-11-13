@@ -146,6 +146,9 @@ async fn run_process(
     commands: mpsc::UnboundedReceiver<ToAgent>,
     mut events: mpsc::Sender<FromAgent>,
 ) {
+    if command.kind == AgentKind::OpenCode {
+        share_credentials(&command).await;
+    }
     let mut process = tokio::process::Command::new(&command.program);
     for name in agents::foreign_config(command.kind) {
         process.env_remove(name);
@@ -221,6 +224,50 @@ async fn run_process(
         }
     });
     let _ = events.send(FromAgent::Closed { error }).await;
+}
+
+/// OpenCode keeps the keys of its providers in its database, and Cratty's agent has a
+/// database of its own: without them it would offer only what `auth.json` still holds.
+/// The user's keys are copied in with OpenCode's own export and import, through memory,
+/// each time the agent starts, so keys added meanwhile come along. Keys already there
+/// are left as they are. Failing to copy is not an error: the agent starts anyway.
+async fn share_credentials(command: &AgentCommand) {
+    use tokio::process::Command;
+
+    let copy = async {
+        let own = |args: &[&str], database: bool| {
+            let mut process = Command::new(&command.program);
+            process
+                .env("PATH", &command.path)
+                .args(["--standalone", "auth"])
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true);
+            if database {
+                process.envs(command.env.iter().map(|(name, value)| (name, value)));
+            }
+            for name in agents::foreign_config(AgentKind::OpenCode) {
+                process.env_remove(name);
+            }
+            #[cfg(windows)]
+            process.creation_flags(0x0800_0000);
+            process
+        };
+
+        // The user's own database: no OPENCODE_DB.
+        let exported = own(&["export"], false).output().await.ok()?;
+        if !exported.status.success() || exported.stdout.is_empty() {
+            return None;
+        }
+        let mut import = own(&["import"], true).spawn().ok()?;
+        let mut stdin = import.stdin.take()?;
+        stdin.write_all(&exported.stdout).await.ok()?;
+        drop(stdin);
+        import.wait().await.ok()
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(30), copy).await;
 }
 
 enum Incoming {

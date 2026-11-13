@@ -83,6 +83,10 @@ impl AppView {
     }
 
     pub(super) fn revoke_agents(&mut self, index: usize, cx: &mut Context<Self>) {
+        // The conversation works through this access: it ends with it.
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.chat = None;
+        }
         let access = self.tabs.get_mut(index).and_then(|tab| tab.agents.take());
         if let Some(access) = access {
             self.drop_agent_calls(&access.token);
@@ -124,6 +128,176 @@ impl AppView {
             }
         }
         cx.notify();
+    }
+
+    /// Looks for agents once, in the background: it may start the login shell.
+    pub(super) fn scan_agents(&mut self, cx: &mut Context<Self>) {
+        if self.agent_kinds.is_some() || self.agent_scan.is_some() {
+            return;
+        }
+        let scan = cx.background_executor().spawn(async move {
+            crate::acp::AgentKind::ALL
+                .into_iter()
+                .map(|kind| (kind, crate::acp::agents::find(kind)))
+                .collect::<Vec<_>>()
+        });
+        self.agent_scan = Some(cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
+            let found = scan.await;
+            let _ = this.update(cx, |this, cx| {
+                this.agent_kinds = Some(found);
+                this.agent_scan = None;
+                cx.notify();
+            });
+        }));
+    }
+
+    fn start_chat(
+        &mut self,
+        index: usize,
+        command: crate::acp::AgentCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tabs.get(index).is_some_and(|tab| tab.agents.is_none()) {
+            self.allow_agents(index, cx);
+        }
+        let Some(token) = self
+            .tabs
+            .get(index)
+            .and_then(|tab| tab.agents.as_ref())
+            .map(|access| access.token.clone())
+        else {
+            return;
+        };
+        let Some(address) = self.mcp.as_ref().map(|running| running.address().as_text()) else {
+            return;
+        };
+        let prepared = crate::acp::agents::prepare_workdir()
+            .and_then(|dir| Ok((dir, mcp::bridge_executable()?)));
+        let (workdir, bridge) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.mcp_error = Some(t!("ai.server_failed", error = format!("{error:#}")).into());
+                cx.notify();
+                return;
+            }
+        };
+        let setup = crate::acp::Setup {
+            cwd: workdir.to_string_lossy().into_owned(),
+            mcp: crate::acp::McpServer {
+                name: mcp::SERVER_NAME.into(),
+                command: bridge,
+                args: vec![mcp::bridge::FLAG.into()],
+                env: vec![
+                    (mcp::bridge::TOKEN_VAR.into(), token),
+                    (mcp::bridge::ADDRESS_VAR.into(), address),
+                ],
+            },
+            login: command.kind.login_command().into(),
+        };
+        let chat = cx.new(|cx| crate::ui::chat::ChatView::new(command, setup, window, cx));
+        chat.update(cx, |chat, cx| chat.focus_input(window, cx));
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.chat = Some(chat);
+        }
+        cx.notify();
+    }
+
+    /// The AI tab of the session panel: the conversation, or a choice of agent.
+    pub(super) fn chat_panel(
+        &self,
+        index: usize,
+        tab: &SessionTab,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if let Some(chat) = &tab.chat {
+            return div().size_full().child(chat.clone()).into_any_element();
+        }
+        let theme = cx.theme().clone();
+        let mut panel = v_flex()
+            .id("chat-start")
+            .size_full()
+            .overflow_y_scrollbar()
+            .px_4()
+            .py_3()
+            .gap_3()
+            .child(Label::new(t!("chat.title")).text_sm().font_medium());
+
+        if tab.local {
+            return panel
+                .child(
+                    Label::new(t!("chat.ssh_only"))
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                )
+                .into_any_element();
+        }
+
+        panel = panel.child(
+            Label::new(t!("chat.about"))
+                .text_xs()
+                .text_color(theme.muted_foreground),
+        );
+        match &self.agent_kinds {
+            None => {
+                let this = cx.entity().downgrade();
+                cx.defer(move |cx| {
+                    let _ = this.update(cx, |this, cx| this.scan_agents(cx));
+                });
+                panel = panel.child(
+                    Label::new(t!("chat.looking"))
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                );
+            }
+            Some(kinds) => {
+                for (kind, found) in kinds {
+                    let row =
+                        match found {
+                            Ok(command) => {
+                                let command = command.clone();
+                                v_flex().gap_1().child(
+                                    Button::new(SharedString::from(format!(
+                                        "chat-start-{}",
+                                        kind.title()
+                                    )))
+                                    .outline()
+                                    .small()
+                                    .label(t!("chat.start_with", agent = kind.title()))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.start_chat(index, command.clone(), window, cx)
+                                    })),
+                                )
+                            }
+                            Err(missing) => v_flex().gap_1().child(
+                                Label::new(SharedString::from(
+                                    t!(
+                                        "chat.missing",
+                                        agent = kind.title(),
+                                        program = missing.install
+                                    )
+                                    .to_string(),
+                                ))
+                                .text_xs()
+                                .text_color(theme.muted_foreground),
+                            ),
+                        };
+                    panel = panel.child(row);
+                }
+                panel = panel.child(
+                    Label::new(t!("chat.sign_in"))
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                );
+            }
+        }
+        panel
+            .children(
+                self.mcp_error
+                    .clone()
+                    .map(|error| Label::new(error).text_xs().text_color(theme.danger)),
+            )
+            .into_any_element()
     }
 
     fn agent_tab(&self, token: &str) -> Option<usize> {

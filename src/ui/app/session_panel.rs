@@ -9,6 +9,7 @@ use crate::vault_session::ViaItem;
 pub(super) enum InfoTab {
     Info,
     Files,
+    Ai,
 }
 
 pub(super) fn address(request: &connect::Request) -> String {
@@ -63,6 +64,7 @@ impl AppView {
                     )
                     .into_any_element(),
             },
+            InfoTab::Ai => self.chat_panel(index, tab, cx),
         };
 
         // The "Snippets" and "Split" menus open under their buttons in the header.
@@ -96,6 +98,9 @@ impl AppView {
                     if value == InfoTab::Files {
                         this.ensure_files_panel(index, cx);
                     }
+                    if value == InfoTab::Ai {
+                        this.scan_agents(cx);
+                    }
                     cx.notify();
                 }))
         };
@@ -119,6 +124,7 @@ impl AppView {
                         .items_center()
                         .child(tab_label("panel-tab-info", t!("session.tab_info"), InfoTab::Info))
                         .child(tab_label("panel-tab-files", t!("session.tab_files"), InfoTab::Files))
+                        .child(tab_label("panel-tab-ai", t!("session.tab_ai"), InfoTab::Ai))
                         .child(div().flex_grow_1())
                         .child(
                             h_flex()

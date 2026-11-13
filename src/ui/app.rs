@@ -110,6 +110,8 @@ struct SessionTab {
     local: bool,
     /// AI agents may use this tab's connection (see `crate::mcp`). Kept on reconnect.
     agents: Option<ai_ui::AgentAccess>,
+    /// The conversation of the AI tab. Kept on reconnect, like the access it uses.
+    chat: Option<Entity<crate::ui::chat::ChatView>>,
 }
 
 enum TabKind {
@@ -247,6 +249,9 @@ pub struct AppView {
     /// Agent calls waiting for the user's approval, oldest first.
     agent_queue: std::collections::VecDeque<ai_ui::PendingCall>,
     agent_notice: Option<SharedString>,
+    /// Agents found on this computer for the AI tab: looked for once, in the background.
+    agent_kinds: Option<Vec<(crate::acp::AgentKind, Result<crate::acp::AgentCommand, crate::acp::agents::Missing>)>>,
+    agent_scan: Option<gpui_kit::Task<()>>,
     importing: Option<PendingImport>,
     sync_input: Entity<InputState>,
     sync_status: Option<SharedString>,
@@ -525,6 +530,8 @@ impl AppView {
             mcp_error: None,
             agent_queue: std::collections::VecDeque::new(),
             agent_notice: None,
+            agent_kinds: None,
+            agent_scan: None,
             importing: None,
             sync_input,
             sync_status: None,
@@ -1107,6 +1114,7 @@ impl AppView {
             credentials,
             local: false,
             agents: None,
+            chat: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1164,6 +1172,7 @@ impl AppView {
             credentials,
             local: false,
             agents: None,
+            chat: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1223,6 +1232,7 @@ impl AppView {
             credentials: connect::Credentials::default(),
             local: true,
             agents: None,
+            chat: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1448,6 +1458,7 @@ impl AppView {
             credentials: connect::Credentials::default(),
             local: false,
             agents: None,
+            chat: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;

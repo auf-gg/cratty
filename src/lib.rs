@@ -1,5 +1,6 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
+pub mod acp;
 pub mod agent;
 pub mod i18n;
 pub mod instance;

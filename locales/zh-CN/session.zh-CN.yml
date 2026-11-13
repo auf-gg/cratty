@@ -3,6 +3,7 @@ session:
   open_files: "打开文件"
   tab_info: "信息"
   tab_files: "文件"
+  tab_ai: "AI"
   snippets: "代码片段"
   split: "拆分"
   connecting: "正在连接…"

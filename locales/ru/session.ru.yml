@@ -3,6 +3,7 @@ session:
   open_files: "Открыть файлы"
   tab_info: "Сведения"
   tab_files: "Файлы"
+  tab_ai: "ИИ"
   snippets: "Сниппеты"
   split: "Разделить"
   connecting: "Подключение…"

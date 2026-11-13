@@ -3,6 +3,7 @@ session:
   open_files: "Open files"
   tab_info: "Info"
   tab_files: "Files"
+  tab_ai: "AI"
   snippets: "Snippets"
   split: "Split"
   connecting: "Connecting…"

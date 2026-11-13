@@ -1,5 +1,6 @@
 pub mod app;
 pub mod assets;
+pub mod chat;
 pub mod connect;
 pub mod dux;
 pub mod editor;

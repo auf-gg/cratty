@@ -43,7 +43,7 @@ The user interface is currently available in Russian only.
 
 - Several vaults can exist and be unlocked at the same time. Create and delete them from the sidebar; each vault has its own password, recovery code, lock state and sync folder, and the sidebar groups hosts by vault.
 - Hosts, keys, passwords and proxies are stored in an encrypted vault. The key is derived from the master password with Argon2id; records are encrypted with ChaCha20-Poly1305.
-- A 24-word BIP39 recovery phrase (English wordlist) in case the master password is lost; 12-word phrases and legacy recovery codes (`XXXX-XXXX-…`) are still accepted.
+- A 12-word BIP39 recovery phrase (English wordlist) in case the master password is lost; 24-word phrases from older vaults and legacy recovery codes (`XXXX-XXXX-…`) are still accepted.
 - Optional passwordless unlock through the OS credential store: Keychain (macOS), Credential Manager (Windows), Secret Service (Linux).
 - Automatic lock after inactivity and after the computer resumes from sleep.
 - Built-in SSH agent that serves keys from the vault.

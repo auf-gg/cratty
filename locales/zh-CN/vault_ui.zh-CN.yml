@@ -8,5 +8,5 @@ vault_ui:
   password_mismatch: "两次输入的密码不一致。"
   create_explainer: "主机和密钥使用主密码加密。密码不会被保存，也无法找回；如果丢失，只能通过恢复码访问。"
   create_explainer_import: "主机和密钥使用主密码加密。密码不会被保存，也无法找回；如果丢失，只能通过恢复码访问。将从 hosts.json 导入 %{count} 条记录，导入后该文件将被删除。"
-  recovery_explainer: "请将英文 BIP39 词表中的 24 个单词抄写在纸上，并与电脑分开保管。单词顺序很重要。这是在没有主密码时解锁保险库的唯一方式；该短语只显示一次。"
+  recovery_explainer: "请将英文 BIP39 词表中的 12 个单词抄写在纸上，并与电脑分开保管。单词顺序很重要。这是在没有主密码时解锁保险库的唯一方式；该短语只显示一次。"
   migration_warning: "hosts.json 文件已被删除，但其副本可能仍保留在备份和磁盘快照中。"

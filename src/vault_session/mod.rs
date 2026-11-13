@@ -1588,7 +1588,7 @@ mod tests {
             .expect("ASCII")
             .to_uppercase()
             .replace(' ', "  ");
-        assert_eq!(words.split_whitespace().count(), 24);
+        assert_eq!(words.split_whitespace().count(), 12);
         session.lock(None);
 
         let typed = RecoveryCode::parse(words.as_bytes()).expect("parse");

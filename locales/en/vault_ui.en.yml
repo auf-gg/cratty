@@ -8,5 +8,5 @@ vault_ui:
   password_mismatch: "Passwords do not match."
   create_explainer: "Hosts and keys are encrypted with the master password. The password is not stored and cannot be recovered; if it is lost, access is possible only with the recovery code."
   create_explainer_import: "Hosts and keys are encrypted with the master password. The password is not stored and cannot be recovered; if it is lost, access is possible only with the recovery code. Entries to be imported from hosts.json: %{count}; the file will be deleted after the import."
-  recovery_explainer: "Write down the 24 words from the English BIP39 wordlist on paper and keep them apart from your computer. The word order matters. This is the only way to unlock the vault without the master password; the phrase is shown only once."
+  recovery_explainer: "Write down the 12 words from the English BIP39 wordlist on paper and keep them apart from your computer. The word order matters. This is the only way to unlock the vault without the master password; the phrase is shown only once."
   migration_warning: "The hosts.json file has been deleted, but copies of it may remain in backups and disk snapshots."

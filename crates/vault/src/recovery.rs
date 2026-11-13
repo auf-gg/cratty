@@ -19,10 +19,11 @@ const CHECK_ALPHABET: &[u8; 37] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ*~$=U";
 
 pub const RECOVERY_SALT_LEN: usize = 32;
 
-/// Entropy of a new recovery phrase: 24 BIP39 words.
-pub const RECOVERY_ENTROPY_BYTES: usize = 32;
+/// Entropy of a new recovery phrase: 12 BIP39 words (128 bits).
+pub const RECOVERY_ENTROPY_BYTES: usize = 16;
 
-const MAX_ENTROPY_BYTES: usize = RECOVERY_ENTROPY_BYTES;
+/// The longest secret still accepted: a 24-word phrase from older vaults.
+const MAX_ENTROPY_BYTES: usize = 32;
 
 /// Recovery secret: 16 or 32 bytes (12 or 24 BIP39 words) or
 /// 20 bytes of the legacy format. The wrap key is always HKDF of these bytes.
@@ -247,7 +248,7 @@ mod tests {
     fn generated_code_roundtrip() {
         let code = RecoveryCode::generate().expect("CSPRNG");
         let shown = shown(&code);
-        assert_eq!(shown.split(' ').count(), 24);
+        assert_eq!(shown.split(' ').count(), 12);
         let parsed = RecoveryCode::parse(shown.as_bytes()).expect("parse");
         assert_eq!(parsed.entropy(), code.entropy());
     }
@@ -402,10 +403,10 @@ mod tests {
     }
 
     #[test]
-    fn new_24_word_phrase_survives_roundtrip() {
+    fn new_12_word_phrase_survives_roundtrip() {
         let code = RecoveryCode::generate().expect("CSPRNG");
         let text = shown(&code);
-        assert_eq!(text.split(' ').count(), 24);
+        assert_eq!(text.split(' ').count(), 12);
         assert!(!text.contains('-'));
         let parsed = RecoveryCode::parse(text.as_bytes()).expect("parse");
         assert_eq!(parsed.entropy(), code.entropy());

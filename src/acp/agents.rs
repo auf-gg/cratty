@@ -149,6 +149,31 @@ fn agent_env(kind: AgentKind) -> Vec<(String, OsString)> {
     }
 }
 
+/// Removes a saved session from Cratty's folder for an agent that cannot delete it over
+/// ACP. Claude Code keeps a session as `<id>.jsonl`, with a folder of the same name
+/// beside it, in a folder per working folder under `projects/`.
+pub fn delete_saved_session(kind: AgentKind, session: &str) {
+    // A session id is a UUID: nothing else may become part of a path.
+    let plain = !session.is_empty()
+        && session
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if kind != AgentKind::Claude || !plain {
+        return;
+    }
+    let Ok(dir) = agents_dir() else {
+        return;
+    };
+    let Ok(projects) = std::fs::read_dir(dir.join("claude").join("projects")) else {
+        return;
+    };
+    for project in projects.flatten() {
+        let project = project.path();
+        let _ = std::fs::remove_file(project.join(format!("{session}.jsonl")));
+        let _ = std::fs::remove_dir_all(project.join(session));
+    }
+}
+
 /// Variables that would give the agent another configuration than Cratty's, taken out
 /// of the environment it inherits. OpenCode's inline configuration outranks the working
 /// folder's, so it could turn the agent's own tools back on.

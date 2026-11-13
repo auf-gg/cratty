@@ -59,9 +59,11 @@ pub enum ToAgent {
         request: u64,
         option: Option<String>,
     },
-    /// Leave the current conversation for a new one; the agent deletes the old one if
-    /// it can.
-    NewSession,
+    /// Leave the current conversation for a saved one, which the agent replays, or for
+    /// a new one (`None`). The agent process stays.
+    Switch(Option<String>),
+    /// Delete a saved conversation, where the agent can.
+    Delete(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -232,11 +234,12 @@ struct RpcError {
     message: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Pending {
     Initialize,
     NewSession,
-    Load,
+    /// The session being loaded.
+    Load(String),
     Prompt,
     Delete,
 }
@@ -338,13 +341,21 @@ where
                         reply(id, Ok(protocol::permission_outcome(option.as_deref())));
                     }
                 }
-                Some(ToAgent::NewSession) => {
-                    if let Some(old) = session.take()
-                        && caps.delete
-                    {
+                Some(ToAgent::Switch(target)) => {
+                    // Prompts wait until the other conversation is ready.
+                    session = None;
+                    match target.filter(|_| caps.load) {
+                        Some(saved) => {
+                            let params = protocol::load_session(&saved, &setup.cwd, &setup.mcp);
+                            call("session/load", params, Pending::Load(saved), &mut pending);
+                        }
+                        None => call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending),
+                    }
+                }
+                Some(ToAgent::Delete(old)) => {
+                    if caps.delete {
                         call("session/delete", protocol::delete_session(&old), Pending::Delete, &mut pending);
                     }
-                    call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending);
                 }
             },
             message = incoming.next() => match message {
@@ -360,13 +371,12 @@ where
                         caps = protocol::agent_caps(&result);
                         logins = protocol::login_methods(&result);
                         match setup.resume.as_deref().filter(|_| caps.load) {
-                            Some(saved) => call("session/load", protocol::load_session(saved, &setup.cwd, &setup.mcp), Pending::Load, &mut pending),
+                            Some(saved) => call("session/load", protocol::load_session(saved, &setup.cwd, &setup.mcp), Pending::Load(saved.to_owned()), &mut pending),
                             None => call("session/new", protocol::new_session(&setup.cwd, &setup.mcp), Pending::NewSession, &mut pending),
                         }
                     }
-                    Some(Pending::Load) => match result {
+                    Some(Pending::Load(id)) => match result {
                         Ok(_) => {
-                            let id = setup.resume.clone().unwrap_or_default();
                             session = Some(id.clone());
                             started = true;
                             events.send(FromAgent::Ready { agent: agent_name.clone(), session: id, resumed: true }).await?;

@@ -112,9 +112,6 @@ struct SessionTab {
     agents: Option<ai_ui::AgentAccess>,
     /// The conversation of the AI tab. Kept on reconnect, like the access it uses.
     chat: Option<ai_ui::ChatPanel>,
-    /// The server's saved conversation was brought back once: closing it does not
-    /// bring it back again.
-    chat_restored: bool,
 }
 
 enum TabKind {
@@ -251,7 +248,6 @@ pub struct AppView {
     mcp_error: Option<SharedString>,
     /// Agent calls waiting for the user's approval, oldest first.
     agent_queue: std::collections::VecDeque<ai_ui::PendingCall>,
-    agent_notice: Option<SharedString>,
     /// Agents found on this computer for the AI tab: looked for once, in the background.
     agent_kinds: Option<Vec<(crate::acp::AgentKind, Result<crate::acp::AgentCommand, crate::acp::agents::Missing>)>>,
     agent_scan: Option<gpui_kit::Task<()>>,
@@ -532,7 +528,6 @@ impl AppView {
             mcp_task: None,
             mcp_error: None,
             agent_queue: std::collections::VecDeque::new(),
-            agent_notice: None,
             agent_kinds: None,
             agent_scan: None,
             importing: None,
@@ -1118,7 +1113,6 @@ impl AppView {
             local: false,
             agents: None,
             chat: None,
-            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1177,7 +1171,6 @@ impl AppView {
             local: false,
             agents: None,
             chat: None,
-            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1238,7 +1231,6 @@ impl AppView {
             local: true,
             agents: None,
             chat: None,
-            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -1465,7 +1457,6 @@ impl AppView {
             local: false,
             agents: None,
             chat: None,
-            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;

@@ -366,7 +366,7 @@ async fn agent_without_loading_starts_anew() {
 }
 
 #[tokio::test]
-async fn new_conversation_deletes_the_old_one() {
+async fn chats_switch_inside_one_agent_process() {
     let (mut client, mut agent) = connect();
     let init = agent.receive().await;
     agent
@@ -376,15 +376,69 @@ async fn new_conversation_deletes_the_old_one() {
     agent.answer(&new, json!({"sessionId": "first"})).await;
     assert_eq!(client.next().await, ready("first", false));
 
-    client.commands.unbounded_send(ToAgent::NewSession).unwrap();
+    // An older chat: loaded and replayed, no new process.
+    client
+        .commands
+        .unbounded_send(ToAgent::Switch(Some("older".into())))
+        .unwrap();
+    let load = agent.receive().await;
+    assert_eq!(load["method"], "session/load");
+    assert_eq!(load["params"]["sessionId"], "older");
+    agent
+        .send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "older", "update":
+            {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "from before"}}}}))
+        .await;
+    agent.answer(&load, json!({})).await;
+    assert_eq!(
+        client.next().await,
+        FromAgent::Update(Update::AgentText("from before".into()))
+    );
+    assert_eq!(client.next().await, ready("older", true));
+
+    // A new chat, then the first one deleted.
+    client
+        .commands
+        .unbounded_send(ToAgent::Switch(None))
+        .unwrap();
+    let second = agent.receive().await;
+    assert_eq!(second["method"], "session/new");
+    agent.answer(&second, json!({"sessionId": "second"})).await;
+    assert_eq!(client.next().await, ready("second", false));
+
+    client
+        .commands
+        .unbounded_send(ToAgent::Delete("first".into()))
+        .unwrap();
     let delete = agent.receive().await;
     assert_eq!(delete["method"], "session/delete");
     assert_eq!(delete["params"]["sessionId"], "first");
-    let second = agent.receive().await;
-    assert_eq!(second["method"], "session/new");
-    agent.answer(&delete, json!({})).await;
-    agent.answer(&second, json!({"sessionId": "second"})).await;
-    assert_eq!(client.next().await, ready("second", false));
+}
+
+#[tokio::test]
+async fn prompts_wait_while_a_chat_switches() {
+    let (mut client, mut agent) = connect();
+    let init = agent.receive().await;
+    agent
+        .answer(&init, serde_json::from_str(INIT_LOADING).unwrap())
+        .await;
+    let new = agent.receive().await;
+    agent.answer(&new, json!({"sessionId": "first"})).await;
+    client.next().await;
+
+    client
+        .commands
+        .unbounded_send(ToAgent::Switch(Some("older".into())))
+        .unwrap();
+    client
+        .commands
+        .unbounded_send(ToAgent::Prompt("too early".into()))
+        .unwrap();
+    let load = agent.receive().await;
+    assert_eq!(load["method"], "session/load");
+    assert_eq!(
+        client.next().await,
+        FromAgent::TurnFailed("the agent is busy".into())
+    );
 }
 
 #[tokio::test]

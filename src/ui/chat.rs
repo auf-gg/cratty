@@ -1,7 +1,10 @@
-//! The AI tab of the session panel: a conversation with an agent (Claude Code,
+//! The AI tab of the session panel: conversations with an agent (Claude Code,
 //! OpenCode) that works on the tab's server through Cratty's MCP tools (see
 //! `crate::acp` and `crate::mcp`). Commands and file changes it asks for still go
 //! through the approval dialog of the window.
+//!
+//! The top row picks the agent, remembered for every server, and the chat: the
+//! server's saved chats with that agent, a new one, or none deleted.
 
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -21,22 +24,32 @@ use gpui_kit::{
 };
 use rust_i18n::t;
 
+use crate::acp::agents::Missing;
 use crate::acp::{
-    self, AgentCommand, FromAgent, LoginMethod, PermissionAsk, PlanEntry, Setup, ToAgent, Update,
+    self, AgentCommand, AgentKind, FromAgent, LoginMethod, PermissionAsk, PlanEntry, Setup,
+    ToAgent, Update,
 };
 use crate::ssh::LocalProgram;
 
 /// Lines of tool output shown when a tool row is opened.
 const OUTPUT_LINES: usize = 40;
+/// Height of the row with the agent and chat menus; the menus open under it.
+const TOP_ROW: f32 = 44.;
 
 #[derive(Clone, Debug, PartialEq)]
 enum State {
     Starting,
-    /// The saved conversation is coming back from the agent.
+    /// A saved chat is coming back from the agent.
     Loading,
     Ready,
     Working,
     Closed(Option<SharedString>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Menu {
+    Agents,
+    Chats,
 }
 
 enum Entry {
@@ -69,32 +82,56 @@ struct ToolEntry {
 }
 
 pub enum ChatEvent {
-    /// Put the conversation away: the panel offers the agents again.
-    Close,
     /// Run the agent's sign-in in a terminal.
-    Login(LocalProgram),
+    Login {
+        agent: &'static str,
+        program: LocalProgram,
+    },
 }
 
 impl EventEmitter<ChatEvent> for ChatView {}
 
+pub type Agents = Vec<(AgentKind, Result<AgentCommand, Missing>)>;
+
+/// The agent picked last, if this computer has it, else the first one it has.
+pub fn pick_agent(agents: &Agents) -> Option<AgentCommand> {
+    let usable = |kind: AgentKind| {
+        agents
+            .iter()
+            .find(|(each, _)| *each == kind)
+            .and_then(|(_, found)| found.as_ref().ok())
+            .cloned()
+    };
+    acp::sessions::chosen_agent().and_then(usable).or_else(|| {
+        agents
+            .iter()
+            .find_map(|(_, found)| found.as_ref().ok().cloned())
+    })
+}
+
 pub struct ChatView {
+    /// The agents found on this computer, for the agent menu.
+    agents: Agents,
     command: AgentCommand,
     setup: Setup,
-    /// The server the conversation is about: the key of its saved session.
+    /// The server the chats are about: the key of its saved chats.
     server: String,
     commands: Option<mpsc::UnboundedSender<ToAgent>>,
     _pump: Option<Task<()>>,
     agent_name: SharedString,
     state: State,
-    /// Continuing a saved session was asked for and has not been answered yet.
+    /// Loading a saved chat was asked for and has not been answered yet.
     resuming: bool,
-    /// The session in use, and whether it is the server's saved one yet: a new session
-    /// is saved after its first answer, so an untouched one does not replace the old.
+    /// The session in use, and whether it is among the server's saved chats yet: a new
+    /// chat is saved after its first answer, so an untouched one leaves no trace.
     session: Option<String>,
     saved: bool,
+    /// The first message of an unsaved chat: its title once it is saved.
+    first_message: Option<String>,
     entries: Vec<Entry>,
     /// Ways to sign in, when the agent asked for it.
     login: Vec<LoginMethod>,
+    menu: Option<Menu>,
     /// Made with the window on first render.
     input: Option<Entity<TextareaState>>,
     focus_pending: bool,
@@ -103,34 +140,51 @@ pub struct ChatView {
 }
 
 impl ChatView {
-    /// Starts the agent: with `setup.resume`, the saved conversation comes back first.
+    /// Starts `command`'s agent; with `continue_latest`, the server's latest chat with
+    /// it comes back.
     pub fn new(
+        agents: Agents,
         command: AgentCommand,
         setup: Setup,
         server: String,
+        continue_latest: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        let agent_name = SharedString::from(command.kind.title());
         let mut chat = Self {
+            agents,
+            agent_name: SharedString::from(command.kind.title()),
             command,
             setup,
             server,
             commands: None,
             _pump: None,
-            agent_name,
             state: State::Starting,
             resuming: false,
             session: None,
             saved: false,
+            first_message: None,
             entries: Vec::new(),
             login: Vec::new(),
+            menu: None,
             input: None,
             focus_pending: true,
             scroll: ScrollHandle::new(),
             _input_events: None,
         };
+        chat.setup.resume = if continue_latest {
+            chat.latest_chat()
+        } else {
+            None
+        };
         chat.start(cx);
         chat
+    }
+
+    fn latest_chat(&self) -> Option<String> {
+        acp::sessions::chats(&self.server, self.command.kind)
+            .into_iter()
+            .next()
+            .map(|chat| chat.session)
     }
 
     fn ensure_input(
@@ -158,14 +212,21 @@ impl ChatView {
         input
     }
 
+    /// Starts the agent process with `setup.resume`.
     fn start(&mut self, cx: &mut Context<Self>) {
+        self.commands = None;
+        self._pump = None;
+        self.entries.clear();
+        self.session = None;
+        self.saved = false;
+        self.first_message = None;
+        self.login.clear();
         self.resuming = self.setup.resume.is_some();
         self.state = if self.resuming {
             State::Loading
         } else {
             State::Starting
         };
-        self.login.clear();
         match acp::spawn(self.command.clone(), self.setup.clone()) {
             Ok(handle) => {
                 let acp::AgentHandle { commands, events } = handle;
@@ -200,41 +261,105 @@ impl ChatView {
         cx.notify();
     }
 
-    /// Starts the agent again after it stopped, continuing the server's saved
-    /// conversation if it has one with this agent.
+    /// Starts the agent again after it stopped, with the chat that was open.
     fn restart(&mut self, cx: &mut Context<Self>) {
-        self.setup.resume = acp::sessions::get(&self.server)
-            .filter(|(kind, _)| *kind == self.command.kind)
-            .map(|(_, session)| session);
-        self.commands = None;
-        self._pump = None;
-        self.entries.clear();
+        self.setup.resume = self
+            .session
+            .clone()
+            .filter(|_| self.saved)
+            .or_else(|| self.setup.resume.clone());
         self.start(cx);
     }
 
-    /// Leaves the conversation for a new one with the same agent.
-    fn new_conversation(&mut self, cx: &mut Context<Self>) {
-        match (&self.commands, &self.state) {
-            (Some(commands), State::Ready) => {
-                if commands.unbounded_send(ToAgent::NewSession).is_ok() {
-                    // The agent deletes the old conversation: do not offer it again.
-                    acp::sessions::forget(&self.server);
-                    self.entries.clear();
-                    self.state = State::Starting;
-                    self.focus_pending = true;
-                }
-            }
-            (_, State::Closed(_)) => {
-                acp::sessions::forget(&self.server);
-                self.setup.resume = None;
-                self.commands = None;
-                self._pump = None;
-                self.entries.clear();
-                self.start(cx);
-            }
-            _ => {}
+    /// Switches the running agent to a saved chat, or to a new one with `None`. A
+    /// stopped agent is started again instead.
+    fn open_chat(&mut self, target: Option<String>, cx: &mut Context<Self>) {
+        if target.is_some() && target == self.session {
+            return;
+        }
+        if target.is_none() && self.session.is_some() && !self.saved && self.entries.is_empty() {
+            // Already a new, untouched chat.
+            return;
+        }
+        let sent = self.state == State::Ready
+            && self.commands.as_ref().is_some_and(|commands| {
+                commands
+                    .unbounded_send(ToAgent::Switch(target.clone()))
+                    .is_ok()
+            });
+        if sent {
+            self.entries.clear();
+            self.session = None;
+            self.saved = false;
+            self.first_message = None;
+            self.resuming = target.is_some();
+            self.state = if self.resuming {
+                State::Loading
+            } else {
+                State::Starting
+            };
+        } else {
+            self.setup.resume = target;
+            self.start(cx);
+        }
+        self.focus_pending = true;
+        cx.notify();
+    }
+
+    /// Deletes a saved chat at once; the menu stays open.
+    fn delete_chat(&mut self, session: String, cx: &mut Context<Self>) {
+        acp::sessions::forget(&self.server, &session);
+        if let Some(commands) = &self.commands {
+            let _ = commands.unbounded_send(ToAgent::Delete(session.clone()));
+        }
+        // An agent that cannot delete over ACP leaves the files behind.
+        acp::agents::delete_saved_session(self.command.kind, &session);
+        if self.setup.resume.as_deref() == Some(session.as_str()) {
+            self.setup.resume = None;
+        }
+        if self.session.as_deref() == Some(session.as_str()) {
+            self.open_chat(None, cx);
         }
         cx.notify();
+    }
+
+    /// Picks another agent for every server and opens its latest chat here.
+    fn choose_agent(&mut self, kind: AgentKind, cx: &mut Context<Self>) {
+        self.menu = None;
+        if kind == self.command.kind {
+            cx.notify();
+            return;
+        }
+        let Some(command) = self
+            .agents
+            .iter()
+            .find(|(each, _)| *each == kind)
+            .and_then(|(_, found)| found.as_ref().ok())
+            .cloned()
+        else {
+            return;
+        };
+        acp::sessions::choose_agent(kind);
+        self.agent_name = SharedString::from(kind.title());
+        self.setup.login = kind.login_command().into();
+        self.command = command;
+        self.setup.resume = self.latest_chat();
+        self.focus_pending = true;
+        self.start(cx);
+    }
+
+    fn toggle_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
+        self.menu = if self.menu == Some(menu) {
+            None
+        } else {
+            Some(menu)
+        };
+        cx.notify();
+    }
+
+    /// Switching is for a quiet moment: not while the agent starts, loads or answers.
+    fn can_switch(&self) -> bool {
+        matches!(self.state, State::Ready | State::Closed(_))
     }
 
     fn at_bottom(&self) -> bool {
@@ -274,10 +399,9 @@ impl ChatView {
             }),
             FromAgent::TurnEnded { stop_reason } => {
                 self.state = State::Ready;
-                if !self.saved
-                    && let Some(session) = &self.session
-                {
-                    acp::sessions::remember(&self.server, self.command.kind, session);
+                if let Some(session) = &self.session {
+                    let first = self.first_message.take().unwrap_or_default();
+                    acp::sessions::touch(&self.server, self.command.kind, session, &first);
                     self.saved = true;
                 }
                 let note = match stop_reason.as_str() {
@@ -412,8 +536,12 @@ impl ChatView {
         {
             return;
         }
+        if !self.saved && self.first_message.is_none() {
+            self.first_message = Some(text.clone());
+        }
         self.entries.push(Entry::User(text.into()));
         self.state = State::Working;
+        self.menu = None;
         input.update(cx, |input, cx| input.set_value("", window, cx));
         self.scroll.scroll_to_bottom();
         cx.notify();
@@ -686,14 +814,10 @@ fn input_detail(input: &serde_json::Value) -> Option<String> {
     Some(detail.lines().next().unwrap_or_default().to_owned())
 }
 
-impl Render for ChatView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let input = self.ensure_input(window, cx);
-        if std::mem::take(&mut self.focus_pending) {
-            window.focus(&input.focus_handle(cx), cx);
-        }
-        let theme = cx.theme().clone();
-        let (status, color) = match &self.state {
+impl ChatView {
+    fn state_look(&self, cx: &Context<Self>) -> (SharedString, Hsla) {
+        let theme = cx.theme();
+        let (text, color) = match &self.state {
             State::Starting => (t!("chat.starting"), theme.warning),
             State::Loading => (t!("chat.loading"), theme.warning),
             State::Ready => (t!("chat.ready"), theme.success),
@@ -701,51 +825,309 @@ impl Render for ChatView {
             State::Closed(Some(_)) => (t!("chat.failed"), theme.danger),
             State::Closed(None) => (t!("chat.closed"), theme.muted_foreground),
         };
-        let working = self.state == State::Working;
-        let closed = matches!(self.state, State::Closed(_));
+        (text.into(), color)
+    }
 
-        let header = h_flex()
-            .flex_shrink_0()
-            .px_4()
-            .py_2()
+    /// The title of the open chat: saved, about to be saved, or new.
+    fn chat_title(&self) -> SharedString {
+        let saved = self
+            .session
+            .as_ref()
+            .filter(|_| self.saved)
+            .and_then(|session| {
+                acp::sessions::chats(&self.server, self.command.kind)
+                    .into_iter()
+                    .find(|chat| &chat.session == session)
+            })
+            .map(|chat| chat.title)
+            .filter(|title| !title.is_empty());
+        match saved.or_else(|| self.first_message.clone()) {
+            Some(title) => title.into(),
+            None => t!("chat.new_chat").into(),
+        }
+    }
+
+    /// A button of the top row that opens a menu.
+    fn menu_button(
+        &self,
+        id: &'static str,
+        menu: Menu,
+        content: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let theme = cx.theme().clone();
+        let enabled = self.can_switch();
+        div()
+            .id(id)
+            .h(px(28.))
+            .px_2()
             .gap_2()
+            .flex()
+            .items_center()
+            .rounded_md()
+            .when(self.menu == Some(menu), |this| this.bg(theme.secondary))
+            .when(enabled, |this| {
+                this.cursor_pointer()
+                    .hover(|style| style.bg(theme.secondary_hover))
+                    .on_click(cx.listener(move |this, _, _window, cx| this.toggle_menu(menu, cx)))
+            })
+            .when(!enabled, |this| this.opacity(0.6))
+            .child(content)
+            .child(
+                Icon::empty()
+                    .path("icons/chevron-down.svg")
+                    .xsmall()
+                    .text_color(theme.muted_foreground),
+            )
+    }
+
+    fn top_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let (_, color) = self.state_look(cx);
+        let agent = h_flex()
+            .gap_2()
+            .items_center()
+            .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(color))
+            .child(
+                Label::new(self.command.kind.title())
+                    .text_sm()
+                    .font_medium(),
+            );
+        let chat = div()
+            .min_w(px(0.))
+            .truncate()
+            .text_sm()
+            .child(self.chat_title());
+        h_flex()
+            .h(px(TOP_ROW))
+            .flex_shrink_0()
+            .px_2()
+            .gap_1()
             .items_center()
             .border_b_1()
             .border_color(theme.border)
-            .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(color))
             .child(
-                v_flex()
+                self.menu_button("chat-agent", Menu::Agents, agent, cx)
+                    .flex_shrink_0(),
+            )
+            .child(
+                self.menu_button("chat-chats", Menu::Chats, chat, cx)
                     .flex_1()
                     .min_w(px(0.))
+                    .justify_between(),
+            )
+            .into_any_element()
+    }
+
+    fn menu_row(
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let theme = cx.theme();
+        div()
+            .id(id)
+            .min_h(px(30.))
+            .px_2()
+            .gap_2()
+            .flex()
+            .items_center()
+            .rounded_md()
+            .hover(|style| style.bg(theme.secondary_hover))
+            .cursor_pointer()
+    }
+
+    fn agents_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let rows: Vec<AnyElement> =
+            self.agents
+                .iter()
+                .map(|(kind, found)| {
+                    let kind = *kind;
+                    let current = kind == self.command.kind;
+                    match found {
+                        Ok(_) => Self::menu_row(
+                            SharedString::from(format!("chat-agent-{}", kind.id())),
+                            cx,
+                        )
+                        .child(
+                            div()
+                                .w(px(12.))
+                                .flex_shrink_0()
+                                .text_color(theme.primary)
+                                .child(if current { "✓" } else { "" }),
+                        )
+                        .child(Label::new(kind.title()).text_sm())
+                        .on_click(
+                            cx.listener(move |this, _, _window, cx| this.choose_agent(kind, cx)),
+                        )
+                        .into_any_element(),
+                        Err(missing) => v_flex()
+                            .px_2()
+                            .py_1()
+                            .pl(px(28.))
+                            .child(
+                                Label::new(kind.title())
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                Label::new(SharedString::from(
+                                    t!("chat.install", program = missing.install).to_string(),
+                                ))
+                                .text_xs()
+                                .text_color(theme.muted_foreground),
+                            )
+                            .into_any_element(),
+                    }
+                })
+                .collect();
+        v_flex().children(rows).into_any_element()
+    }
+
+    fn chats_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let chats = acp::sessions::chats(&self.server, self.command.kind);
+        let current = self.session.clone().filter(|_| self.saved);
+        let create = Self::menu_row("chat-create", cx)
+            .child(
+                div().w(px(12.)).flex_shrink_0().child(
+                    Icon::empty()
+                        .path("icons/plus.svg")
+                        .xsmall()
+                        .text_color(theme.primary),
+                ),
+            )
+            .child(Label::new(t!("chat.create")).text_sm())
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.menu = None;
+                this.open_chat(None, cx);
+            }));
+        let rows: Vec<AnyElement> = chats
+            .into_iter()
+            .enumerate()
+            .map(|(number, chat)| {
+                let open = chat.session.clone();
+                let delete = chat.session.clone();
+                let selected = current.as_deref() == Some(chat.session.as_str());
+                let title = if chat.title.is_empty() {
+                    t!("chat.untitled").to_string()
+                } else {
+                    chat.title
+                };
+                Self::menu_row(("chat-row", number), cx)
                     .child(
-                        Label::new(self.agent_name.clone())
-                            .text_sm()
-                            .font_medium()
-                            .truncate(),
+                        div()
+                            .w(px(12.))
+                            .flex_shrink_0()
+                            .text_color(theme.primary)
+                            .child(if selected { "✓" } else { "" }),
                     )
                     .child(
-                        Label::new(status)
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_sm()
+                            .child(title),
+                    )
+                    .child(
+                        Button::new(("chat-delete", number))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::empty().path("icons/delete.svg"))
+                            .tooltip(t!("chat.delete"))
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                // Deleting is not choosing: the menu stays open.
+                                cx.stop_propagation();
+                                this.delete_chat(delete.clone(), cx);
+                            })),
+                    )
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.menu = None;
+                        this.open_chat(Some(open.clone()), cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let empty = rows.is_empty();
+        v_flex()
+            .child(create)
+            .child(div().my_1().h(px(1.)).bg(theme.border))
+            .when(empty, |this| {
+                this.child(
+                    div().px_2().py_1().child(
+                        Label::new(t!("chat.no_chats"))
                             .text_xs()
                             .text_color(theme.muted_foreground),
                     ),
-            )
-            .child(
-                Button::new("chat-new")
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::empty().path("icons/plus.svg"))
-                    .tooltip(t!("chat.new"))
-                    .disabled(!matches!(self.state, State::Ready | State::Closed(_)))
-                    .on_click(cx.listener(|this, _, _window, cx| this.new_conversation(cx))),
-            )
-            .child(
-                Button::new("chat-close")
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::empty().path("icons/close.svg"))
-                    .tooltip(t!("chat.close"))
-                    .on_click(cx.listener(|_, _, _window, cx| cx.emit(ChatEvent::Close))),
-            );
+                )
+            })
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// The open menu over the chat, and a cover that closes it on a click elsewhere.
+    fn open_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.menu?;
+        let theme = cx.theme().clone();
+        let body = match menu {
+            Menu::Agents => self.agents_menu(cx),
+            Menu::Chats => self.chats_menu(cx),
+        };
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(
+                    div()
+                        .id("chat-menu-cover")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .occlude()
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            this.menu = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id("chat-menu")
+                        .absolute()
+                        .occlude()
+                        .top(px(TOP_ROW + 2.))
+                        .left(px(8.))
+                        .right(px(8.))
+                        .max_h(px(360.))
+                        // Plain scrolling: the scrollbar wrapper would stretch the box to
+                        // its full height.
+                        .overflow_y_scroll()
+                        .p_1()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.popover)
+                        .shadow_lg()
+                        .child(body),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+impl Render for ChatView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = self.ensure_input(window, cx);
+        if std::mem::take(&mut self.focus_pending) {
+            window.focus(&input.focus_handle(cx), cx);
+        }
+        let theme = cx.theme().clone();
+        let working = self.state == State::Working;
+        let closed = matches!(self.state, State::Closed(_));
+        let (status, _) = self.state_look(cx);
 
         let entries: Vec<AnyElement> = self
             .entries
@@ -777,6 +1159,7 @@ impl Render for ChatView {
                 )
                 .children(self.login.iter().enumerate().map(|(number, method)| {
                     let program = self.command.program_with(&method.args);
+                    let agent = self.command.kind.title();
                     v_flex()
                         .gap_1()
                         .child(
@@ -786,7 +1169,10 @@ impl Render for ChatView {
                                     .xsmall()
                                     .label(method.name.clone())
                                     .on_click(cx.listener(move |_, _, _window, cx| {
-                                        cx.emit(ChatEvent::Login(program.clone()))
+                                        cx.emit(ChatEvent::Login {
+                                            agent,
+                                            program: program.clone(),
+                                        })
                                     })),
                             ),
                         )
@@ -835,6 +1221,11 @@ impl Render for ChatView {
             ),
             _ => None,
         };
+        let placeholder = match self.state {
+            State::Starting | State::Loading if empty => Some(status),
+            State::Ready if empty => Some(t!("chat.intro").into()),
+            _ => None,
+        };
 
         let body = div()
             .id("chat-body")
@@ -847,13 +1238,11 @@ impl Render for ChatView {
                     .px_4()
                     .py_3()
                     .gap_3()
-                    .when(empty && failure.is_none() && !closed, |this| {
-                        this.child(
-                            Label::new(t!("chat.intro"))
-                                .text_xs()
-                                .text_color(theme.muted_foreground),
-                        )
-                    })
+                    .children(placeholder.map(|text| {
+                        Label::new(text)
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                    }))
                     .children(entries)
                     .children(login)
                     .children(failure),
@@ -897,11 +1286,15 @@ impl Render for ChatView {
                     .child(div().flex_shrink_0().child(action)),
             );
 
+        let top = self.top_row(cx);
+        let menu = self.open_menu(cx);
         v_flex()
+            .relative()
             .size_full()
-            .child(header)
+            .child(top)
             .child(body)
             .child(composer)
+            .children(menu)
     }
 }
 

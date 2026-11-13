@@ -1,11 +1,12 @@
-//! Cratty as an MCP server: AI agents (Claude Code, OpenCode, Codex…) work on the
-//! servers of open tabs through it, over the connections those tabs already have.
+//! Cratty as an MCP server for its own AI tab: the agents it runs (Claude Code,
+//! OpenCode) work on the servers of open tabs through it, over the connections those
+//! tabs already have.
 //!
-//! The server listens on a local socket next to the instance one. An agent starts
-//! `cratty --mcp-bridge` as an ordinary stdio MCP server; the bridge connects to the
-//! socket, presents the access token of one tab and then passes MCP messages through.
-//! A token is made when the user allows agent access on a tab and lives only in memory:
-//! closing the tab, revoking access or restarting the app ends it.
+//! The server listens on a local socket next to the instance one. The AI tab starts its
+//! agent with `cratty --mcp-bridge` as an ordinary stdio MCP server; the bridge connects
+//! to the socket, presents the access token of one tab and then passes MCP messages
+//! through. A token is made when the tab's chat starts, is given only to that agent and
+//! lives only in memory: closing the tab or restarting the app ends it.
 //!
 //! The window checks every tool call: the token must still belong to an open tab, and
 //! commands and file changes wait for the user's approval. The agent's own permission
@@ -189,33 +190,6 @@ pub fn new_token() -> Result<String> {
 pub fn bridge_executable() -> Result<String> {
     let path = std::env::current_exe()?;
     Ok(path.to_string_lossy().into_owned())
-}
-
-/// The `mcpServers` configuration that Claude Code, Cursor, Gemini CLI and others read.
-pub fn client_config(token: &str, address: &Address) -> Result<Value> {
-    Ok(json!({
-        "mcpServers": {
-            SERVER_NAME: {
-                "type": "stdio",
-                "command": bridge_executable()?,
-                "args": [bridge::FLAG],
-                "env": {
-                    bridge::TOKEN_VAR: token,
-                    bridge::ADDRESS_VAR: address.as_text(),
-                },
-            }
-        }
-    }))
-}
-
-/// Starts Claude Code with only this server: none of the user's other MCP servers and
-/// none of the built-in tools, which would act on this computer rather than the server.
-/// Cratty asks the user about every change itself, so Claude Code need not ask again.
-pub fn claude_command(config: &Value) -> String {
-    format!(
-        "claude --strict-mcp-config --mcp-config {} --tools '' --allowedTools mcp__{SERVER_NAME}",
-        crate::ssh::remote::quote(&config.to_string())
-    )
 }
 
 /// What a tool call goes through: the window decides, the call does the work.
@@ -423,19 +397,5 @@ mod tests {
         assert_eq!(first.len(), 48);
         assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(first, new_token().expect("token"));
-    }
-
-    #[test]
-    fn config_starts_the_bridge_with_the_token() {
-        let address = Address::Socket("/run/user/1000/cratty/mcp.sock".into());
-        let config = client_config("abc", &address).expect("config");
-        let server = &config["mcpServers"]["cratty"];
-        assert_eq!(server["args"], json!(["--mcp-bridge"]));
-        assert_eq!(server["env"]["CRATTY_MCP_TOKEN"], "abc");
-        assert_eq!(server["env"]["CRATTY_MCP_ADDRESS"], address.as_text());
-
-        let command = claude_command(&config);
-        assert!(command.starts_with("claude --strict-mcp-config --mcp-config '{"));
-        assert!(command.ends_with("--tools '' --allowedTools mcp__cratty"));
     }
 }

@@ -1,10 +1,11 @@
-//! Agent access on a tab: allowing and revoking it, the configuration agents need, and
-//! approval of every command and file change they ask for (see `crate::mcp`).
+//! The AI tab's chat on a tab, and the agent access behind it: the token that lets
+//! Cratty's own agents reach the tab's server through MCP, and approval of every
+//! command and file change they ask for (see `crate::mcp`). Access is never handed out
+//! to other programs.
 
 use super::*;
 use crate::mcp::{self, Action, Ask, CallAsk, Grant, SessionInfo};
 use crate::ssh::remote::Remote;
-use gpui_kit::component::checkbox::Checkbox;
 
 // Read by the model, so in English.
 const REVOKED: &str = "agent access to this tab was revoked or the tab was closed in Cratty";
@@ -64,73 +65,31 @@ impl AppView {
         }
     }
 
-    pub(super) fn allow_agents(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.agent_notice = None;
+    /// The tab's access token, made with the MCP server on first use.
+    fn agent_token(&mut self, index: usize, cx: &mut Context<Self>) -> Option<String> {
+        if let Some(access) = self.tabs.get(index)?.agents.as_ref() {
+            return Some(access.token.clone());
+        }
         if !self.ensure_mcp(cx) {
-            cx.notify();
-            return;
+            return None;
         }
         let token = match mcp::new_token() {
             Ok(token) => token,
             Err(error) => {
                 self.mcp_error = Some(t!("ai.server_failed", error = format!("{error:#}")).into());
-                cx.notify();
-                return;
+                return None;
             }
         };
-        if let Some(tab) = self.tabs.get_mut(index) {
-            tab.agents = Some(AgentAccess {
-                token,
-                trusted: false,
-            });
-        }
-        cx.notify();
-    }
-
-    pub(super) fn revoke_agents(&mut self, index: usize, cx: &mut Context<Self>) {
-        // The conversation works through this access: it ends with it.
-        if let Some(tab) = self.tabs.get_mut(index) {
-            tab.chat = None;
-        }
-        let access = self.tabs.get_mut(index).and_then(|tab| tab.agents.take());
-        if let Some(access) = access {
-            self.drop_agent_calls(&access.token);
-        }
-        self.agent_notice = None;
-        cx.notify();
+        self.tabs.get_mut(index)?.agents = Some(AgentAccess {
+            token: token.clone(),
+            trusted: false,
+        });
+        Some(token)
     }
 
     fn set_agents_trusted(&mut self, index: usize, trusted: bool, cx: &mut Context<Self>) {
         if let Some(access) = self.tabs.get_mut(index).and_then(|tab| tab.agents.as_mut()) {
             access.trusted = trusted;
-        }
-        cx.notify();
-    }
-
-    fn copy_agent_config(&mut self, index: usize, claude: bool, cx: &mut Context<Self>) {
-        let Some(access) = self.tabs.get(index).and_then(|tab| tab.agents.as_ref()) else {
-            return;
-        };
-        let Some(running) = &self.mcp else {
-            return;
-        };
-        match mcp::client_config(&access.token, running.address()) {
-            Ok(config) => {
-                let text = if claude {
-                    mcp::claude_command(&config)
-                } else {
-                    serde_json::to_string_pretty(&config).unwrap_or_default()
-                };
-                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
-                self.agent_notice = Some(if claude {
-                    t!("ai.copied_command").into()
-                } else {
-                    t!("ai.copied_config").into()
-                });
-            }
-            Err(error) => {
-                self.mcp_error = Some(t!("ai.server_failed", error = format!("{error:#}")).into());
-            }
         }
         cx.notify();
     }
@@ -156,24 +115,27 @@ impl AppView {
         }));
     }
 
-    /// Starts the AI tab's conversation; with `resume`, the server's saved one.
-    fn start_chat(
-        &mut self,
-        index: usize,
-        command: crate::acp::AgentCommand,
-        resume: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.tabs.get(index).is_some_and(|tab| tab.agents.is_none()) {
-            self.allow_agents(index, cx);
-        }
+    /// Starts the AI tab's chat with the agent picked last. It continues the server's
+    /// latest chat, unless another tab of the server has it open.
+    fn start_chat(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(agents) = self.agent_kinds.clone() else {
+            return;
+        };
+        let Some(command) = crate::ui::chat::pick_agent(&agents) else {
+            return;
+        };
+        let Some(token) = self.agent_token(index, cx) else {
+            cx.notify();
+            return;
+        };
         let Some(tab) = self.tabs.get(index) else {
             return;
         };
-        let Some(token) = tab.agents.as_ref().map(|access| access.token.clone()) else {
-            return;
-        };
         let server = session_panel::address(&tab.request);
+        let open_elsewhere = self
+            .tabs
+            .iter()
+            .any(|other| other.chat.is_some() && session_panel::address(&other.request) == server);
         let Some(address) = self.mcp.as_ref().map(|running| running.address().as_text()) else {
             return;
         };
@@ -199,14 +161,15 @@ impl AppView {
                 ],
             },
             login: command.kind.login_command().into(),
-            resume,
+            resume: None,
         };
-        let title = command.kind.title();
-        let view = cx.new(|cx| crate::ui::chat::ChatView::new(command, setup, server, cx));
+        let view = cx.new(|cx| {
+            crate::ui::chat::ChatView::new(agents, command, setup, server, !open_elsewhere, cx)
+        });
         let events = cx.subscribe(
             &view,
-            move |this, view, event: &crate::ui::chat::ChatEvent, cx| {
-                this.on_chat_event(&view, event, title, cx)
+            |this, view, event: &crate::ui::chat::ChatEvent, cx| {
+                this.on_chat_event(&view, event, cx)
             },
         );
         if let Some(tab) = self.tabs.get_mut(index) {
@@ -214,7 +177,6 @@ impl AppView {
                 view,
                 _events: events,
             });
-            tab.chat_restored = true;
         }
         cx.notify();
     }
@@ -223,35 +185,20 @@ impl AppView {
         &mut self,
         view: &Entity<crate::ui::chat::ChatView>,
         event: &crate::ui::chat::ChatEvent,
-        agent: &'static str,
         cx: &mut Context<Self>,
     ) {
-        match event {
-            crate::ui::chat::ChatEvent::Close => {
-                if let Some(tab) = self
-                    .tabs
-                    .iter_mut()
-                    .find(|tab| tab.chat.as_ref().is_some_and(|chat| &chat.view == view))
-                {
-                    // Dropping the view ends the agent; the saved session stays.
-                    tab.chat = None;
-                }
-                cx.notify();
-            }
-            crate::ui::chat::ChatEvent::Login(program) => {
-                let title = t!("chat.login_tab", agent = agent).to_string();
-                if let Err(error) = self.open_program_tab(program, title, cx) {
-                    // No local terminal here (Windows): the user runs it by hand.
-                    let line = command_line(program);
-                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(line.clone()));
-                    let text = t!(
-                        "chat.login_manual",
-                        error = error.to_string(),
-                        command = line
-                    );
-                    view.update(cx, |view, cx| view.add_notice(text.into(), cx));
-                }
-            }
+        let crate::ui::chat::ChatEvent::Login { agent, program } = event;
+        let title = t!("chat.login_tab", agent = agent).to_string();
+        if let Err(error) = self.open_program_tab(program, title, cx) {
+            // No local terminal here (Windows): the user runs it by hand.
+            let line = command_line(program);
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(line.clone()));
+            let text = t!(
+                "chat.login_manual",
+                error = error.to_string(),
+                command = line
+            );
+            view.update(cx, |view, cx| view.add_notice(text.into(), cx));
         }
     }
 
@@ -285,7 +232,6 @@ impl AppView {
             local: true,
             agents: None,
             chat: None,
-            chat_restored: false,
         });
         self.active = Some(self.tabs.len() - 1);
         self.showing_page = false;
@@ -294,143 +240,104 @@ impl AppView {
         Ok(())
     }
 
-    /// The AI tab of the session panel: the conversation, or a choice of agent.
+    /// The AI tab of the session panel: the chat, started on first sight.
     pub(super) fn chat_panel(
         &self,
         index: usize,
         tab: &SessionTab,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if let Some(chat) = &tab.chat {
-            return div()
-                .size_full()
-                .child(chat.view.clone())
-                .into_any_element();
-        }
         let theme = cx.theme().clone();
-        let mut panel = v_flex()
-            .id("chat-start")
-            .size_full()
-            .overflow_y_scrollbar()
-            .px_4()
-            .py_3()
-            .gap_3()
-            .child(Label::new(t!("chat.title")).text_sm().font_medium());
-
-        if tab.local {
-            return panel
-                .child(
-                    Label::new(t!("chat.ssh_only"))
-                        .text_xs()
-                        .text_color(theme.muted_foreground),
-                )
+        if let Some(chat) = &tab.chat {
+            // Commands run without approval on this tab: say so, and offer to ask again.
+            let trusted = tab
+                .agents
+                .as_ref()
+                .is_some_and(|access| access.trusted)
+                .then(|| {
+                    h_flex()
+                        .flex_shrink_0()
+                        .px_4()
+                        .py_1()
+                        .gap_2()
+                        .items_center()
+                        .bg(theme.warning.opacity(0.12))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_xs()
+                                .text_color(theme.warning)
+                                .child(SharedString::from(t!("chat.trusted").to_string())),
+                        )
+                        .child(
+                            Button::new("chat-ask-again")
+                                .ghost()
+                                .xsmall()
+                                .label(t!("chat.ask_again"))
+                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                    this.set_agents_trusted(index, false, cx)
+                                })),
+                        )
+                });
+            return v_flex()
+                .size_full()
+                .children(trusted)
+                .child(div().flex_1().min_h(px(0.)).child(chat.view.clone()))
                 .into_any_element();
         }
 
-        panel = panel.child(
-            Label::new(t!("chat.about"))
-                .text_xs()
-                .text_color(theme.muted_foreground),
-        );
+        let note = |text: SharedString| {
+            v_flex().px_4().py_3().gap_2().child(
+                Label::new(text)
+                    .text_xs()
+                    .text_color(theme.muted_foreground),
+            )
+        };
+        if tab.local {
+            return note(t!("chat.ssh_only").into()).into_any_element();
+        }
         let Some(kinds) = &self.agent_kinds else {
             let this = cx.entity().downgrade();
             cx.defer(move |cx| {
                 let _ = this.update(cx, |this, cx| this.scan_agents(cx));
             });
-            return panel
-                .child(
-                    Label::new(t!("chat.looking"))
+            return note(t!("chat.looking").into()).into_any_element();
+        };
+        if kinds.iter().all(|(_, found)| found.is_err()) {
+            return note(t!("chat.no_agents").into())
+                .children(kinds.iter().filter_map(|(kind, found)| {
+                    let missing = found.as_ref().err()?;
+                    Some(
+                        Label::new(SharedString::from(
+                            t!(
+                                "chat.missing",
+                                agent = kind.title(),
+                                program = missing.install
+                            )
+                            .to_string(),
+                        ))
                         .text_xs()
                         .text_color(theme.muted_foreground),
-                )
-                .into_any_element();
-        };
-        let found = |kind: crate::acp::AgentKind| {
-            kinds
-                .iter()
-                .find(|(each, _)| *each == kind)
-                .and_then(|(_, found)| found.as_ref().ok())
-                .cloned()
-        };
-
-        // The server's saved conversation: brought back by itself the first time the
-        // tab shows it, on request after that.
-        let server = session_panel::address(&tab.request);
-        let saved = crate::acp::sessions::get(&server)
-            .and_then(|(kind, session)| Some((found(kind)?, session)));
-        // Another tab of the same server may have the conversation open already.
-        let open_elsewhere = self
-            .tabs
-            .iter()
-            .any(|other| other.chat.is_some() && session_panel::address(&other.request) == server);
-        if let Some((command, session)) = &saved {
-            if !tab.chat_restored && !open_elsewhere {
-                let (command, session) = (command.clone(), session.clone());
-                let this = cx.entity().downgrade();
-                cx.defer(move |cx| {
-                    let _ = this.update(cx, |this, cx| {
-                        this.start_chat(index, command, Some(session), cx)
-                    });
-                });
-            }
-            let (command, session) = (command.clone(), session.clone());
-            panel = panel.child(
-                Button::new("chat-continue")
-                    .primary()
-                    .small()
-                    .label(t!("chat.continue", agent = command.kind.title()))
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.start_chat(index, command.clone(), Some(session.clone()), cx)
-                    })),
-            );
-        }
-
-        for (kind, found) in kinds {
-            let row = match found {
-                Ok(command) => {
-                    let command = command.clone();
-                    let label = if saved.is_some() {
-                        t!("chat.start_new_with", agent = kind.title())
-                    } else {
-                        t!("chat.start_with", agent = kind.title())
-                    };
-                    v_flex().gap_1().child(
-                        Button::new(SharedString::from(format!("chat-start-{}", kind.id())))
-                            .outline()
-                            .small()
-                            .label(label)
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.start_chat(index, command.clone(), None, cx)
-                            })),
                     )
-                }
-                Err(missing) => v_flex().gap_1().child(
-                    Label::new(SharedString::from(
-                        t!(
-                            "chat.missing",
-                            agent = kind.title(),
-                            program = missing.install
-                        )
-                        .to_string(),
-                    ))
-                    .text_xs()
-                    .text_color(theme.muted_foreground),
-                ),
-            };
-            panel = panel.child(row);
+                }))
+                .into_any_element();
         }
-        panel = panel.child(
-            Label::new(t!("chat.sign_in"))
-                .text_xs()
-                .text_color(theme.muted_foreground),
-        );
-        panel
-            .children(
-                self.mcp_error
-                    .clone()
-                    .map(|error| Label::new(error).text_xs().text_color(theme.danger)),
-            )
-            .into_any_element()
+
+        if let Some(error) = self.mcp_error.clone() {
+            // Starting again on every frame would not help: the error says why.
+            return note(error).into_any_element();
+        }
+        // Started after this frame: the chat needs the app, not just a look at it.
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = this.update(cx, |this, cx| {
+                if this.tabs.get(index).is_some_and(|tab| tab.chat.is_none()) {
+                    this.start_chat(index, cx);
+                }
+            });
+        });
+        note(t!("chat.starting").into()).into_any_element()
     }
 
     fn agent_tab(&self, token: &str) -> Option<usize> {
@@ -547,106 +454,6 @@ impl AppView {
         for pending in gone {
             let _ = pending.ask.reply.send(Err(REVOKED.into()));
         }
-    }
-
-    /// The "AI agents" part of the session panel.
-    pub(super) fn agent_section(
-        &self,
-        index: usize,
-        tab: &SessionTab,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = cx.theme().clone();
-        let mut section = Self::info_section(t!("ai.section"), cx);
-
-        match &tab.agents {
-            None => {
-                section = section
-                    .child(
-                        Label::new(t!("ai.hint"))
-                            .text_xs()
-                            .text_color(theme.muted_foreground),
-                    )
-                    .child(
-                        h_flex().pt_1().child(
-                            Button::new("ai-allow")
-                                .outline()
-                                .small()
-                                .label(t!("ai.allow"))
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.allow_agents(index, cx)
-                                })),
-                        ),
-                    );
-            }
-            Some(access) => {
-                section = section
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(div().flex_shrink_0().child(Self::dot(theme.success)))
-                            .child(Label::new(t!("ai.allowed")).text_sm()),
-                    )
-                    .child(
-                        Checkbox::new("ai-ask-first")
-                            .small()
-                            .label(SharedString::from(t!("ai.ask_first")))
-                            .checked(!access.trusted)
-                            .on_click(cx.listener(move |this, checked: &bool, _window, cx| {
-                                this.set_agents_trusted(index, !*checked, cx)
-                            })),
-                    )
-                    .child(
-                        h_flex()
-                            .pt_1()
-                            .gap_1()
-                            .flex_wrap()
-                            .child(
-                                Button::new("ai-copy-claude")
-                                    .outline()
-                                    .xsmall()
-                                    .label(t!("ai.copy_claude"))
-                                    .tooltip(t!("ai.copy_claude_hint"))
-                                    .on_click(cx.listener(move |this, _, _window, cx| {
-                                        this.copy_agent_config(index, true, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("ai-copy-config")
-                                    .outline()
-                                    .xsmall()
-                                    .label(t!("ai.copy_config"))
-                                    .tooltip(t!("ai.copy_config_hint"))
-                                    .on_click(cx.listener(move |this, _, _window, cx| {
-                                        this.copy_agent_config(index, false, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("ai-revoke")
-                                    .ghost()
-                                    .xsmall()
-                                    .label(t!("ai.revoke"))
-                                    .on_click(cx.listener(move |this, _, _window, cx| {
-                                        this.revoke_agents(index, cx)
-                                    })),
-                            ),
-                    )
-                    .children(self.agent_notice.clone().map(|notice| {
-                        Label::new(notice)
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                    }));
-            }
-        }
-
-        section
-            .children(
-                self.mcp_error
-                    .clone()
-                    .map(|error| Label::new(error).text_xs().text_color(theme.danger)),
-            )
-            .into_any_element()
     }
 
     pub(super) fn agent_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

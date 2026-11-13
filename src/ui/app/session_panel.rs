@@ -38,7 +38,7 @@ impl AppView {
         let theme = cx.theme().clone();
 
         let body = match self.info_tab {
-            InfoTab::Info => self.session_info(index, tab, view, cx),
+            InfoTab::Info => self.session_info(tab, view, cx),
             InfoTab::Files => match files {
                 Some(panel) => div()
                     .size_full()
@@ -175,7 +175,7 @@ impl AppView {
         }
     }
 
-    pub(super) fn info_section(title: impl Into<SharedString>, cx: &App) -> gpui_kit::Div {
+    fn info_section(title: impl Into<SharedString>, cx: &App) -> gpui_kit::Div {
         v_flex().gap_1().child(
             div().h(px(28.)).flex().items_center().child(
                 Label::new(title.into())
@@ -204,7 +204,6 @@ impl AppView {
 
     fn session_info(
         &self,
-        index: usize,
         tab: &SessionTab,
         view: &Entity<TerminalView>,
         cx: &mut Context<Self>,
@@ -373,7 +372,6 @@ impl AppView {
                         )
                     })),
             )
-            .when(!tab.local, |this| this.child(self.agent_section(index, tab, cx)))
             .into_any_element()
     }
 }

@@ -15,15 +15,16 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     label::Label,
+    scroll::{ScrollableMask, Scrollbar},
     spinner::Spinner,
     switch::Switch,
     text::{TextView, TextViewStyle},
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, Context, ElementId, Entity, EventEmitter, Focusable, Hsla, IntoElement,
-    Render, ScrollHandle, SharedString, StyleRefinement, Subscription, Task, WeakEntity, Window,
-    div, prelude::*, px, relative,
+    AnyElement, App, Axis, Context, ElementId, Entity, EventEmitter, Focusable, Hsla, IntoElement,
+    Overflow, Render, RenderOnce, ScrollHandle, SharedString, StyleRefinement, Subscription, Task,
+    WeakEntity, Window, div, prelude::*, px, relative,
 };
 use rust_i18n::t;
 
@@ -1379,19 +1380,20 @@ fn code_section(
     let theme = cx.theme();
     let (name, number) = id;
     let (shown, hidden) = clip(text);
+    // A tall block scrolls on its own, with a scrollbar (the text view's own mode): the
+    // wheel moves it alone until it reaches an end, and then the chat.
+    let mut block = StyleRefinement::default()
+        .px(px(10.))
+        .py(px(8.))
+        .text_size(px(12.))
+        .max_h(px(BLOCK_HEIGHT));
+    block.overflow.y = Some(Overflow::Scroll);
     let code = TextView::markdown(
         SharedString::from(format!("{name}-{number}")),
         SharedString::from(fenced(language, &shown)),
     )
     .selectable(true)
-    .style(
-        TextViewStyle::default().code_block(
-            StyleRefinement::default()
-                .px(px(10.))
-                .py(px(8.))
-                .text_size(px(12.)),
-        ),
-    )
+    .style(TextViewStyle::default().code_block(block))
     // Something in the corner takes the language label's place: the title copies.
     .code_block_actions(|_, _, _| div());
     v_flex()
@@ -1411,13 +1413,7 @@ fn code_section(
                     text.to_owned(),
                 )),
         )
-        .child(
-            div()
-                .id(SharedString::from(format!("{name}-{number}-scroll")))
-                .max_h(px(320.))
-                .overflow_y_scroll()
-                .child(code),
-        )
+        .child(code)
         .when(hidden > 0, |this| {
             this.child(
                 Label::new(SharedString::from(
@@ -1486,19 +1482,22 @@ fn diff_section(
                 )),
         )
         .child(
-            v_flex()
-                .id(SharedString::from(format!("{name}-{number}-scroll")))
-                .max_h(px(320.))
-                .overflow_y_scroll()
-                .py_1()
+            div()
                 .rounded_md()
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.muted)
-                .font_family(mono)
-                .text_size(px(12.))
-                .line_height(relative(1.5))
-                .children(lines),
+                .overflow_hidden()
+                .child(ScrollBox {
+                    id: SharedString::from(format!("{name}-{number}-scroll")).into(),
+                    content: v_flex()
+                        .py_1()
+                        .font_family(mono)
+                        .text_size(px(12.))
+                        .line_height(relative(1.5))
+                        .children(lines)
+                        .into_any_element(),
+                }),
         )
         .when(old_hidden + new_hidden > 0, |this| {
             this.child(
@@ -1510,6 +1509,46 @@ fn diff_section(
             )
         })
         .into_any_element()
+}
+
+/// How tall a block of a tool card grows before it scrolls.
+const BLOCK_HEIGHT: f32 = 320.;
+
+/// Content that scrolls on its own past [`BLOCK_HEIGHT`], with a scrollbar, as the text
+/// view's code blocks do: the wheel over it moves it alone until it reaches an end, and
+/// then the chat around it.
+#[derive(IntoElement)]
+struct ScrollBox {
+    id: ElementId,
+    content: AnyElement,
+}
+
+impl RenderOnce for ScrollBox {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let handle = window
+            .use_keyed_state((self.id.clone(), "state"), cx, |_, _| {
+                ScrollHandle::default()
+            })
+            .read(cx)
+            .clone();
+        div()
+            .relative()
+            .child(
+                div()
+                    .id(self.id.clone())
+                    .max_h(px(BLOCK_HEIGHT))
+                    .overflow_y_scroll()
+                    .track_scroll(&handle)
+                    .child(self.content),
+            )
+            .child(ScrollableMask::new(Axis::Vertical, &handle).id((self.id, "mask")))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(Scrollbar::vertical(&handle)),
+            )
+    }
 }
 
 /// A fenced block that holds any text: its fence is longer than any run of backticks in it.

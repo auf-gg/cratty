@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -66,6 +67,7 @@ impl AgentCommand {
             program: self.program.clone(),
             args: self.args.iter().chain(args).cloned().collect(),
             env,
+            cwd: crate::shells::home(),
         }
     }
 }

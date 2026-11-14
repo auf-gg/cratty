@@ -223,6 +223,65 @@ impl AppView {
             .into_any_element()
     }
 
+    /// `id` is a shell from `crate::shells`, or empty for the system's default.
+    fn set_local_shell(&mut self, id: String, cx: &mut Context<Self>) {
+        self.settings.local_shell = id;
+        self.error = settings::save(&self.settings).err().map(SharedString::from);
+        cx.notify();
+    }
+
+    /// The shell of new local terminals.
+    pub(super) fn shell_block(&self, cx: &mut Context<Self>) -> AnyElement {
+        let section = Self::section(t!("settings.shell.title"), cx);
+        let Some(shells) = crate::shells::found() else {
+            return section
+                .child(Self::hint(t!("rail.shells_searching"), cx))
+                .into_any_element();
+        };
+        let chosen = self.settings.local_shell.clone();
+        // A shell chosen earlier but gone now: the default one is used.
+        let chosen = if shells.iter().any(|shell| shell.id == chosen) {
+            chosen
+        } else {
+            String::new()
+        };
+        let default = crate::shells::default_id(shells);
+        let default_name = shells
+            .iter()
+            .find(|shell| shell.id == default)
+            .map(|shell| shell.name.clone())
+            .unwrap_or_default();
+
+        let option = |index: usize, label: String, id: String| {
+            Button::new(("shell-option", index))
+                .ghost()
+                .small()
+                .selected(chosen == id)
+                .label(label)
+                .on_click(cx.listener(move |this, _, _window, cx| this.set_local_shell(id.clone(), cx)))
+        };
+
+        section
+            .child(
+                h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .child(option(
+                        0,
+                        t!("settings.shell.system", shell = default_name).to_string(),
+                        String::new(),
+                    ))
+                    .children(
+                        shells
+                            .iter()
+                            .enumerate()
+                            .map(|(index, shell)| option(index + 1, shell.name.clone(), shell.id.clone())),
+                    ),
+            )
+            .child(Self::hint(t!("settings.shell.hint"), cx))
+            .into_any_element()
+    }
+
     fn set_autolock(&mut self, on: bool, cx: &mut Context<Self>) {
         self.settings.autolock = on;
         if on {
@@ -342,6 +401,9 @@ impl AppView {
             })
             .when(tab == SettingsTab::General, |this| {
                 this.child(self.prediction_block(cx))
+            })
+            .when(tab == SettingsTab::General, |this| {
+                this.child(self.shell_block(cx))
             })
             .when(tab == SettingsTab::General, |this| {
                 this.child(self.tabs_block(cx))

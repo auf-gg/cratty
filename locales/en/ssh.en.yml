@@ -38,7 +38,6 @@ ssh:
   pty_watch_failed: "could not watch the PTY: %{error}"
   pty_write_failed: "writing to the PTY: %{error}"
   pty_read_failed: "reading the PTY: %{error}"
-  local_unix_only: "the local terminal is only supported on Unix"
   connecting_to: "connecting to %{target}"
   unknown_fingerprint: "<unknown>"
   shell_killed: "shell killed by signal %{signal}"

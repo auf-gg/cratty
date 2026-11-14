@@ -190,7 +190,8 @@ impl AppView {
         let crate::ui::chat::ChatEvent::Login { agent, program } = event;
         let title = t!("chat.login_tab", agent = agent).to_string();
         if let Err(error) = self.open_program_tab(program, title, cx) {
-            // No local terminal here (Windows): the user runs it by hand.
+            // The terminal could not start (an old Windows without ConPTY, say): the
+            // user runs the command by hand.
             let line = command_line(program);
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(line.clone()));
             let text = t!(
@@ -230,6 +231,7 @@ impl AppView {
             },
             credentials: connect::Credentials::default(),
             local: true,
+            shell: None,
             agents: None,
             chat: None,
         });

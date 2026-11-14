@@ -252,25 +252,28 @@ pub fn spawn_ssh(config: SshConfig) -> std::io::Result<SshSession> {
 /// Local terminal: the same event protocol as an SSH session, only
 /// with a PTY on this machine instead of the network. No vault is needed: a local tab
 /// holds no secrets, so it is available on the lock screen too.
-/// A program for a local terminal instead of the user's shell, such as an AI agent's
-/// sign-in, with variables added to this process's environment.
+/// The program a local terminal runs: a shell (see `crate::shells`) or another program,
+/// such as an AI agent's sign-in, with variables added to this process's environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalProgram {
     /// Absolute path: it is not looked up on PATH.
     pub program: std::path::PathBuf,
     pub args: Vec<String>,
     pub env: Vec<(String, std::ffi::OsString)>,
+    /// Folder to start in; `None` keeps this process's own.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
-#[cfg(unix)]
-pub fn spawn_local(size: PtySize, term: &str) -> std::io::Result<SshSession> {
-    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-    let shell = LocalProgram {
-        program: shell.into(),
-        args: Vec::new(),
-        env: Vec::new(),
-    };
-    spawn_local_program(size, term, &shell)
+#[cfg(windows)]
+mod conpty;
+
+#[cfg(windows)]
+pub fn spawn_local_program(
+    size: PtySize,
+    term: &str,
+    program: &LocalProgram,
+) -> std::io::Result<SshSession> {
+    conpty::spawn(size, term, program)
 }
 
 #[cfg(unix)]
@@ -282,10 +285,18 @@ pub fn spawn_local_program(
     use std::os::fd::FromRawFd;
 
     let (argv, envp) = exec_strings(program, term)?;
+    let cwd = program
+        .cwd
+        .as_ref()
+        .filter(|dir| dir.is_dir())
+        .and_then(|dir| {
+            use std::os::unix::ffi::OsStrExt;
+            std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()
+        });
     let master = open_pty()?;
     set_winsize(master, &size);
 
-    let child = match unsafe { spawn_pty_child(master, &argv, &envp) } {
+    let child = match unsafe { spawn_pty_child(master, &argv, &envp, cwd.as_deref()) } {
         Ok(child) => child,
         Err(error) => {
             unsafe { libc::close(master) };
@@ -560,6 +571,7 @@ unsafe fn spawn_pty_child(
     master: libc::c_int,
     argv: &[std::ffi::CString],
     envp: &[std::ffi::CString],
+    cwd: Option<&std::ffi::CStr>,
 ) -> std::io::Result<libc::pid_t> {
     let argv_ptrs: Vec<*const libc::c_char> = argv
         .iter()
@@ -590,6 +602,9 @@ unsafe fn spawn_pty_child(
                 libc::close(slave);
             }
             libc::close(master);
+            if let Some(cwd) = cwd {
+                libc::chdir(cwd.as_ptr());
+            }
             // Rust sets SIGPIPE to SIG_IGN — the program needs the default.
             libc::signal(libc::SIGPIPE, libc::SIG_DFL);
             libc::execve(argv_ptrs[0], argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
@@ -624,22 +639,6 @@ unsafe fn open_pty_slave(master: libc::c_int) -> std::io::Result<libc::c_int> {
     }
 }
 
-/// There is no local terminal on other platforms: ConPTY is a separate
-/// big piece of work. The button in the UI is disabled there.
-#[cfg(not(unix))]
-pub fn spawn_local(_size: PtySize, _term: &str) -> std::io::Result<SshSession> {
-    Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
-}
-
-#[cfg(not(unix))]
-pub fn spawn_local_program(
-    _size: PtySize,
-    _term: &str,
-    _program: &LocalProgram,
-) -> std::io::Result<SshSession> {
-    Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -649,7 +648,14 @@ mod tests {
     /// "kill before echo" race.
     #[test]
     fn local_pty_responds_and_closes() {
-        let mut session = spawn_local(PtySize::new(40, 10), "dumb").expect("open PTY");
+        let shell = LocalProgram {
+            program: "/bin/sh".into(),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+        };
+        let mut session =
+            spawn_local_program(PtySize::new(40, 10), "dumb", &shell).expect("open PTY");
 
         let mut connected = false;
         let mut marker = false;
@@ -705,8 +711,9 @@ mod tests {
     fn local_program_gets_its_arguments_and_variables() {
         let program = LocalProgram {
             program: "/bin/sh".into(),
-            args: vec!["-c".into(), "echo \"$CRATTY_PROBE:$1:$TERM\"".into(), "sh".into(), "arg".into()],
+            args: vec!["-c".into(), "echo \"$CRATTY_PROBE:$1:$TERM:$(pwd)\"".into(), "sh".into(), "arg".into()],
             env: vec![("CRATTY_PROBE".into(), "value".into())],
+            cwd: Some("/".into()),
         };
         let mut session =
             spawn_local_program(PtySize::new(60, 10), "dumb", &program).expect("open PTY");
@@ -726,7 +733,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert!(output.contains("value:arg:dumb"), "{output:?}");
+        assert!(output.contains("value:arg:dumb:/"), "{output:?}");
         assert!(closed, "the program's exit must close the session");
         session.join();
     }

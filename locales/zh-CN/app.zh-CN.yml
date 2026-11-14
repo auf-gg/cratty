@@ -24,7 +24,7 @@ app:
   session_start_failed: "无法启动会话。"
   local_terminal_error: "本地终端:%{error}"
   files_title: "文件:%{name}"
-  local_tab: "本地"
+  no_shell: "在此计算机上未找到任何 Shell"
   pin_unpin_tip: "取消固定:鼠标移到窗口边缘时面板会滑出"
   pin_tip: "固定面板"
   switch_theme: "切换配色主题"

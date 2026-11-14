@@ -41,7 +41,7 @@ mod vaults;
 use rust_i18n::t;
 use crate::agent as ssh_agent;
 use crate::keychain::OsKeychain;
-use crate::ssh::{PtySize, spawn_local, spawn_ssh};
+use crate::ssh::{PtySize, spawn_local_program, spawn_ssh};
 use crate::store::registry;
 use crate::store::{VaultStore, migrate};
 use crate::ui::connect::{self, HostSettings, KeyEntry, Target};
@@ -109,6 +109,9 @@ struct SessionTab {
     /// Local tab without a vault: reconnects into a new PTY,
     /// rather than to the SSH address from `request`.
     local: bool,
+    /// The shell of a local tab (see `crate::shells`): it runs again on reconnect and
+    /// when the tab is reopened. `None` — the default shell.
+    shell: Option<String>,
     /// AI agents may use this tab's connection (see `crate::mcp`). Kept on reconnect.
     agents: Option<ai_ui::AgentAccess>,
     /// The conversation of the AI tab. Kept on reconnect, like the access it uses.
@@ -584,6 +587,17 @@ impl AppView {
         for id in startup {
             this.unlock_with_os_key_for(&id, false, cx);
         }
+
+        // Looking for shells may take a moment (WSL lists its distributions): done in the
+        // background, then the menus and the settings that list them are redrawn.
+        let shells = cx.background_executor().spawn(async {
+            crate::shells::available();
+        });
+        cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
+            shells.await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
 
         this.restore_tabs(cx);
         let args: Vec<String> = std::env::args().skip(1).collect();
@@ -1140,6 +1154,7 @@ impl AppView {
             request,
             credentials,
             local: false,
+            shell: None,
             agents: None,
             chat: None,
         });
@@ -1198,6 +1213,7 @@ impl AppView {
             request,
             credentials,
             local: false,
+            shell: None,
             agents: None,
             chat: None,
         });
@@ -1223,25 +1239,47 @@ impl AppView {
         )
     }
 
-    fn start_local_session(&mut self, cx: &mut Context<Self>) -> Option<Entity<TerminalView>> {
-        let session = spawn_local(DEFAULT_PTY, "xterm-256color").map_err(|err| {
-            self.error = Some(t!("app.local_terminal_error", error = err.to_string()).into());
-        });
-        let session = session.ok()?;
-        Some(cx.new(|cx| TerminalView::new(t!("app.local_tab").to_string(), DEFAULT_PTY, session, cx)))
+    /// The shell for a local tab: the one asked for, or else the one chosen in the
+    /// settings, or else the system's default.
+    fn local_shell(&mut self, shell: Option<&str>) -> Option<crate::shells::Shell> {
+        let found = crate::shells::resolve(shell.unwrap_or(&self.settings.local_shell));
+        if found.is_none() {
+            self.error = Some(
+                t!("app.local_terminal_error", error = t!("app.no_shell").to_string()).into(),
+            );
+        }
+        found
     }
 
-    /// Local shell tab: no SSH and no vault, available even
-    /// on the lock screen.
-    fn spawn_local_tab(&mut self, cx: &mut Context<Self>) {
-        let Some(view) = self.start_local_session(cx) else {
+    fn start_local_session(
+        &mut self,
+        shell: &crate::shells::Shell,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TerminalView>> {
+        let session = spawn_local_program(DEFAULT_PTY, "xterm-256color", &shell.program)
+            .map_err(|err| {
+                self.error = Some(t!("app.local_terminal_error", error = err.to_string()).into());
+            });
+        let session = session.ok()?;
+        let title = shell.name.clone();
+        Some(cx.new(|cx| TerminalView::new(title, DEFAULT_PTY, session, cx)))
+    }
+
+    /// Local shell tab: no SSH and no vault, available even on the lock screen.
+    /// `shell` is an id from `crate::shells`; `None` — the shell chosen in the settings.
+    pub(super) fn spawn_local_tab(&mut self, shell: Option<String>, cx: &mut Context<Self>) {
+        let Some(shell) = self.local_shell(shell.as_deref()) else {
             cx.notify();
             return;
         };
-        let events = self.subscribe_terminal(&view, None, t!("app.local_tab").to_string(), cx);
+        let Some(view) = self.start_local_session(&shell, cx) else {
+            cx.notify();
+            return;
+        };
+        let events = self.subscribe_terminal(&view, None, shell.name.clone(), cx);
 
         self.tabs.push(SessionTab {
-            title: t!("app.local_tab").into(),
+            title: shell.name.clone().into(),
             default_title: None,
             vault: None,
             kind: TabKind::Terminal {
@@ -1258,6 +1296,7 @@ impl AppView {
             },
             credentials: connect::Credentials::default(),
             local: true,
+            shell: Some(shell.id),
             agents: None,
             chat: None,
         });
@@ -1279,10 +1318,15 @@ impl AppView {
         let credentials = tab.credentials.clone();
         let vault = tab.vault.clone();
         let local = tab.local;
+        let shell = tab.shell.clone();
 
         let agent = self.agent_address();
         let (target_text, started) = if local {
-            (t!("app.local_tab").to_string(), self.start_local_session(cx))
+            let Some(shell) = self.local_shell(shell.as_deref()) else {
+                cx.notify();
+                return;
+            };
+            (shell.name.clone(), self.start_local_session(&shell, cx))
         } else {
             let settings = connect::read_ssh_config(&request.alias);
             let target = connect::resolve(&request, &settings);
@@ -1484,6 +1528,7 @@ impl AppView {
             },
             credentials: connect::Credentials::default(),
             local: false,
+            shell: None,
             agents: None,
             chat: None,
         });

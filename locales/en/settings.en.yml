@@ -49,6 +49,10 @@ settings:
     now_unavailable: "Requires an unlocked vault and a folder path"
     note: "Entries are saved to the folder encrypted and can be shared via Dropbox, Syncthing or a network drive. An empty path disables sync."
     note_excluded: "Entries marked \"Don't sync\" are not saved to the folder."
+  shell:
+    title: "Local terminal shell"
+    system: "Default (%{shell})"
+    hint: "The local terminal button in the left panel opens this shell. Pick another one from the menu next to the button or with a right click."
   tabs:
     title: "Tabs"
     restore: "Reopen tabs from the last run at startup"

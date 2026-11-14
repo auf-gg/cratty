@@ -1,7 +1,8 @@
 rail:
   no_group: "Без группы"
   local_terminal: "Локальный терминал (без хранилища)"
-  local_terminal_unix_only: "Локальный терминал поддерживается только на Unix"
+  choose_shell: "Открыть локальный терминал в другой оболочке"
+  shells_searching: "Поиск оболочек…"
   new_host_locked: "Новый хост (требуется разблокировать хранилище)"
   new_host: "Новый хост"
   group_connect: "Подключиться"

@@ -30,6 +30,7 @@ impl SessionTab {
             vault: self.vault.clone(),
             name: self.default_title.is_some().then(|| self.title.to_string()),
             active,
+            shell: if self.local { self.shell.clone() } else { None },
         })
     }
 }
@@ -127,7 +128,7 @@ impl AppView {
     fn reopen(&mut self, saved: &SavedTab, cx: &mut Context<Self>) -> bool {
         let before = self.tabs.len();
         match saved.kind {
-            SavedTabKind::Local => self.spawn_local_tab(cx),
+            SavedTabKind::Local => self.spawn_local_tab(saved.shell.clone(), cx),
             SavedTabKind::Ssh => match &saved.vault {
                 Some(vault) => self.open_saved(vault, &saved.target, cx),
                 None => self.open(&saved.target, &connect::Credentials::default(), None, cx),

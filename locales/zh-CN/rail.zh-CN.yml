@@ -1,7 +1,8 @@
 rail:
   no_group: "无分组"
   local_terminal: "本地终端(无需密码库)"
-  local_terminal_unix_only: "仅 Unix 系统支持本地终端"
+  choose_shell: "使用其他 Shell 打开本地终端"
+  shells_searching: "正在查找 Shell…"
   new_host_locked: "新建主机(需先解锁密码库)"
   new_host: "新建主机"
   group_connect: "连接"

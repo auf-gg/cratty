@@ -33,6 +33,7 @@ The user interface is currently available in Russian only.
 ### Sessions
 
 - Tabs, split terminal panes, and broadcast input to all panes.
+- Local terminals on Windows (ConPTY), Linux and macOS, in a shell of your choice: PowerShell, Command Prompt, Git Bash, MSYS2 and WSL distributions on Windows; bash, zsh, fish, Nushell and the other shells of `/etc/shells` on Linux and macOS.
 - SFTP file manager over the same connection: upload, download, drag and drop, rename, delete.
 - Built-in editor for text files on the server.
 - Snippets: saved commands for quick input.

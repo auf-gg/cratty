@@ -8,6 +8,7 @@ pub mod keychain;
 pub mod mcp;
 pub mod platform;
 pub mod selfhst;
+pub mod shells;
 pub mod ssh;
 pub mod store;
 pub mod term;

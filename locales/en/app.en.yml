@@ -24,7 +24,7 @@ app:
   session_start_failed: "Failed to start the session."
   local_terminal_error: "Local terminal: %{error}"
   files_title: "Files: %{name}"
-  local_tab: "Local"
+  no_shell: "no shell was found on this computer"
   pin_unpin_tip: "Unpin: the panel will slide out when you hover the window edge"
   pin_tip: "Pin panel"
   switch_theme: "Switch color theme"

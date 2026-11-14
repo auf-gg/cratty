@@ -77,6 +77,10 @@ pub struct Settings {
     /// Tabs to reopen at the next start; kept only while `restore_tabs` is on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open_tabs: Vec<SavedTab>,
+    /// Shell of new local terminals, an id from `crate::shells`; empty — the system's
+    /// default (the login shell on unix, PowerShell on Windows).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub local_shell: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +106,9 @@ pub struct SavedTab {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub active: bool,
+    /// Shell of a local terminal (see `crate::shells`); none — the default one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
 }
 
 fn default_pinned() -> bool {
@@ -189,6 +196,7 @@ impl Default for Settings {
             collapsed_vaults: Vec::new(),
             restore_tabs: false,
             open_tabs: Vec::new(),
+            local_shell: String::new(),
         }
     }
 }
@@ -474,6 +482,7 @@ mod tests {
                     vault: Some("v1".into()),
                     name: Some("Database".into()),
                     active: true,
+                    shell: None,
                 },
                 SavedTab {
                     kind: SavedTabKind::Local,
@@ -481,8 +490,10 @@ mod tests {
                     vault: None,
                     name: None,
                     active: false,
+                    shell: Some("wsl:Ubuntu".into()),
                 },
             ],
+            local_shell: "pwsh".into(),
         };
         let text = serde_json::to_string(&settings).expect("fails to serialize");
         let parsed: Settings = serde_json::from_str(&text).expect("fails to parse");
@@ -497,6 +508,7 @@ mod tests {
             vault: None,
             name: None,
             active: false,
+            shell: None,
         };
         assert_eq!(serde_json::to_string(&local).expect("write"), r#"{"kind":"local"}"#);
         let off = serde_json::to_string(&Settings::default()).expect("write");

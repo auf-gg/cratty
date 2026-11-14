@@ -1,5 +1,5 @@
 use super::*;
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use std::borrow::Cow;
 
 /// Host being dragged across the left panel into another group.
@@ -138,18 +138,35 @@ impl AppView {
                         .items_center()
                         .child(div().flex_1().child(Input::new(&self.form.line).small()))
                         .child(
-                            Button::new("rail-local-terminal")
-                                .ghost()
-                                .small()
-                                .icon(Icon::empty().path("icons/square-terminal.svg"))
-                                .tooltip(if cfg!(unix) {
-                                    t!("rail.local_terminal")
-                                } else {
-                                    t!("rail.local_terminal_unix_only")
-                                })
-                                .disabled(!cfg!(unix))
-                                .on_click(
-                                    cx.listener(|this, _, _window, cx| this.spawn_local_tab(cx)),
+                            h_flex()
+                                .child(
+                                    Button::new("rail-local-terminal")
+                                        .ghost()
+                                        .small()
+                                        .icon(Icon::empty().path("icons/square-terminal.svg"))
+                                        .tooltip(t!("rail.local_terminal"))
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.spawn_local_tab(None, cx)
+                                        }))
+                                        .context_menu({
+                                            let (view, chosen) = (cx.entity(), self.settings.local_shell.clone());
+                                            move |menu, _window, _cx| {
+                                                Self::shell_menu(menu, &view, &chosen)
+                                            }
+                                        }),
+                                )
+                                .child(
+                                    Button::new("rail-local-shells")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Icon::empty().path("icons/chevron-down.svg"))
+                                        .tooltip(t!("rail.choose_shell"))
+                                        .dropdown_menu({
+                                            let (view, chosen) = (cx.entity(), self.settings.local_shell.clone());
+                                            move |menu, _window, _cx| {
+                                                Self::shell_menu(menu, &view, &chosen)
+                                            }
+                                        }),
                                 ),
                         )
                         .child(
@@ -415,6 +432,29 @@ impl AppView {
             menu.item(rename).item(PopupMenuItem::separator()).item(close)
         })
         .into_any_element()
+    }
+
+    /// The shells a local terminal can run; the default one is checked.
+    fn shell_menu(
+        menu: gpui_kit::component::menu::PopupMenu,
+        view: &Entity<Self>,
+        chosen: &str,
+    ) -> gpui_kit::component::menu::PopupMenu {
+        let Some(shells) = crate::shells::found() else {
+            return menu.item(PopupMenuItem::label(t!("rail.shells_searching").to_string()));
+        };
+        let default = crate::shells::resolve(chosen).map(|shell| shell.id);
+        shells.iter().fold(menu, |menu, shell| {
+            let (view, id) = (view.clone(), shell.id.clone());
+            menu.item(
+                PopupMenuItem::new(SharedString::from(shell.name.clone()))
+                    .checked(default.as_deref() == Some(shell.id.as_str()))
+                    .on_click(move |_, _window, cx| {
+                        let id = id.clone();
+                        view.update(cx, |this, cx| this.spawn_local_tab(Some(id), cx));
+                    }),
+            )
+        })
     }
 
     pub(super) fn dot(color: gpui_kit::Hsla) -> AnyElement {

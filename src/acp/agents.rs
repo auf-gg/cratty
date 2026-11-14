@@ -65,7 +65,6 @@ impl AgentCommand {
             program: self.program.clone(),
             args: self.args.iter().chain(args).cloned().collect(),
             env,
-            cwd: crate::shells::home(),
         }
     }
 }

@@ -78,11 +78,12 @@ windows-sys = { version = "0.61", features = [
     "Wdk_System_SystemServices",
     # AllowSetForegroundWindow — a second copy lets the first one bring its window forward.
     "Win32_UI_WindowsAndMessaging",
+    # The local terminal's menu lists the WSL distributions from the registry.
+    "Win32_System_Registry",
     # AI agents: the saved search path from the registry, and a job object that stops
     # an agent together with the processes it starts (see src/acp; creating the job
     # needs Win32_Security).
     "Win32_Security",
-    "Win32_System_Registry",
     "Win32_System_JobObjects",
 ] }
 

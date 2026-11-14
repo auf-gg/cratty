@@ -1,5 +1,5 @@
 use super::*;
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use std::borrow::Cow;
 
 /// Host being dragged across the left panel into another group.
@@ -138,21 +138,6 @@ impl AppView {
                         .items_center()
                         .child(div().flex_1().child(Input::new(&self.form.line).small()))
                         .child(
-                            Button::new("rail-local-terminal")
-                                .ghost()
-                                .small()
-                                .icon(Icon::empty().path("icons/square-terminal.svg"))
-                                .tooltip(if cfg!(unix) {
-                                    t!("rail.local_terminal")
-                                } else {
-                                    t!("rail.local_terminal_unix_only")
-                                })
-                                .disabled(!cfg!(unix))
-                                .on_click(
-                                    cx.listener(|this, _, _window, cx| this.spawn_local_tab(cx)),
-                                ),
-                        )
-                        .child(
                             Button::new("rail-new-host")
                                 .ghost()
                                 .small()
@@ -178,6 +163,7 @@ impl AppView {
                         .px_2()
                         .pb_2()
                         .gap_4()
+                        .child(self.local_terminal_row(cx))
                         .when(looks_like_address, |this| {
                             this.child(self.rail_group(
                                 t!("rail.group_connect"),
@@ -195,6 +181,86 @@ impl AppView {
                 .child(self.rail_footer(cx))
                 .into_any_element(),
         )
+    }
+
+    /// The first row of the list: a local terminal with the chosen shell, and on its
+    /// right a menu of the shells of this computer, which only chooses one.
+    fn local_terminal_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let hover_bg = theme.secondary_hover;
+        let shells = shells::all();
+        let chosen = self.local_shell();
+        let view = cx.entity();
+        h_flex()
+            .h(px(30.))
+            .pr_1()
+            .items_center()
+            .rounded(px(7.))
+            .hover(move |style| style.bg(hover_bg))
+            .child(
+                h_flex()
+                    .id("rail-local-terminal")
+                    .flex_1()
+                    .min_w(px(0.))
+                    .h_full()
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Icon::empty()
+                            .path("icons/square-terminal.svg")
+                            .small()
+                            .text_color(theme.muted_foreground),
+                    )
+                    .child(
+                        div().flex_1().min_w(px(0.)).overflow_hidden().child(
+                            Label::new(t!("rail.local_terminal"))
+                                .text_sm()
+                                .line_clamp(1)
+                                .text_ellipsis(),
+                        ),
+                    )
+                    .child(
+                        Label::new(SharedString::from(chosen.name.clone()))
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .line_clamp(1),
+                    )
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.spawn_local_tab(this.local_shell(), cx)
+                    })),
+            )
+            .when(shells.len() > 1, |row| {
+                row.child(
+                    Button::new("rail-local-shells")
+                        .ghost()
+                        .xsmall()
+                        .icon(
+                            Icon::empty()
+                                .path("icons/chevron-down.svg")
+                                .text_color(theme.muted_foreground),
+                        )
+                        .tooltip(t!("rail.local_shells"))
+                        .dropdown_menu_with_anchor(
+                            gpui_kit::Anchor::TopRight,
+                            move |menu, _window, _cx| {
+                                shells.iter().fold(menu, |menu, shell| {
+                                    let view = view.clone();
+                                    menu.item(
+                                        PopupMenuItem::new(shell.name.clone())
+                                            .checked(shell.id == chosen.id)
+                                            .on_click(move |_, _window, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.choose_local_shell(shell, cx)
+                                                });
+                                            }),
+                                    )
+                                })
+                            },
+                        ),
+                )
+            })
+            .into_any_element()
     }
 
     fn vault_group(&self, ix: usize, query: &str, cx: &mut Context<Self>) -> AnyElement {

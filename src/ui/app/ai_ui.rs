@@ -240,7 +240,7 @@ impl AppView {
         let view = cx.new(|cx| TerminalView::new(title.clone(), DEFAULT_PTY, session, cx));
         let events = self.subscribe_terminal(&view, None, title.clone(), cx);
         self.tabs.push(SessionTab {
-            title: title.into(),
+            title: title.clone().into(),
             default_title: None,
             vault: None,
             kind: TabKind::Terminal {
@@ -256,7 +256,12 @@ impl AppView {
                 port: None,
             },
             credentials: connect::Credentials::default(),
-            local: true,
+            // Reconnect runs the program again; no id: it is not reopened at the next start.
+            local: Some(crate::ssh::shells::Shell {
+                id: String::new(),
+                name: title,
+                program: program.clone(),
+            }),
             agents: None,
             chat: None,
         });
@@ -289,7 +294,7 @@ impl AppView {
                     .text_color(theme.muted_foreground),
             )
         };
-        if tab.local {
+        if tab.local.is_some() {
             return note(t!("chat.ssh_only").into()).into_any_element();
         }
         let Some(kinds) = &self.agent_kinds else {

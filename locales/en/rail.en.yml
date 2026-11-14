@@ -1,7 +1,7 @@
 rail:
   no_group: "No group"
-  local_terminal: "Local terminal (no vault)"
-  local_terminal_unix_only: "Local terminal is supported only on Unix"
+  local_terminal: "Local terminal"
+  local_shells: "Choose a shell"
   new_host_locked: "New host (the vault must be unlocked)"
   new_host: "New host"
   group_connect: "Connect"

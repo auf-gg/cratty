@@ -77,6 +77,10 @@ pub struct Settings {
     /// Tabs to reopen at the next start; kept only while `restore_tabs` is on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open_tabs: Vec<SavedTab>,
+    /// The shell last chosen in the local terminal's menu (see
+    /// `crate::ssh::shells::Shell::id`); none — the system's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_shell: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +99,9 @@ pub struct SavedTab {
     /// `user@host:port`; empty for a local terminal.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub target: String,
+    /// The shell of a local terminal (see `crate::ssh::shells::Shell::id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault: Option<String>,
     /// Name given by the user; none — the default title.
@@ -189,6 +196,7 @@ impl Default for Settings {
             collapsed_vaults: Vec::new(),
             restore_tabs: false,
             open_tabs: Vec::new(),
+            local_shell: None,
         }
     }
 }
@@ -471,6 +479,7 @@ mod tests {
                 SavedTab {
                     kind: SavedTabKind::Ssh,
                     target: "root@prod:2222".into(),
+                    shell: None,
                     vault: Some("v1".into()),
                     name: Some("Database".into()),
                     active: true,
@@ -478,11 +487,13 @@ mod tests {
                 SavedTab {
                     kind: SavedTabKind::Local,
                     target: String::new(),
+                    shell: Some("/usr/bin/fish".into()),
                     vault: None,
                     name: None,
                     active: false,
                 },
             ],
+            local_shell: Some("/usr/bin/bash".into()),
         };
         let text = serde_json::to_string(&settings).expect("fails to serialize");
         let parsed: Settings = serde_json::from_str(&text).expect("fails to parse");
@@ -494,6 +505,7 @@ mod tests {
         let local = SavedTab {
             kind: SavedTabKind::Local,
             target: String::new(),
+            shell: None,
             vault: None,
             name: None,
             active: false,

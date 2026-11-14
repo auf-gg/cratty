@@ -14,19 +14,22 @@ impl SessionTab {
     /// What is needed to open the tab again; `None` for tabs that cannot be
     /// reopened: a file editor, a one-off command.
     fn saved(&self, active: bool) -> Option<SavedTab> {
-        let kind = match &self.kind {
-            TabKind::Terminal { .. } if self.local => SavedTabKind::Local,
-            TabKind::Terminal { .. } if self.credentials.command.is_none() => SavedTabKind::Ssh,
-            TabKind::Files { .. } => SavedTabKind::Files,
+        let kind = match (&self.kind, &self.local) {
+            // A program such as an agent's sign-in, not a shell.
+            (TabKind::Terminal { .. }, Some(shell)) if shell.id.is_empty() => return None,
+            (TabKind::Terminal { .. }, Some(_)) => SavedTabKind::Local,
+            (TabKind::Terminal { .. }, None) if self.credentials.command.is_none() => SavedTabKind::Ssh,
+            (TabKind::Files { .. }, _) => SavedTabKind::Files,
             _ => return None,
         };
         Some(SavedTab {
             kind,
-            target: if self.local {
+            target: if self.local.is_some() {
                 String::new()
             } else {
                 self.request.to_string()
             },
+            shell: self.local.as_ref().map(|shell| shell.id.clone()),
             vault: self.vault.clone(),
             name: self.default_title.is_some().then(|| self.title.to_string()),
             active,
@@ -74,7 +77,7 @@ impl AppView {
     }
 
     /// Unlike the settings page, tab changes must not wipe an unrelated error.
-    fn save_settings_quietly(&mut self) {
+    pub(super) fn save_settings_quietly(&mut self) {
         if let Err(error) = settings::save(&self.settings) {
             self.error = Some(error.into());
         }
@@ -127,7 +130,15 @@ impl AppView {
     fn reopen(&mut self, saved: &SavedTab, cx: &mut Context<Self>) -> bool {
         let before = self.tabs.len();
         match saved.kind {
-            SavedTabKind::Local => self.spawn_local_tab(cx),
+            SavedTabKind::Local => {
+                // A shell no longer found gives way to the default one.
+                let shell = saved
+                    .shell
+                    .as_deref()
+                    .and_then(shells::find)
+                    .unwrap_or_else(shells::default);
+                self.spawn_local_tab(shell, cx)
+            }
             SavedTabKind::Ssh => match &saved.vault {
                 Some(vault) => self.open_saved(vault, &saved.target, cx),
                 None => self.open(&saved.target, &connect::Credentials::default(), None, cx),

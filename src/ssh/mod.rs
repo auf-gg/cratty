@@ -6,6 +6,7 @@ pub mod remote;
 pub mod route;
 mod session;
 pub mod sftp;
+pub mod shells;
 
 use rust_i18n::t;
 use std::thread::JoinHandle;
@@ -249,11 +250,8 @@ pub fn spawn_ssh(config: SshConfig) -> std::io::Result<SshSession> {
     })
 }
 
-/// Local terminal: the same event protocol as an SSH session, only
-/// with a PTY on this machine instead of the network. No vault is needed: a local tab
-/// holds no secrets, so it is available on the lock screen too.
-/// A program for a local terminal instead of the user's shell, such as an AI agent's
-/// sign-in, with variables added to this process's environment.
+/// A program for a local terminal: a shell (see [`shells`]), or another program such
+/// as an AI agent's sign-in, with variables added to this process's environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalProgram {
     /// Absolute path: it is not looked up on PATH.
@@ -262,15 +260,14 @@ pub struct LocalProgram {
     pub env: Vec<(String, std::ffi::OsString)>,
 }
 
-#[cfg(unix)]
-pub fn spawn_local(size: PtySize, term: &str) -> std::io::Result<SshSession> {
-    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-    let shell = LocalProgram {
-        program: shell.into(),
-        args: Vec::new(),
-        env: Vec::new(),
-    };
-    spawn_local_program(size, term, &shell)
+/// There is no local terminal on other platforms yet.
+#[cfg(not(unix))]
+pub fn spawn_local_program(
+    _size: PtySize,
+    _term: &str,
+    _program: &LocalProgram,
+) -> std::io::Result<SshSession> {
+    Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
 }
 
 #[cfg(unix)]
@@ -624,22 +621,6 @@ unsafe fn open_pty_slave(master: libc::c_int) -> std::io::Result<libc::c_int> {
     }
 }
 
-/// There is no local terminal on other platforms: ConPTY is a separate
-/// big piece of work. The button in the UI is disabled there.
-#[cfg(not(unix))]
-pub fn spawn_local(_size: PtySize, _term: &str) -> std::io::Result<SshSession> {
-    Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
-}
-
-#[cfg(not(unix))]
-pub fn spawn_local_program(
-    _size: PtySize,
-    _term: &str,
-    _program: &LocalProgram,
-) -> std::io::Result<SshSession> {
-    Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -649,7 +630,9 @@ mod tests {
     /// "kill before echo" race.
     #[test]
     fn local_pty_responds_and_closes() {
-        let mut session = spawn_local(PtySize::new(40, 10), "dumb").expect("open PTY");
+        let mut session =
+            spawn_local_program(PtySize::new(40, 10), "dumb", &shells::default().program)
+                .expect("open PTY");
 
         let mut connected = false;
         let mut marker = false;

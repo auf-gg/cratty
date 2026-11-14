@@ -1,4 +1,6 @@
 pub mod auth;
+#[cfg(any(windows, test))]
+mod conpty;
 pub mod forward;
 pub mod keygen;
 pub mod known_hosts;
@@ -260,14 +262,16 @@ pub struct LocalProgram {
     pub env: Vec<(String, std::ffi::OsString)>,
 }
 
-/// There is no local terminal on other platforms yet.
-#[cfg(not(unix))]
+/// Local terminal: the same event protocol as an SSH session, only
+/// with a PTY on this machine instead of the network. No vault is needed: a local tab
+/// holds no secrets, so it is available on the lock screen too.
+#[cfg(windows)]
 pub fn spawn_local_program(
-    _size: PtySize,
-    _term: &str,
-    _program: &LocalProgram,
+    size: PtySize,
+    term: &str,
+    program: &LocalProgram,
 ) -> std::io::Result<SshSession> {
-    Err(std::io::Error::other(t!("ssh.local_unix_only").into_owned()))
+    conpty::spawn(size, term, program)
 }
 
 #[cfg(unix)]

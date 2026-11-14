@@ -38,7 +38,6 @@ ssh:
   pty_watch_failed: "无法监视 PTY:%{error}"
   pty_write_failed: "写入 PTY 失败:%{error}"
   pty_read_failed: "读取 PTY 失败:%{error}"
-  local_unix_only: "本地终端仅支持 Unix"
   connecting_to: "正在连接 %{target}"
   unknown_fingerprint: "<未知>"
   shell_killed: "shell 被信号 %{signal} 终止"

@@ -217,7 +217,7 @@ impl AppView {
         };
         let title = t!("chat.login_tab", agent = agent).to_string();
         if let Err(error) = self.open_program_tab(program, title, cx) {
-            // No local terminal here (Windows): the user runs it by hand.
+            // The terminal could not start it: the user runs it by hand.
             let line = command_line(program);
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(line.clone()));
             let text = t!(

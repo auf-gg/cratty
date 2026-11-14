@@ -38,7 +38,6 @@ ssh:
   pty_watch_failed: "не удалось следить за PTY: %{error}"
   pty_write_failed: "запись в PTY: %{error}"
   pty_read_failed: "чтение PTY: %{error}"
-  local_unix_only: "локальный терминал поддерживается только в Unix"
   connecting_to: "подключение к %{target}"
   unknown_fingerprint: "<неизвестен>"
   shell_killed: "shell убит сигналом %{signal}"

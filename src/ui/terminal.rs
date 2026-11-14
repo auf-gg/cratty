@@ -724,20 +724,19 @@ impl TerminalView {
             return;
         }
 
+        if is_paste(&event.keystroke, self.terminal.mode()) {
+            self.paste(cx);
+            return;
+        }
+
         let modifiers = &event.keystroke.modifiers;
-        if modifiers.control && modifiers.shift && !modifiers.platform {
-            match event.keystroke.key.as_str() {
-                "c" => {
-                    if self.copy(cx) {
-                        return;
-                    }
-                }
-                "v" => {
-                    self.paste(cx);
-                    return;
-                }
-                _ => {}
-            }
+        if modifiers.control
+            && modifiers.shift
+            && !modifiers.platform
+            && event.keystroke.key.as_str() == "c"
+            && self.copy(cx)
+        {
+            return;
         }
 
         // Shift+Insert pastes and Ctrl+Insert copies, as in the Windows console and xterm.
@@ -1177,6 +1176,17 @@ fn measure_cell(family: &SharedString, font_size: Pixels, cx: &gpui_kit::App) ->
         },
         height: font_size * LINE_HEIGHT,
     }
+}
+
+/// Ctrl+Shift+V always pastes. Plain Ctrl+V pastes at the shell prompt, but
+/// full-screen programs still get it (vim block selection, nano page down).
+fn is_paste(keystroke: &gpui_kit::Keystroke, mode: alacritty_terminal::term::TermMode) -> bool {
+    let modifiers = &keystroke.modifiers;
+    let full_screen = mode.contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+    modifiers.control
+        && !modifiers.platform
+        && keystroke.key == "v"
+        && (modifiers.shift || (!modifiers.alt && !full_screen))
 }
 
 fn translate(event: &KeyDownEvent) -> Option<(Key, Mods)> {
@@ -1717,6 +1727,31 @@ mod tests {
     #[test]
     fn multi_character_input_is_left_to_the_ime() {
         assert_eq!(press("a", Some("ab"), plain()), None);
+    }
+
+    fn paste_key(modifiers: Modifiers, mode: alacritty_terminal::term::TermMode) -> bool {
+        let keystroke = Keystroke {
+            modifiers,
+            key: "v".to_string(),
+            key_char: None,
+        };
+        is_paste(&keystroke, mode)
+    }
+
+    #[test]
+    fn ctrl_v_pastes_at_the_prompt_but_reaches_full_screen_programs() {
+        use alacritty_terminal::term::TermMode;
+        let ctrl_shift = Modifiers {
+            control: true,
+            shift: true,
+            ..Default::default()
+        };
+
+        assert!(paste_key(ctrl(), TermMode::empty()));
+        assert!(!paste_key(ctrl(), TermMode::ALT_SCREEN), "vim and nano use Ctrl+V");
+        assert!(paste_key(ctrl_shift, TermMode::empty()));
+        assert!(paste_key(ctrl_shift, TermMode::ALT_SCREEN));
+        assert!(!paste_key(plain(), TermMode::empty()));
     }
 
     #[test]

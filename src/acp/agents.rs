@@ -3,8 +3,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-#[cfg(unix)]
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -84,7 +82,7 @@ pub fn find(kind: AgentKind) -> Result<AgentCommand, Missing> {
     // The adapter's own copy of Claude Code comes as an optional npm package, which an
     // npx install may leave out; the user's installed `claude` is there and up to date.
     if kind == AgentKind::Claude
-        && let Some(claude) = which("claude", &path)
+        && let Some(claude) = claude_executable(&path)
     {
         env.push(("CLAUDE_CODE_EXECUTABLE".into(), claude.into_os_string()));
     }
@@ -112,6 +110,48 @@ pub fn find(kind: AgentKind) -> Result<AgentCommand, Missing> {
                 install: "opencode",
             }),
     }
+}
+
+/// The user's Claude Code, as the adapter can start it. On Windows the adapter starts it
+/// without a shell, which Node refuses for a batch file, and its sign-in cannot start a
+/// script either; npm puts `claude.cmd` in front of `claude.exe`, so the adapter gets
+/// the `.exe`, or nothing and runs its own copy.
+fn claude_executable(path: &OsString) -> Option<PathBuf> {
+    let claude = which("claude", path)?;
+    if !cfg!(windows) || has_extension(&claude, "exe") {
+        return Some(claude);
+    }
+    shim_target(&claude).filter(|target| has_extension(target, "exe"))
+}
+
+fn has_extension(path: &Path, extension: &str) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+}
+
+/// The program a batch file of npm, pnpm or Yarn runs: the last quoted path from the
+/// batch file's folder (`%dp0%\…` or `%~dp0\…`) that is there and is not Node itself.
+fn shim_target(shim: &Path) -> Option<PathBuf> {
+    let text = String::from_utf8_lossy(&std::fs::read(shim).ok()?).into_owned();
+    let dir = shim.parent()?;
+    text.split('"')
+        .skip(1)
+        .step_by(2)
+        .filter_map(|quoted| {
+            ["%dp0%", "%~dp0"]
+                .iter()
+                .find_map(|prefix| quoted.strip_prefix(prefix))
+        })
+        .map(|rest| rest.trim_start_matches(['\\', '/']))
+        .filter(|rest| !rest.is_empty() && !rest.contains('%'))
+        .map(|rest| dir.join(rest.replace('\\', std::path::MAIN_SEPARATOR_STR)))
+        .filter(|target| {
+            target
+                .file_name()
+                .is_some_and(|name| !name.eq_ignore_ascii_case("node.exe"))
+                && target.is_file()
+        })
+        .last()
 }
 
 /// Cratty's folder for agents: their working folder, their sign-in and their
@@ -229,11 +269,18 @@ pub fn search_path() -> &'static OsString {
     static PATH: OnceLock<OsString> = OnceLock::new();
     PATH.get_or_init(|| {
         let own = std::env::var_os("PATH").unwrap_or_default();
-        let mut dirs: Vec<PathBuf> = login_path()
-            .map(|path| std::env::split_paths(&path).collect())
-            .unwrap_or_default();
-        for dir in std::env::split_paths(&own) {
-            if !dirs.contains(&dir) {
+        let login = login_path().unwrap_or_default();
+        // The login shell sets up version managers: its entries go first. On Windows the
+        // saved path is the one this process started from: it only adds what came since.
+        let (first, then) = if cfg!(windows) {
+            (&own, &login)
+        } else {
+            (&login, &own)
+        };
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        // An empty entry would be the current folder.
+        for dir in std::env::split_paths(first).chain(std::env::split_paths(then)) {
+            if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
                 dirs.push(dir);
             }
         }
@@ -244,6 +291,7 @@ pub fn search_path() -> &'static OsString {
 #[cfg(unix)]
 fn login_path() -> Option<OsString> {
     use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
 
     let shell = std::env::var_os("SHELL")?;
     // `printenv` rather than `echo $PATH`: fish prints its PATH as a list.
@@ -272,7 +320,78 @@ fn login_path() -> Option<OsString> {
     (!path.is_empty()).then(|| OsString::from(path))
 }
 
-#[cfg(not(unix))]
+/// The saved search path, the machine's then the user's: a copy started before an
+/// install, or by a program with an environment of its own, lacks what was added since.
+#[cfg(windows)]
+fn login_path() -> Option<OsString> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let saved: Vec<OsString> = [
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+        (HKEY_CURRENT_USER, "Environment"),
+    ]
+    .into_iter()
+    .filter_map(|(root, key)| registry_string(root, key, "Path"))
+    .collect();
+    let dirs: Vec<PathBuf> = saved.iter().flat_map(std::env::split_paths).collect();
+    if dirs.is_empty() {
+        return None;
+    }
+    std::env::join_paths(dirs).ok()
+}
+
+/// A text value of the registry, its `%VARIABLES%` expanded.
+#[cfg(windows)]
+fn registry_string(
+    root: windows_sys::Win32::System::Registry::HKEY,
+    key: &str,
+    value: &str,
+) -> Option<OsString> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{RRF_RT_REG_SZ, RegGetValueW};
+
+    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (key, value) = (wide(key), wide(value));
+    // Without RRF_NOEXPAND an expandable value is expanded and reads as REG_SZ.
+    let read = |data: *mut u16, size: &mut u32| unsafe {
+        RegGetValueW(
+            root,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            data.cast(),
+            size,
+        )
+    };
+    let mut size = 0u32;
+    if read(std::ptr::null_mut(), &mut size) != ERROR_SUCCESS {
+        return None;
+    }
+    // Expanding may need more room than the first answer: ask until it fits.
+    for _ in 0..4 {
+        let mut buffer = vec![0u16; (size as usize).div_ceil(2) + 1];
+        let mut got = (buffer.len() * 2) as u32;
+        match read(buffer.as_mut_ptr(), &mut got) {
+            ERROR_SUCCESS => {
+                let end = buffer
+                    .iter()
+                    .position(|&unit| unit == 0)
+                    .unwrap_or(buffer.len());
+                return Some(OsString::from_wide(&buffer[..end]));
+            }
+            _ if got > size => size = got,
+            _ => return None,
+        }
+    }
+    None
+}
+
+#[cfg(not(any(unix, windows)))]
 fn login_path() -> Option<OsString> {
     None
 }
@@ -324,6 +443,54 @@ mod tests {
         assert_eq!(which("tool", &path), Some(tool));
         assert_eq!(which("notes", &path), None);
         assert_eq!(which("absent", &path), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shim_leads_to_the_program_it_runs() {
+        let dir = std::env::temp_dir().join(format!("cratty-shim-{}", std::process::id()));
+        let package = dir.join("node_modules/@anthropic-ai/claude-code");
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::write(package.join("bin/claude.exe"), "").unwrap();
+        std::fs::write(package.join("cli.js"), "").unwrap();
+        std::fs::write(dir.join("node.exe"), "").unwrap();
+        let shim = |name: &str, text: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, text.replace('\n', "\r\n")).unwrap();
+            shim_target(&path)
+        };
+
+        // npm, for a native program.
+        assert_eq!(
+            shim(
+                "native.cmd",
+                "@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\n\
+                 CALL :find_dp0\n\"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\n"
+            ),
+            Some(dir.join("node_modules/@anthropic-ai/claude-code/bin/claude.exe"))
+        );
+        // npm, for a script: Node is checked for first.
+        assert_eq!(
+            shim(
+                "script.cmd",
+                "IF EXIST \"%dp0%\\node.exe\" (\n  SET \"_prog=%dp0%\\node.exe\"\n) ELSE (\n  SET \"_prog=node\"\n)\n\
+                 endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*\n"
+            ),
+            Some(dir.join("node_modules/@anthropic-ai/claude-code/cli.js"))
+        );
+        // pnpm, from a folder of its own.
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        assert_eq!(
+            shim(
+                "bin/pnpm.cmd",
+                "@IF EXIST \"%~dp0\\node.exe\" (\n  \"%~dp0\\node.exe\"  \"%~dp0\\..\\node_modules\\@anthropic-ai\\claude-code\\cli.js\" %*\n)\n"
+            )
+            .map(|target| target.canonicalize().unwrap()),
+            Some(package.join("cli.js").canonicalize().unwrap())
+        );
+        assert_eq!(shim("gone.cmd", "\"%dp0%\\missing\\claude.exe\" %*"), None);
+        assert!(has_extension(Path::new("C:/npm/claude.EXE"), "exe"));
+        assert!(!has_extension(Path::new("C:/npm/claude.cmd"), "exe"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

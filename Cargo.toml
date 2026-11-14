@@ -83,6 +83,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_Security",
+    # AI agents: the saved search path from the registry, and a job object that stops
+    # an agent together with the processes it starts (see src/acp).
+    "Win32_System_Registry",
+    "Win32_System_JobObjects",
 ] }
 
 [profile.dev]

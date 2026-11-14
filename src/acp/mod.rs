@@ -177,6 +177,8 @@ async fn run_process(
             return;
         }
     };
+    #[cfg(windows)]
+    let job = job::Job::holding(&child);
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
@@ -204,6 +206,8 @@ async fn run_process(
         .await
         .is_err()
     {
+        #[cfg(windows)]
+        drop(job);
         let _ = child.kill().await;
     }
     // What the agent printed last explains why it stopped: read it to the end.
@@ -286,6 +290,51 @@ async fn share_credentials(command: &AgentCommand) -> bool {
         tokio::time::timeout(Duration::from_secs(30), copy).await,
         Ok(Some(_))
     )
+}
+
+/// On Windows an agent installed by npm is a batch file, run by cmd.exe, which starts
+/// Node, which starts the agent's own programs. Stopping the child stops only cmd.exe:
+/// the agent goes in a job object instead, and closing the job stops all of it.
+#[cfg(windows)]
+mod job {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+
+    pub struct Job(HANDLE);
+
+    impl Job {
+        /// `None` when the system refuses: the agent runs anyway. It is put in the job
+        /// right after it starts, well before cmd.exe gets to start anything.
+        pub fn holding(child: &tokio::process::Child) -> Option<Self> {
+            let process = child.raw_handle()?;
+            let job = Self(unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) });
+            if job.0.is_null() {
+                return None;
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let limited = unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const limits).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            } != 0;
+            (limited && unsafe { AssignProcessToJobObject(job.0, process.cast()) } != 0)
+                .then_some(job)
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
 }
 
 enum Incoming {

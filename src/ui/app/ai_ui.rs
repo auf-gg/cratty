@@ -639,8 +639,16 @@ impl AppView {
     }
 }
 
-/// A program as one line for a POSIX shell, for running it by hand.
+/// A program as one line for the user's shell, for running it by hand.
 fn command_line(program: &crate::ssh::LocalProgram) -> String {
+    if cfg!(windows) {
+        powershell_line(program)
+    } else {
+        posix_line(program)
+    }
+}
+
+fn posix_line(program: &crate::ssh::LocalProgram) -> String {
     use crate::ssh::remote::quote;
 
     let mut words: Vec<String> = program
@@ -652,6 +660,25 @@ fn command_line(program: &crate::ssh::LocalProgram) -> String {
     words.push(quote(&program.program.to_string_lossy()));
     words.extend(program.args.iter().map(|arg| quote(arg)));
     words.join(" ")
+}
+
+/// PowerShell is the terminal's shell on Windows. Every word is quoted: to it a bare
+/// `@package` means something else.
+fn powershell_line(program: &crate::ssh::LocalProgram) -> String {
+    let quote = |word: &str| format!("'{}'", word.replace('\'', "''"));
+    let mut line: String = program
+        .env
+        .iter()
+        .filter(|(name, _)| !name.eq_ignore_ascii_case("PATH"))
+        .map(|(name, value)| format!("$env:{name} = {}; ", quote(&value.to_string_lossy())))
+        .collect();
+    line.push_str("& ");
+    line.push_str(&quote(&program.program.to_string_lossy()));
+    for arg in &program.args {
+        line.push(' ');
+        line.push_str(&quote(arg));
+    }
+    line
 }
 
 /// The first lines of a text for the dialog, and how many lines were left out.
@@ -684,7 +711,35 @@ fn preview(text: &str) -> (String, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::preview;
+    use super::{posix_line, powershell_line, preview};
+
+    #[test]
+    fn sign_in_reads_as_a_line_for_the_shell() {
+        let program = crate::ssh::LocalProgram {
+            program: r"C:\Program Files\nodejs\npx.cmd".into(),
+            args: vec![
+                "-y".into(),
+                "@agentclientprotocol/claude-agent-acp".into(),
+                "--cli".into(),
+            ],
+            env: vec![
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    r"C:\Users\O'Neil\cratty\claude".into(),
+                ),
+                ("Path".into(), r"C:\bin".into()),
+            ],
+            cwd: None,
+        };
+        assert_eq!(
+            powershell_line(&program),
+            r"$env:CLAUDE_CONFIG_DIR = 'C:\Users\O''Neil\cratty\claude'; & 'C:\Program Files\nodejs\npx.cmd' '-y' '@agentclientprotocol/claude-agent-acp' '--cli'"
+        );
+        assert_eq!(
+            posix_line(&program),
+            r#"CLAUDE_CONFIG_DIR='C:\Users\O'\''Neil\cratty\claude' Path='C:\bin' 'C:\Program Files\nodejs\npx.cmd' '-y' '@agentclientprotocol/claude-agent-acp' '--cli'"#
+        );
+    }
 
     #[test]
     fn preview_shows_the_beginning_and_counts_the_rest() {

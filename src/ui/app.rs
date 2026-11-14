@@ -195,6 +195,7 @@ pub struct AppView {
 
     form: Form,
     proxy_form: proxy_ui::ProxyForm,
+    hop_menu: proxy_ui::HopMenu,
     snippet_form: snippets_ui::SnippetForm,
     snippets_open: bool,
     split_menu: bool,
@@ -477,6 +478,7 @@ impl AppView {
                 forward_draft,
             },
             proxy_form,
+            hop_menu: proxy_ui::HopMenu::new(window, cx),
             snippet_form,
             snippets_open: false,
             split_menu: false,
@@ -733,6 +735,21 @@ impl AppView {
             host.secrets.set(proto::SecretPurpose::Password, password);
         }
         host.via = self.form.via.clone();
+        // A chain may use only proxies and hosts of the host's own vault.
+        if let Some(unlocked) = self.unlocked_of(&vault_id)
+            && let Some(index) = host.via.iter().position(|id| unlocked.via_item(id).is_none())
+        {
+            self.error = Some(
+                t!(
+                    "proxy.err_hop_vault",
+                    index = index + 1,
+                    vault = self.vault_name(&vault_id)
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
         host.forwards = self.form.forwards.clone();
         let saved_target = host.target();
         let new_icon = self.icon_to_store(&vault_id, &host.icon);

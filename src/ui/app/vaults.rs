@@ -435,8 +435,11 @@ impl AppView {
         self.reveal = None;
         self.sync_watches.remove(id);
         self.refuse_all_signs();
-        if ix == self.current {
+        if self.proxy_form.vault == id {
             self.proxy_form.editing = None;
+            self.proxy_form.open = false;
+        }
+        if ix == self.current {
             self.vault_error = None;
         }
         self.vaults[ix].session.lock(None);
@@ -521,6 +524,10 @@ impl AppView {
             self.form.vault = String::new();
             self.form.editing = None;
             self.editor_open = false;
+        }
+        if self.proxy_form.vault == id {
+            self.proxy_form.editing = None;
+            self.proxy_form.open = false;
         }
         if was_current || self.current >= self.vaults.len() {
             let target = self

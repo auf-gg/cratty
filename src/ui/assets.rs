@@ -80,6 +80,11 @@ impl AssetSource for Assets {
         if let Ok(Some(bytes)) = gpui_kit::assets::Assets.load(path) {
             return Ok(Some(bytes));
         }
+        // No path is a blank on purpose: a menu with a checked item puts `Icon::empty()`
+        // before the other items to keep them aligned.
+        if path.is_empty() {
+            return Ok(None);
+        }
         eprintln!("missing asset {path} — add it to assets/icons");
         Ok(None)
     }

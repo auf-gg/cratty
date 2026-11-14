@@ -87,9 +87,18 @@ impl AppView {
         Some(token)
     }
 
+    /// Commands and file changes on the tab run without approval, or ask again. The
+    /// chat's switch and the approval dialog both come here, and the switch follows.
     fn set_agents_trusted(&mut self, index: usize, trusted: bool, cx: &mut Context<Self>) {
-        if let Some(access) = self.tabs.get_mut(index).and_then(|tab| tab.agents.as_mut()) {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        if let Some(access) = tab.agents.as_mut() {
             access.trusted = trusted;
+        }
+        if let Some(chat) = &tab.chat {
+            chat.view
+                .update(cx, |view, cx| view.set_trusted(trusted, cx));
         }
         cx.notify();
     }
@@ -166,6 +175,12 @@ impl AppView {
         let view = cx.new(|cx| {
             crate::ui::chat::ChatView::new(agents, command, setup, server, !open_elsewhere, cx)
         });
+        let trusted = self
+            .tabs
+            .get(index)
+            .and_then(|tab| tab.agents.as_ref())
+            .is_some_and(|access| access.trusted);
+        view.update(cx, |view, cx| view.set_trusted(trusted, cx));
         let events = cx.subscribe(
             &view,
             |this, view, event: &crate::ui::chat::ChatEvent, cx| {
@@ -187,7 +202,19 @@ impl AppView {
         event: &crate::ui::chat::ChatEvent,
         cx: &mut Context<Self>,
     ) {
-        let crate::ui::chat::ChatEvent::Login { agent, program } = event;
+        let (agent, program) = match event {
+            crate::ui::chat::ChatEvent::Trust(trusted) => {
+                if let Some(index) = self
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.chat.as_ref().is_some_and(|chat| &chat.view == view))
+                {
+                    self.set_agents_trusted(index, *trusted, cx);
+                }
+                return;
+            }
+            crate::ui::chat::ChatEvent::Login { agent, program } => (agent, program),
+        };
         let title = t!("chat.login_tab", agent = agent).to_string();
         if let Err(error) = self.open_program_tab(program, title, cx) {
             // The terminal could not start (an old Windows without ConPTY, say): the
@@ -251,41 +278,9 @@ impl AppView {
     ) -> AnyElement {
         let theme = cx.theme().clone();
         if let Some(chat) = &tab.chat {
-            // Commands run without approval on this tab: say so, and offer to ask again.
-            let trusted = tab
-                .agents
-                .as_ref()
-                .is_some_and(|access| access.trusted)
-                .then(|| {
-                    h_flex()
-                        .flex_shrink_0()
-                        .px_4()
-                        .py_1()
-                        .gap_2()
-                        .items_center()
-                        .bg(theme.warning.opacity(0.12))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .text_xs()
-                                .text_color(theme.warning)
-                                .child(SharedString::from(t!("chat.trusted").to_string())),
-                        )
-                        .child(
-                            Button::new("chat-ask-again")
-                                .ghost()
-                                .xsmall()
-                                .label(t!("chat.ask_again"))
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.set_agents_trusted(index, false, cx)
-                                })),
-                        )
-                });
-            return v_flex()
+            return div()
                 .size_full()
-                .children(trusted)
-                .child(div().flex_1().min_h(px(0.)).child(chat.view.clone()))
+                .child(chat.view.clone())
                 .into_any_element();
         }
 

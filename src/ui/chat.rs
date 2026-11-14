@@ -9,18 +9,21 @@
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
     button::{Button, ButtonVariants},
+    clipboard::Clipboard,
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     label::Label,
-    scroll::ScrollableElement,
-    text::TextView,
+    spinner::Spinner,
+    switch::Switch,
+    text::{TextView, TextViewStyle},
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, Focusable, Hsla, IntoElement, Render, ScrollHandle,
-    SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, px,
+    AnyElement, App, Context, ElementId, Entity, EventEmitter, Focusable, Hsla, IntoElement,
+    Render, ScrollHandle, SharedString, StyleRefinement, Subscription, Task, WeakEntity, Window,
+    div, prelude::*, px, relative,
 };
 use rust_i18n::t;
 
@@ -31,8 +34,6 @@ use crate::acp::{
 };
 use crate::ssh::LocalProgram;
 
-/// Lines of tool output shown when a tool row is opened.
-const OUTPUT_LINES: usize = 40;
 /// A setting with more values than this gets a search box in its menu.
 const SEARCH_FROM: usize = 8;
 /// Height of the row with the agent and chat menus; the menus open under it.
@@ -79,13 +80,17 @@ enum Entry {
 struct ToolEntry {
     id: String,
     title: String,
-    detail: Option<String>,
+    /// The tool's arguments, as the agent last reported them.
+    input: Option<serde_json::Value>,
     status: String,
     output: Option<String>,
     open: bool,
 }
 
 pub enum ChatEvent {
+    /// The user asked to run commands and change files on this tab without approval, or
+    /// to be asked again.
+    Trust(bool),
     /// Run the agent's sign-in in a terminal.
     Login {
         agent: &'static str,
@@ -148,6 +153,10 @@ pub struct ChatView {
     _sync: Option<Task<()>>,
     /// A new chat has not had the default model applied yet.
     apply_default: bool,
+    /// Commands and file changes on this tab run without approval.
+    trusted: bool,
+    /// The id of the user message a replay is bringing back.
+    user_message: Option<String>,
     focus_pending: bool,
     scroll: ScrollHandle,
     _input_events: Option<Subscription>,
@@ -187,6 +196,8 @@ impl ChatView {
             syncing: false,
             _sync: None,
             apply_default: false,
+            trusted: false,
+            user_message: None,
             focus_pending: true,
             scroll: ScrollHandle::new(),
             _input_events: None,
@@ -237,6 +248,7 @@ impl ChatView {
         self.commands = None;
         self._pump = None;
         self.entries.clear();
+        self.user_message = None;
         self.session = None;
         self.saved = false;
         self.first_message = None;
@@ -310,6 +322,7 @@ impl ChatView {
             });
         if sent {
             self.entries.clear();
+            self.user_message = None;
             self.session = None;
             self.saved = false;
             self.first_message = None;
@@ -551,18 +564,25 @@ impl ChatView {
             },
             // A replayed conversation brings the user's messages back; live, the window
             // shows them itself when they are sent.
-            Update::UserText(chunk) if self.state == State::Loading => {
+            Update::UserText {
+                text: chunk,
+                message,
+            } if self.state == State::Loading => {
+                // Pieces of one message come in a row; another id starts the next one, even
+                // right after it, as when an answer failed in between.
+                let same = message.is_none() || message == self.user_message;
                 match self.entries.last_mut() {
-                    Some(Entry::User(text)) => *text = format!("{text}{chunk}").into(),
+                    Some(Entry::User(text)) if same => *text = format!("{text}{chunk}").into(),
                     _ => self.entries.push(Entry::User(chunk.into())),
                 }
+                self.user_message = message;
             }
-            Update::UserText(_) => {}
+            Update::UserText { .. } => {}
             Update::Config(options) => self.config = options,
             Update::ToolCall(call) => self.entries.push(Entry::Tool(ToolEntry {
                 id: call.id,
                 title: tool_title(&call.title),
-                detail: call.input.as_ref().and_then(input_detail),
+                input: call.input.filter(has_arguments),
                 status: call.status,
                 output: call.output,
                 open: false,
@@ -577,8 +597,8 @@ impl ChatView {
                 if let Some(title) = update.title {
                     tool.title = tool_title(&title);
                 }
-                if let Some(detail) = update.input.as_ref().and_then(input_detail) {
-                    tool.detail = Some(detail);
+                if let Some(input) = update.input.filter(has_arguments) {
+                    tool.input = Some(input);
                 }
                 if let Some(status) = update.status {
                     tool.status = status;
@@ -648,6 +668,14 @@ impl ChatView {
         cx.notify();
     }
 
+    /// Follows the tab's approval setting, which the approval dialog changes too.
+    pub fn set_trusted(&mut self, trusted: bool, cx: &mut Context<Self>) {
+        if self.trusted != trusted {
+            self.trusted = trusted;
+            cx.notify();
+        }
+    }
+
     /// A note in the conversation from the window, such as how to sign in by hand.
     pub fn add_notice(&mut self, text: SharedString, cx: &mut Context<Self>) {
         self.entries.push(Entry::Notice { text, error: false });
@@ -703,69 +731,147 @@ impl ChatView {
     fn render_entry(&self, index: usize, entry: &Entry, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         match entry {
-            Entry::User(text) => div()
-                .px_3()
-                .py_2()
-                .rounded_lg()
-                .bg(theme.secondary)
-                .text_sm()
-                .child(text.clone())
+            Entry::User(text) => h_flex()
+                .justify_end()
+                .child(
+                    div()
+                        .max_w(relative(0.88))
+                        .px_3()
+                        .py_2()
+                        .rounded_lg()
+                        .bg(theme.secondary)
+                        .text_sm()
+                        .child(text.clone()),
+                )
                 .into_any_element(),
             Entry::Agent(text) => {
-                TextView::markdown(("chat-text", index), SharedString::from(text.clone()))
-                    .selectable(true)
-                    .text_sm()
+                // The copy button of the whole answer shows under it on hover.
+                let group = SharedString::from(format!("chat-answer-{index}"));
+                v_flex()
+                    .group(group.clone())
+                    .gap_1()
+                    .child(markdown_view(("chat-text", index), text))
+                    .child(
+                        h_flex()
+                            .opacity(0.)
+                            .group_hover(group, |style| style.opacity(1.))
+                            .child(copy_button(("chat-copy-text", index), text.clone())),
+                    )
                     .into_any_element()
             }
             Entry::Thought { text, open } => {
-                let shown = if *open {
-                    text.trim().to_owned()
+                let live = self.state == State::Working && index + 1 == self.entries.len();
+                let label = if live {
+                    t!("chat.thinking_now")
                 } else {
-                    t!("chat.thinking").to_string()
+                    t!("chat.thoughts")
                 };
-                div()
-                    .id(("chat-thought", index))
-                    .cursor_pointer()
-                    .text_xs()
-                    .italic()
-                    .text_color(theme.muted_foreground)
-                    .child(shown)
-                    .on_click(cx.listener(move |this, _, _window, cx| this.toggle(index, cx)))
+                let foreground = theme.foreground;
+                v_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .id(("chat-thought", index))
+                            .gap_1()
+                            .items_center()
+                            .cursor_pointer()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .hover(move |style| style.text_color(foreground))
+                            .child(chevron(*open))
+                            .child(SharedString::from(label.to_string()))
+                            .when(live, |this| {
+                                this.child(Spinner::new().xsmall().color(theme.muted_foreground))
+                            })
+                            .on_click(
+                                cx.listener(move |this, _, _window, cx| this.toggle(index, cx)),
+                            ),
+                    )
+                    .when(*open, |this| {
+                        this.child(
+                            div()
+                                .ml(px(6.))
+                                .pl_3()
+                                .border_l_2()
+                                .border_color(theme.border)
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(
+                                    TextView::markdown(
+                                        ("chat-thought-text", index),
+                                        SharedString::from(text.trim().to_owned()),
+                                    )
+                                    .selectable(true),
+                                ),
+                        )
+                    })
                     .into_any_element()
             }
             Entry::Tool(tool) => self.render_tool(index, tool, cx),
-            Entry::Plan(plan) => v_flex()
-                .gap_1()
-                .p_2()
-                .rounded_md()
-                .border_1()
-                .border_color(theme.border)
-                .child(
-                    Label::new(t!("chat.plan"))
-                        .text_xs()
-                        .font_medium()
-                        .text_color(theme.muted_foreground),
-                )
-                .children(plan.iter().map(|entry| {
-                    let (mark, color) = match entry.status.as_str() {
-                        "completed" => ("✓", theme.success),
-                        "in_progress" => ("›", theme.warning),
-                        _ => ("·", theme.muted_foreground),
-                    };
-                    h_flex()
-                        .gap_2()
-                        .items_start()
-                        .text_xs()
-                        .child(
-                            div()
-                                .w(px(10.))
-                                .flex_shrink_0()
-                                .text_color(color)
-                                .child(mark),
-                        )
-                        .child(div().flex_1().child(entry.content.clone()))
-                }))
-                .into_any_element(),
+            Entry::Plan(plan) => {
+                let done = plan
+                    .iter()
+                    .filter(|entry| entry.status == "completed")
+                    .count();
+                v_flex()
+                    .gap_1()
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(Label::new(t!("chat.plan")).text_xs().font_medium())
+                            .child(SharedString::from(format!("{done}/{}", plan.len()))),
+                    )
+                    .children(plan.iter().map(|entry| {
+                        let completed = entry.status == "completed";
+                        let mark: AnyElement = match entry.status.as_str() {
+                            "completed" => Icon::new(IconName::CircleCheck)
+                                .xsmall()
+                                .text_color(theme.success)
+                                .into_any_element(),
+                            "in_progress" => Spinner::new()
+                                .xsmall()
+                                .color(theme.warning)
+                                .into_any_element(),
+                            _ => div()
+                                .size(px(9.))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(theme.muted_foreground)
+                                .into_any_element(),
+                        };
+                        h_flex()
+                            .gap_2()
+                            .items_start()
+                            .text_xs()
+                            .child(
+                                div()
+                                    .w(px(14.))
+                                    .h(px(16.))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(mark),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .when(completed, |this| {
+                                        this.line_through().text_color(theme.muted_foreground)
+                                    })
+                                    .child(entry.content.clone()),
+                            )
+                    }))
+                    .into_any_element()
+            }
             Entry::Permission { ask, answer, .. } => {
                 let mut card = v_flex()
                     .gap_2()
@@ -774,19 +880,29 @@ impl ChatView {
                     .border_1()
                     .border_color(theme.warning)
                     .child(
-                        Label::new(SharedString::from(
-                            t!("chat.permission", tool = ask.title).to_string(),
-                        ))
-                        .text_sm(),
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Icon::new(IconName::TriangleAlert)
+                                    .xsmall()
+                                    .text_color(theme.warning),
+                            )
+                            .child(
+                                Label::new(SharedString::from(
+                                    t!("chat.permission", tool = ask.title).to_string(),
+                                ))
+                                .text_sm(),
+                            ),
                     )
-                    .children(ask.detail.clone().map(|detail| {
-                        div()
-                            .p_1()
-                            .rounded_sm()
-                            .bg(theme.muted)
-                            .font_family(crate::ui::app::mono_family(cx))
-                            .text_xs()
-                            .child(detail)
+                    .children(ask.detail.as_deref().map(|detail| {
+                        code_section(
+                            ("chat-permission", index),
+                            t!("chat.arguments"),
+                            "",
+                            detail,
+                            cx,
+                        )
                     }));
                 card = match answer {
                     Some(answer) => card.child(
@@ -814,81 +930,369 @@ impl ChatView {
                 };
                 card.into_any_element()
             }
-            Entry::Notice { text, error } => Label::new(text.clone())
+            Entry::Notice { text, error } => h_flex()
+                .gap_2()
+                .items_start()
                 .text_xs()
                 .text_color(if *error {
                     theme.danger
                 } else {
                     theme.muted_foreground
                 })
+                .child(
+                    div().pt(px(1.)).flex_shrink_0().child(
+                        Icon::new(if *error {
+                            IconName::TriangleAlert
+                        } else {
+                            IconName::Info
+                        })
+                        .xsmall(),
+                    ),
+                )
+                .child(div().flex_1().min_w(px(0.)).child(text.clone()))
                 .into_any_element(),
         }
     }
 
+    /// A tool call as a card: a row with what it does and how it went, and, opened by a
+    /// click, its command or file, and what it returned.
     fn render_tool(&self, index: usize, tool: &ToolEntry, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
-        let color: Hsla = match tool.status.as_str() {
-            "completed" => theme.success,
-            "failed" => theme.danger,
-            "in_progress" => theme.warning,
-            _ => theme.muted_foreground,
-        };
         let mono = crate::ui::app::mono_family(cx);
-        let output = tool
-            .open
-            .then(|| tool.output.clone())
-            .flatten()
-            .map(|output| {
-                let lines: Vec<&str> = output.lines().collect();
-                let mut shown = lines[..lines.len().min(OUTPUT_LINES)].join("\n");
-                if lines.len() > OUTPUT_LINES {
-                    shown.push_str(&format!("\n… ({})", lines.len() - OUTPUT_LINES));
-                }
+        let kind = ToolKind::of(&tool.title);
+        let parsed = match kind {
+            ToolKind::Run => tool.output.as_deref().and_then(CommandOutput::parse),
+            _ => None,
+        };
+        let status: AnyElement = match tool.status.as_str() {
+            "pending" | "in_progress" => Spinner::new()
+                .xsmall()
+                .color(theme.muted_foreground)
+                .into_any_element(),
+            "completed" => Icon::new(IconName::CircleCheck)
+                .xsmall()
+                .text_color(theme.success)
+                .into_any_element(),
+            "failed" => Icon::new(IconName::CircleX)
+                .xsmall()
+                .text_color(theme.danger)
+                .into_any_element(),
+            _ => Icon::new(IconName::Ban)
+                .xsmall()
+                .text_color(theme.muted_foreground)
+                .into_any_element(),
+        };
+        let badge = parsed
+            .as_ref()
+            .and_then(|output| output.badge.clone())
+            .map(|(text, ok)| {
+                let color = match ok {
+                    Some(true) => theme.success,
+                    Some(false) => theme.danger,
+                    None => theme.muted_foreground,
+                };
                 div()
-                    .id(("chat-tool-output", index))
-                    .max_h(px(240.))
-                    .overflow_y_scrollbar()
-                    .p_2()
+                    .flex_shrink_0()
+                    .px_1()
                     .rounded_sm()
-                    .bg(theme.muted)
+                    .bg(color.opacity(0.12))
+                    .text_color(color)
                     .font_family(mono.clone())
                     .text_xs()
-                    .children(
-                        shown
-                            .lines()
-                            .map(|line| div().child(SharedString::from(line.to_owned())))
-                            .collect::<Vec<_>>(),
-                    )
+                    .child(text)
             });
-        v_flex()
-            .gap_1()
+        let summary = tool.input.as_ref().and_then(input_detail);
+        let hover = theme.secondary_hover;
+        let header = h_flex()
+            .id(("chat-tool", index))
+            .px_2()
+            .py(px(6.))
+            .gap_2()
+            .items_center()
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
             .child(
-                h_flex()
-                    .id(("chat-tool", index))
-                    .gap_2()
-                    .items_center()
-                    .cursor_pointer()
-                    .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(color))
-                    .child(
-                        Label::new(SharedString::from(tool.title.clone()))
-                            .text_xs()
-                            .font_medium()
-                            .flex_shrink_0(),
-                    )
-                    .children(tool.detail.clone().map(|detail| {
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .truncate()
-                            .font_family(mono.clone())
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(detail)
-                    }))
-                    .on_click(cx.listener(move |this, _, _window, cx| this.toggle(index, cx))),
+                kind.icon()
+                    .xsmall()
+                    .flex_shrink_0()
+                    .text_color(theme.muted_foreground),
             )
-            .children(output)
+            .child(
+                Label::new(kind.label(&tool.title))
+                    .text_xs()
+                    .font_medium()
+                    .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .font_family(mono)
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .children(summary),
+            )
+            .children(badge)
+            .child(div().flex_shrink_0().child(status))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(theme.muted_foreground)
+                    .child(chevron(tool.open)),
+            )
+            .on_click(cx.listener(move |this, _, _window, cx| this.toggle(index, cx)));
+        let body = tool
+            .open
+            .then(|| self.tool_body(index, kind, tool, parsed, cx));
+        v_flex()
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .overflow_hidden()
+            .child(header)
+            .children(body)
             .into_any_element()
+    }
+
+    fn tool_body(
+        &self,
+        index: usize,
+        kind: ToolKind,
+        tool: &ToolEntry,
+        parsed: Option<CommandOutput>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme().clone();
+        let argument = |key: &str| {
+            tool.input
+                .as_ref()
+                .and_then(|input| input.get(key))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let path = argument("path").unwrap_or_default();
+        let file_name = path.rsplit('/').next().unwrap_or_default();
+        let language = crate::ui::editor::language_of(file_name);
+        let note = |text: SharedString, cx: &Context<Self>| {
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text)
+                .into_any_element()
+        };
+
+        let mut sections: Vec<AnyElement> = Vec::new();
+        match kind {
+            ToolKind::Run => {
+                if let Some(command) = argument("command") {
+                    sections.push(code_section(
+                        ("chat-tool-command", index),
+                        t!("chat.command"),
+                        "bash",
+                        &command,
+                        cx,
+                    ));
+                }
+                if let Some(cwd) = argument("cwd") {
+                    sections.push(note(t!("ai.in_folder", path = cwd).into(), cx));
+                }
+            }
+            ToolKind::Write => {
+                if let Some(content) = argument("content") {
+                    sections.push(code_section(
+                        ("chat-tool-content", index),
+                        t!("chat.content"),
+                        &language,
+                        &content,
+                        cx,
+                    ));
+                }
+            }
+            ToolKind::Edit => {
+                if let (Some(old), Some(new)) = (argument("old_text"), argument("new_text")) {
+                    sections.push(diff_section(
+                        ("chat-tool-diff", index),
+                        t!("chat.changes"),
+                        &old,
+                        &new,
+                        cx,
+                    ));
+                }
+            }
+            ToolKind::Other => {
+                if let Some(input) = tool
+                    .input
+                    .as_ref()
+                    .and_then(|input| serde_json::to_string_pretty(input).ok())
+                {
+                    sections.push(code_section(
+                        ("chat-tool-input", index),
+                        t!("chat.arguments"),
+                        "json",
+                        &input,
+                        cx,
+                    ));
+                }
+            }
+            ToolKind::Read | ToolKind::List | ToolKind::Screen => {}
+        }
+
+        match (parsed, tool.output.as_deref()) {
+            (Some(parsed), _) => {
+                if let Some(stdout) = &parsed.stdout {
+                    sections.push(code_section(
+                        ("chat-tool-stdout", index),
+                        t!("chat.output"),
+                        "",
+                        stdout,
+                        cx,
+                    ));
+                }
+                if let Some(stderr) = &parsed.stderr {
+                    sections.push(code_section(
+                        ("chat-tool-stderr", index),
+                        "stderr",
+                        "",
+                        stderr,
+                        cx,
+                    ));
+                }
+                if parsed.stdout.is_none() && parsed.stderr.is_none() {
+                    sections.push(note(t!("chat.no_output").into(), cx));
+                }
+            }
+            // A write or an edit answers with one line: no block for it.
+            (None, Some(output)) if matches!(kind, ToolKind::Write | ToolKind::Edit) => {
+                let color = if tool.status == "failed" {
+                    theme.danger
+                } else {
+                    theme.muted_foreground
+                };
+                sections.push(
+                    div()
+                        .text_xs()
+                        .text_color(color)
+                        .child(SharedString::from(output.to_owned()))
+                        .into_any_element(),
+                );
+            }
+            (None, Some(output)) => {
+                let (title, language) = match kind {
+                    ToolKind::Read => (t!("chat.content"), language.as_str()),
+                    ToolKind::List => (t!("chat.content"), ""),
+                    ToolKind::Screen => (t!("chat.screen"), ""),
+                    _ => (t!("chat.result"), ""),
+                };
+                sections.push(code_section(
+                    ("chat-tool-output", index),
+                    title,
+                    language,
+                    output,
+                    cx,
+                ));
+            }
+            (None, None) => {}
+        }
+
+        v_flex()
+            .p_2()
+            .gap_2()
+            .border_t_1()
+            .border_color(theme.border)
+            .children(sections)
+            .into_any_element()
+    }
+}
+
+/// What a tool call does, for its icon and its name in the chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolKind {
+    Run,
+    Read,
+    List,
+    Write,
+    Edit,
+    Screen,
+    /// A tool of the agent's own, or one Cratty does not know.
+    Other,
+}
+
+impl ToolKind {
+    fn of(title: &str) -> Self {
+        match title {
+            "run_command" => Self::Run,
+            "read_file" => Self::Read,
+            "list_directory" => Self::List,
+            "write_file" => Self::Write,
+            "edit_file" => Self::Edit,
+            "read_terminal" => Self::Screen,
+            _ => Self::Other,
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Run => Icon::new(IconName::SquareTerminal),
+            Self::Read => Icon::new(IconName::FileText),
+            Self::List => Icon::new(IconName::Folder),
+            Self::Write => Icon::new(IconName::File),
+            Self::Edit => Icon::empty().path("icons/pencil.svg"),
+            Self::Screen => Icon::empty().path("icons/monitor.svg"),
+            Self::Other => Icon::new(IconName::Bot),
+        }
+    }
+
+    fn label(self, title: &str) -> SharedString {
+        match self {
+            Self::Run => t!("chat.tool_run").into(),
+            Self::Read => t!("chat.tool_read").into(),
+            Self::List => t!("chat.tool_list").into(),
+            Self::Write => t!("chat.tool_write").into(),
+            Self::Edit => t!("chat.tool_edit").into(),
+            Self::Screen => t!("chat.tool_screen").into(),
+            Self::Other => SharedString::from(title.to_owned()),
+        }
+    }
+}
+
+/// What `run_command` answers (see `crate::mcp::tools`), split for the chat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommandOutput {
+    /// How the command ended, and whether that is a success; `None` when unknown.
+    badge: Option<(String, Option<bool>)>,
+    stdout: Option<String>,
+    stderr: Option<String>,
+}
+
+impl CommandOutput {
+    /// `None` for any other text, such as the error of a denied command.
+    fn parse(text: &str) -> Option<Self> {
+        let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+        let badge = if let Some(code) = first.strip_prefix("exit code: ") {
+            Some((format!("exit {}", code.trim()), Some(code.trim() == "0")))
+        } else if first.starts_with("timed out") {
+            Some(("timeout".to_owned(), Some(false)))
+        } else if let Some(signal) = first.strip_prefix("killed by signal ") {
+            let name = signal.split(':').next().unwrap_or(signal).trim();
+            Some((format!("signal {name}"), Some(false)))
+        } else if first.starts_with("the server did not report") {
+            None
+        } else {
+            return None;
+        };
+        let (stdout, stderr) = match rest.strip_prefix("--- stdout ---\n") {
+            Some(after) => match after.split_once("\n--- stderr ---\n") {
+                Some((out, err)) => (Some(out), Some(err)),
+                None => (Some(after), None),
+            },
+            None => (None, rest.strip_prefix("--- stderr ---\n")),
+        };
+        Some(Self {
+            badge,
+            stdout: stdout.map(str::to_owned),
+            stderr: stderr.map(str::to_owned),
+        })
     }
 }
 
@@ -913,6 +1317,248 @@ fn input_detail(input: &serde_json::Value) -> Option<String> {
     }
     let detail = acp::protocol::input_summary(input);
     Some(detail.lines().next().unwrap_or_default().to_owned())
+}
+
+fn has_arguments(input: &serde_json::Value) -> bool {
+    !input.is_null() && !input.as_object().is_some_and(|object| object.is_empty())
+}
+
+fn chevron(open: bool) -> Icon {
+    Icon::new(if open {
+        IconName::ChevronDown
+    } else {
+        IconName::ChevronRight
+    })
+    .xsmall()
+}
+
+fn copy_button(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Clipboard {
+    Clipboard::new(id).value(text).tooltip(t!("chat.copy"))
+}
+
+/// An answer of the agent: Markdown, with code highlighted and a copy button on each
+/// code block, next to its language.
+fn markdown_view(id: impl Into<ElementId>, text: &str) -> TextView {
+    TextView::markdown(id, SharedString::from(text.to_owned()))
+        .selectable(true)
+        .text_sm()
+        .style(
+            TextViewStyle::default().code_block(
+                // The top keeps the first line clear of the language and the button.
+                StyleRefinement::default()
+                    .pt(px(30.))
+                    .pb(px(10.))
+                    .px(px(12.))
+                    .text_size(px(12.)),
+            ),
+        )
+        .code_block_actions(|block, _window, cx| {
+            let muted = cx.theme().muted_foreground;
+            h_flex()
+                .gap_1()
+                .items_center()
+                .children(
+                    block
+                        .lang()
+                        .filter(|lang| !lang.is_empty())
+                        .map(|lang| div().px_1().text_xs().text_color(muted).child(lang)),
+                )
+                .child(copy_button("copy", block.code()))
+        })
+}
+
+/// Text in a highlighted block, under a title with a copy button. A long text shows its
+/// beginning; the button still copies all of it.
+fn code_section(
+    id: (&'static str, usize),
+    title: impl Into<SharedString>,
+    language: &str,
+    text: &str,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let (name, number) = id;
+    let (shown, hidden) = clip(text);
+    let code = TextView::markdown(
+        SharedString::from(format!("{name}-{number}")),
+        SharedString::from(fenced(language, &shown)),
+    )
+    .selectable(true)
+    .style(
+        TextViewStyle::default().code_block(
+            StyleRefinement::default()
+                .px(px(10.))
+                .py(px(8.))
+                .text_size(px(12.)),
+        ),
+    )
+    // Something in the corner takes the language label's place: the title copies.
+    .code_block_actions(|_, _, _| div());
+    v_flex()
+        .gap_1()
+        .child(
+            h_flex()
+                .h(px(20.))
+                .items_center()
+                .justify_between()
+                .child(
+                    Label::new(title.into())
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                )
+                .child(copy_button(
+                    SharedString::from(format!("{name}-{number}-copy")),
+                    text.to_owned(),
+                )),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("{name}-{number}-scroll")))
+                .max_h(px(320.))
+                .overflow_y_scroll()
+                .child(code),
+        )
+        .when(hidden > 0, |this| {
+            this.child(
+                Label::new(SharedString::from(
+                    t!("ai.more_lines", count = hidden).to_string(),
+                ))
+                .text_xs()
+                .text_color(theme.muted_foreground),
+            )
+        })
+        .into_any_element()
+}
+
+/// An edit: the old lines on red, the new ones on green, under a title with a button
+/// that copies it as a diff.
+fn diff_section(
+    id: (&'static str, usize),
+    title: impl Into<SharedString>,
+    old: &str,
+    new: &str,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let mono = crate::ui::app::mono_family(cx);
+    let (name, number) = id;
+    let (old_shown, old_hidden) = clip(old);
+    let (new_shown, new_hidden) = clip(new);
+    let line = |sign: &'static str, text: &str, color: Hsla| {
+        h_flex()
+            .items_start()
+            .px_2()
+            .bg(color.opacity(0.12))
+            .child(
+                div()
+                    .w(px(14.))
+                    .flex_shrink_0()
+                    .text_color(color)
+                    .child(sign),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(SharedString::from(text.to_owned())),
+            )
+    };
+    let lines: Vec<_> = old_shown
+        .lines()
+        .map(|text| line("-", text, theme.danger))
+        .chain(new_shown.lines().map(|text| line("+", text, theme.success)))
+        .collect();
+    v_flex()
+        .gap_1()
+        .child(
+            h_flex()
+                .h(px(20.))
+                .items_center()
+                .justify_between()
+                .child(
+                    Label::new(title.into())
+                        .text_xs()
+                        .text_color(theme.muted_foreground),
+                )
+                .child(copy_button(
+                    SharedString::from(format!("{name}-{number}-copy")),
+                    diff_text(old, new),
+                )),
+        )
+        .child(
+            v_flex()
+                .id(SharedString::from(format!("{name}-{number}-scroll")))
+                .max_h(px(320.))
+                .overflow_y_scroll()
+                .py_1()
+                .rounded_md()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.muted)
+                .font_family(mono)
+                .text_size(px(12.))
+                .line_height(relative(1.5))
+                .children(lines),
+        )
+        .when(old_hidden + new_hidden > 0, |this| {
+            this.child(
+                Label::new(SharedString::from(
+                    t!("ai.more_lines", count = old_hidden + new_hidden).to_string(),
+                ))
+                .text_xs()
+                .text_color(theme.muted_foreground),
+            )
+        })
+        .into_any_element()
+}
+
+/// A fenced block that holds any text: its fence is longer than any run of backticks in it.
+fn fenced(language: &str, text: &str) -> String {
+    let longest = text
+        .split(|c: char| c != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!(
+        "{fence}{language}\n{}\n{fence}",
+        text.trim_end_matches('\n')
+    )
+}
+
+/// The beginning of a long text and how many lines were left out.
+fn clip(text: &str) -> (String, usize) {
+    const LINES: usize = 400;
+    const CHARS: usize = 40_000;
+    let total = text.lines().count();
+    let mut shown = String::new();
+    let mut lines = 0;
+    for line in text.lines() {
+        if lines == LINES || shown.len() + line.len() > CHARS {
+            break;
+        }
+        shown.push_str(line);
+        shown.push('\n');
+        lines += 1;
+    }
+    if lines == 0 && !text.is_empty() {
+        // One huge line: its beginning.
+        let mut cut = CHARS.min(text.len());
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return (format!("{}…", &text[..cut]), total.saturating_sub(1));
+    }
+    (shown.trim_end_matches('\n').to_owned(), total - lines)
+}
+
+/// An edit as a diff: the old lines taken out, the new ones put in.
+fn diff_text(old: &str, new: &str) -> String {
+    old.lines()
+        .map(|line| format!("-{line}"))
+        .chain(new.lines().map(|line| format!("+{line}")))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl ChatView {
@@ -1589,6 +2235,17 @@ impl Render for ChatView {
             ),
             _ => None,
         };
+        // Something is happening even when the agent shows nothing yet.
+        let thinking = matches!(self.entries.last(), Some(Entry::Thought { .. }));
+        let busy = (working && !thinking).then(|| {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(Spinner::new().xsmall().color(theme.muted_foreground))
+                .child(SharedString::from(t!("chat.working").to_string()))
+        });
         let placeholder = match self.state {
             State::Starting | State::Loading if empty => Some(status),
             State::Ready if empty => Some(t!("chat.intro").into()),
@@ -1612,6 +2269,7 @@ impl Render for ChatView {
                             .text_color(theme.muted_foreground)
                     }))
                     .children(entries)
+                    .children(busy)
                     .children(login)
                     .children(failure),
             );
@@ -1620,39 +2278,57 @@ impl Render for ChatView {
             Button::new("chat-stop")
                 .outline()
                 .small()
-                .label(t!("chat.stop"))
+                .icon(Icon::new(IconName::Square))
+                .tooltip(t!("chat.stop"))
                 .on_click(cx.listener(|this, _, _window, cx| this.stop(cx)))
         } else {
             Button::new("chat-send")
                 .primary()
                 .small()
-                .label(t!("chat.send"))
+                .icon(Icon::new(IconName::ArrowUp))
+                .tooltip(t!("chat.send"))
                 .disabled(self.state != State::Ready)
                 .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
         };
+        let trust = Switch::new("chat-no-ask")
+            .small()
+            .checked(self.trusted)
+            .when(self.trusted, |this| this.color(theme.warning))
+            .label(SharedString::from(t!("chat.no_ask").to_string()))
+            .tooltip(t!("chat.no_ask_hint"))
+            .on_change(cx.listener(|this, checked: &bool, _window, cx| {
+                this.trusted = *checked;
+                cx.emit(ChatEvent::Trust(*checked));
+                cx.notify();
+            }));
 
-        let composer = v_flex()
-            .flex_shrink_0()
-            .p_3()
-            .gap_2()
-            .border_t_1()
-            .border_color(theme.border)
-            .child(Textarea::new(&input).h(px(72.)).disabled(closed))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    // The hint wraps in a narrow panel; the button keeps its size.
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(SharedString::from(t!("chat.hint").to_string())),
-                    )
-                    .child(div().flex_shrink_0().child(action)),
-            );
+        let composer = div().flex_shrink_0().p_3().child(
+            v_flex()
+                .rounded_lg()
+                .border_1()
+                .border_color(if self.trusted {
+                    theme.warning
+                } else {
+                    theme.border
+                })
+                .child(
+                    div().px_1().pt_1().child(
+                        Textarea::new(&input)
+                            .appearance(false)
+                            .h(px(64.))
+                            .disabled(closed),
+                    ),
+                )
+                .child(
+                    h_flex()
+                        .px_2()
+                        .pb_2()
+                        .gap_2()
+                        .items_center()
+                        .child(div().flex_1().min_w(px(0.)).child(trust))
+                        .child(div().flex_shrink_0().child(action)),
+                ),
+        );
 
         let top = self.top_row(cx);
         let settings = self.settings_row(cx);
@@ -1710,6 +2386,71 @@ mod tests {
         assert_eq!(found("balanced"), [1]);
         assert_eq!(found("anthropic"), [1]);
         assert!(found("gpt").is_empty());
+    }
+
+    #[test]
+    fn command_output_splits_into_its_streams() {
+        let both =
+            CommandOutput::parse("exit code: 2\n--- stdout ---\nhi\nthere\n--- stderr ---\noops")
+                .unwrap();
+        assert_eq!(both.badge, Some(("exit 2".into(), Some(false))));
+        assert_eq!(both.stdout.as_deref(), Some("hi\nthere"));
+        assert_eq!(both.stderr.as_deref(), Some("oops"));
+
+        let quiet = CommandOutput::parse("exit code: 0\n(no output)").unwrap();
+        assert_eq!(quiet.badge, Some(("exit 0".into(), Some(true))));
+        assert_eq!((quiet.stdout, quiet.stderr), (None, None));
+
+        let errors = CommandOutput::parse("exit code: 1\n--- stderr ---\nno such file").unwrap();
+        assert_eq!(
+            (errors.stdout, errors.stderr.as_deref()),
+            (None, Some("no such file"))
+        );
+
+        let late =
+            CommandOutput::parse("timed out after 5 s and was stopped; pass a larger timeout")
+                .unwrap();
+        assert_eq!(late.badge, Some(("timeout".into(), Some(false))));
+        let killed = CommandOutput::parse("killed by signal KILL: out of memory").unwrap();
+        assert_eq!(killed.badge, Some(("signal KILL".into(), Some(false))));
+
+        assert_eq!(CommandOutput::parse("the user denied this in Cratty"), None);
+    }
+
+    #[test]
+    fn fence_outgrows_backticks_inside() {
+        assert_eq!(fenced("bash", "ls\n"), "```bash\nls\n```");
+        assert_eq!(fenced("", "a ```` b"), "`````\na ```` b\n`````");
+    }
+
+    #[test]
+    fn long_text_keeps_its_beginning() {
+        assert_eq!(clip("a\nb"), ("a\nb".into(), 0));
+        let many: String = (0..1000).map(|n| format!("{n}\n")).collect();
+        let (shown, hidden) = clip(&many);
+        assert_eq!(shown.lines().count(), 400);
+        assert_eq!(hidden, 600);
+        let (shown, hidden) = clip(&"я".repeat(50_000));
+        assert!(shown.ends_with('…') && shown.len() <= 40_003);
+        assert_eq!(hidden, 0);
+    }
+
+    #[test]
+    fn edit_reads_as_a_diff() {
+        assert_eq!(
+            diff_text("port = 80\nhost = a", "port = 8080"),
+            "-port = 80\n-host = a\n+port = 8080"
+        );
+    }
+
+    #[test]
+    fn tools_are_known_by_name() {
+        assert_eq!(ToolKind::of("run_command"), ToolKind::Run);
+        assert_eq!(ToolKind::of("edit_file"), ToolKind::Edit);
+        assert_eq!(ToolKind::of("TodoWrite"), ToolKind::Other);
+        assert!(!has_arguments(&serde_json::json!({})));
+        assert!(!has_arguments(&serde_json::Value::Null));
+        assert!(has_arguments(&serde_json::json!({"path": "/etc"})));
     }
 
     #[test]

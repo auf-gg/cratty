@@ -324,7 +324,10 @@ async fn saved_session_comes_back_with_its_conversation() {
 
     assert_eq!(
         client.next().await,
-        FromAgent::Update(Update::UserText("disk?".into()))
+        FromAgent::Update(Update::UserText {
+            text: "disk?".into(),
+            message: None
+        })
     );
     assert_eq!(
         client.next().await,

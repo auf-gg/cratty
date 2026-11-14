@@ -46,7 +46,7 @@ fn is_crlf(text: &str) -> bool {
 
 /// Highlighting language: the file extension, and for files without one and for dotfiles —
 /// the whole name (`Makefile`, `sshd_config`, `.bashrc`): the highlighter knows those too.
-fn language_of(name: &str) -> String {
+pub(crate) fn language_of(name: &str) -> String {
     let language = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => ext,
         _ => name,

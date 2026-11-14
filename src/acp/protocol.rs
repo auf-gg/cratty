@@ -14,7 +14,11 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub enum Update {
     AgentText(String),
     Thought(String),
-    UserText(String),
+    /// A piece of a replayed user message; pieces of one message share its id.
+    UserText {
+        text: String,
+        message: Option<String>,
+    },
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),
     Plan(Vec<PlanEntry>),
@@ -281,7 +285,10 @@ pub fn update(params: &Value) -> Option<Update> {
     Some(match update.get("sessionUpdate")?.as_str()? {
         "agent_message_chunk" => Update::AgentText(text()?),
         "agent_thought_chunk" => Update::Thought(text()?),
-        "user_message_chunk" => Update::UserText(text()?),
+        "user_message_chunk" => Update::UserText {
+            text: text()?,
+            message: string(update, "messageId"),
+        },
         "tool_call" => Update::ToolCall(ToolCall {
             id: string(update, "toolCallId")?,
             title: string(update, "title").unwrap_or_default(),
@@ -468,6 +475,20 @@ mod tests {
             {"id": "model", "name": "Model", "currentValue": "b", "options": [{"value": "b", "name": "B"}]}]}),
         );
         assert!(matches!(update, Some(Update::Config(list)) if list[0].current == "b"));
+    }
+
+    #[test]
+    fn user_message_pieces_carry_their_message() {
+        assert_eq!(
+            update_of(
+                json!({"sessionUpdate": "user_message_chunk", "messageId": "m1",
+                "content": {"type": "text", "text": "disk?"}})
+            ),
+            Some(Update::UserText {
+                text: "disk?".into(),
+                message: Some("m1".into()),
+            })
+        );
     }
 
     #[test]

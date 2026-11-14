@@ -7,7 +7,7 @@ use gpui_kit::component::{
     label::Label,
 };
 use gpui_kit::{
-    App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla,
+    App, Bounds, ClipboardItem, Context, DispatchPhase, Entity, FocusHandle, Focusable, FontWeight, Hsla,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     Point, Render, ScrollDelta, ScrollEvent, SharedString, Subscription, Window, canvas, div,
     prelude::*, px, relative,
@@ -27,6 +27,8 @@ use crate::ui::font::MonoFont;
 pub const FONT_SIZE: Pixels = px(14.);
 pub const LINE_HEIGHT: f32 = 1.2;
 const PADDING: Pixels = px(4.);
+/// Space under the last row, so the prompt does not sit on the window edge.
+const PADDING_BOTTOM: Pixels = px(10.);
 
 pub enum Status {
     Connecting {
@@ -82,9 +84,16 @@ pub struct TerminalView {
     focus: FocusHandle,
     metrics: CellMetrics,
     pending_focus: bool,
-    grid_origin: Point<Pixels>,
+    /// Where the grid is drawn, in window coordinates.
+    grid_bounds: Bounds<Pixels>,
+    /// Selected cells; rows are counted from the top of the scrollback so the
+    /// selection stays on its text when the view or the output scrolls.
     selection: Option<Selection>,
     selecting: bool,
+    /// Last pointer position while selecting: the selection follows it on scroll.
+    drag_position: Point<Pixels>,
+    /// A timer scrolls the view while the pointer is held above or below the grid.
+    autoscrolling: bool,
     copied: bool,
     mouse_button: Option<mouse::Button>,
     mouse_cell: Option<SelectionCell>,
@@ -198,9 +207,11 @@ impl TerminalView {
             focus: cx.focus_handle(),
             metrics,
             pending_focus: true,
-            grid_origin: gpui_kit::point(px(0.), px(0.)),
+            grid_bounds: Bounds::default(),
             selection: None,
             selecting: false,
+            drag_position: gpui_kit::point(px(0.), px(0.)),
+            autoscrolling: false,
             copied: false,
             mouse_button: None,
             mouse_cell: None,
@@ -426,7 +437,10 @@ impl TerminalView {
         let Some(selection) = self.selection else {
             return false;
         };
-        let text = selection.text(&self.terminal.snapshot());
+        let (start, end) = selection.ordered();
+        let text = self
+            .terminal
+            .text_range((start.row, start.column), (end.row, end.column));
         if text.is_empty() {
             return false;
         }
@@ -551,13 +565,14 @@ impl TerminalView {
         let result = self.terminal.find(&query, older);
         let status = match result {
             Ok(Some(found)) => {
+                let top = self.top_row();
                 self.selection = Some(Selection {
                     anchor: SelectionCell {
-                        row: found.start.0,
+                        row: top + found.start.0,
                         column: found.start.1,
                     },
                     head: SelectionCell {
-                        row: found.end.0,
+                        row: top + found.end.0,
                         column: found.end.1,
                     },
                 });
@@ -725,6 +740,17 @@ impl TerminalView {
             }
         }
 
+        // Shift+Insert pastes and Ctrl+Insert copies, as in the Windows console and xterm.
+        if event.keystroke.key.as_str() == "insert" && !modifiers.alt && !modifiers.platform {
+            if modifiers.shift && !modifiers.control {
+                self.paste(cx);
+                return;
+            }
+            if modifiers.control && !modifiers.shift && self.copy(cx) {
+                return;
+            }
+        }
+
         let Some((key, mods)) = translate(event) else {
             return;
         };
@@ -737,7 +763,7 @@ impl TerminalView {
             cx.notify();
         }
 
-        if self.terminal.snapshot().display_offset != 0 {
+        if self.terminal.display_offset() != 0 {
             self.terminal.scroll_to_bottom();
             cx.notify();
         }
@@ -761,13 +787,155 @@ impl TerminalView {
         self.predictor.srtt()
     }
 
+    /// Screen cell under the pointer, clamped to the grid.
     fn cell_at(&self, position: Point<Pixels>) -> SelectionCell {
-        TerminalElement::cell_at(
-            self.metrics,
-            self.grid_origin,
-            position,
-            &self.terminal.snapshot(),
-        )
+        let origin = self.grid_bounds.origin;
+        let x = (position.x - origin.x).max(px(0.));
+        let y = (position.y - origin.y).max(px(0.));
+        let column = (x / self.metrics.width).floor() as usize;
+        let row = (y / self.metrics.height).floor() as usize;
+        SelectionCell {
+            row: row.min(self.terminal.screen_lines().saturating_sub(1)),
+            column: column.min(self.terminal.columns().saturating_sub(1)),
+        }
+    }
+
+    /// Row of the scrollback shown at the top of the screen.
+    fn top_row(&self) -> usize {
+        self.terminal
+            .history_size()
+            .saturating_sub(self.terminal.display_offset())
+    }
+
+    /// Cell under the pointer, with the row counted from the top of the scrollback.
+    fn selection_cell_at(&self, position: Point<Pixels>) -> SelectionCell {
+        let cell = self.cell_at(position);
+        SelectionCell {
+            row: self.top_row() + cell.row,
+            column: cell.column,
+        }
+    }
+
+    /// The part of the selection that is on screen, in screen rows.
+    fn visible_selection(&self) -> Option<Selection> {
+        let selection = self.selection?;
+        let (start, end) = selection.ordered();
+        let top = self.top_row();
+        let rows = self.terminal.screen_lines();
+        let columns = self.terminal.columns();
+        if rows == 0 || end.row < top || start.row >= top + rows {
+            return None;
+        }
+        let anchor = if start.row < top {
+            SelectionCell { row: 0, column: 0 }
+        } else {
+            SelectionCell {
+                row: start.row - top,
+                column: start.column,
+            }
+        };
+        let head = if end.row >= top + rows {
+            SelectionCell {
+                row: rows - 1,
+                column: columns.saturating_sub(1),
+            }
+        } else {
+            SelectionCell {
+                row: end.row - top,
+                column: end.column,
+            }
+        };
+        Some(Selection { anchor, head })
+    }
+
+    /// Rows to scroll while the pointer is held above (up) or below (down) the grid.
+    fn autoscroll_step(&self) -> i32 {
+        let bounds = self.grid_bounds;
+        let y = self.drag_position.y;
+        let rows_past = |distance: Pixels| {
+            (1. + (distance / self.metrics.height).floor()).clamp(1., 10.) as i32
+        };
+        if y < bounds.origin.y {
+            rows_past(bounds.origin.y - y)
+        } else if y >= bounds.origin.y + bounds.size.height {
+            -rows_past(y - (bounds.origin.y + bounds.size.height))
+        } else {
+            0
+        }
+    }
+
+    /// Moves the end of the selection to the pointer, scrolling the view when the
+    /// pointer is past the top or bottom edge of the grid.
+    fn drag_selection(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if !self.selecting {
+            return;
+        }
+        self.drag_position = position;
+        if self.autoscroll_step() != 0 {
+            self.start_autoscroll(cx);
+        }
+        self.update_selection_head(cx);
+    }
+
+    fn update_selection_head(&mut self, cx: &mut Context<Self>) {
+        let head = self.selection_cell_at(self.drag_position);
+        if let Some(selection) = &mut self.selection
+            && selection.head != head
+        {
+            selection.head = head;
+            cx.notify();
+        }
+    }
+
+    fn start_autoscroll(&mut self, cx: &mut Context<Self>) {
+        if self.autoscrolling {
+            return;
+        }
+        self.autoscrolling = true;
+        cx.spawn(async move |this: gpui_kit::WeakEntity<Self>, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(50))
+                    .await;
+                let going = this.update(cx, |this, cx| {
+                    let step = if this.selecting {
+                        this.autoscroll_step()
+                    } else {
+                        0
+                    };
+                    if step == 0 {
+                        this.autoscrolling = false;
+                        return false;
+                    }
+                    this.terminal.scroll(step);
+                    this.update_selection_head(cx);
+                    cx.notify();
+                    true
+                });
+                if !matches!(going, Ok(true)) {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The button is released: an empty selection is dropped, any other is copied.
+    fn finish_selection(&mut self, cx: &mut Context<Self>) {
+        if !self.selecting {
+            return;
+        }
+        self.selecting = false;
+
+        if self.selection.is_some_and(|selection| selection.is_empty()) {
+            self.selection = None;
+            self.copied = false;
+            cx.notify();
+            return;
+        }
+
+        self.copied = self.copy(cx);
+        cx.notify();
     }
 
     fn report_mouse(
@@ -824,8 +992,9 @@ impl TerminalView {
             cx.notify();
             return;
         }
-        self.selection = Some(Selection::new(self.cell_at(event.position)));
+        self.selection = Some(Selection::new(self.selection_cell_at(event.position)));
         self.selecting = true;
+        self.drag_position = event.position;
         self.copied = false;
         cx.notify();
     }
@@ -834,7 +1003,7 @@ impl TerminalView {
         &mut self,
         event: &MouseDownEvent,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         let Some(button) = protocol_button(event.button) else {
             return;
@@ -846,6 +1015,11 @@ impl TerminalView {
             event.modifiers,
         ) {
             self.mouse_button = Some(button);
+            return;
+        }
+        // A right click the program does not take pastes, as in PuTTY and the Windows console.
+        if event.button == MouseButton::Right {
+            self.paste(cx);
         }
     }
 
@@ -886,20 +1060,12 @@ impl TerminalView {
                     event.modifiers,
                 );
             }
-            if self.mouse_button.is_some() {
-                return;
-            }
-        }
-
-        if !self.selecting || !event.dragging() {
             return;
         }
-        let head = self.cell_at(event.position);
-        if let Some(selection) = &mut self.selection
-            && selection.head != head
-        {
-            selection.head = head;
-            cx.notify();
+
+        // Outside the terminal the window-wide listener in `render` does the same.
+        if event.dragging() {
+            self.drag_selection(event.position, cx);
         }
     }
 
@@ -914,17 +1080,7 @@ impl TerminalView {
             );
             return;
         }
-        self.selecting = false;
-
-        if self.selection.is_some_and(|selection| selection.is_empty()) {
-            self.selection = None;
-            self.copied = false;
-            cx.notify();
-            return;
-        }
-
-        self.copied = self.copy(cx);
-        cx.notify();
+        self.finish_selection(cx);
     }
 
     fn on_scroll(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -964,6 +1120,9 @@ impl TerminalView {
         }
 
         self.terminal.scroll(lines);
+        if self.selecting {
+            self.update_selection_head(cx);
+        }
         cx.notify();
     }
 
@@ -1158,21 +1317,45 @@ impl Render for TerminalView {
             self.selection_color,
             self.selection_foreground,
         )
-        .selection(self.selection)
+        .selection(self.visible_selection())
         .icons(MonoFont::get(cx).icons.clone().map(gpui_kit::font));
 
         let view = cx.entity().downgrade();
+        let selecting = self.selecting;
         let measure = canvas(
-            move |bounds, _window, cx| {
-                view.update(cx, |this, cx| {
-                    this.grid_origin = bounds.origin;
-                    if this.fit(bounds) {
-                        cx.notify();
-                    }
-                })
-                .ok();
+            {
+                let view = view.clone();
+                move |bounds, _window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.grid_bounds = bounds;
+                        if this.fit(bounds) {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }
             },
-            |_bounds, _prepainted, _window, _cx| {},
+            move |_bounds, _prepainted, window, _cx| {
+                if !selecting {
+                    return;
+                }
+                // While a selection is dragged the pointer may leave the terminal:
+                // follow it and finish on release wherever it happens in the window.
+                let moved = view.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+                    if phase == DispatchPhase::Bubble && event.dragging() {
+                        moved
+                            .update(cx, |this, cx| this.drag_selection(event.position, cx))
+                            .ok();
+                    }
+                });
+                let released = view.clone();
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+                    if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                        released.update(cx, |this, cx| this.finish_selection(cx)).ok();
+                    }
+                });
+            },
         )
         .absolute()
         .size_full();
@@ -1203,9 +1386,19 @@ impl Render for TerminalView {
                     .relative()
                     .flex_grow_1()
                     .overflow_hidden()
-                    .p(PADDING)
-                    .child(measure)
-                    .child(grid)
+                    .pt(PADDING)
+                    .px(PADDING)
+                    .pb(PADDING_BOTTOM)
+                    .child(
+                        // The grid is measured inside the padding: measuring the padded
+                        // box gave one row too many, and the last one was cut off.
+                        div()
+                            .relative()
+                            .size_full()
+                            .overflow_hidden()
+                            .child(measure)
+                            .child(grid),
+                    )
                     .children(self.search_panel(cx))
                     .children(self.prompt.is_some().then(|| self.prompt_panel(cx))),
             )

@@ -440,6 +440,71 @@ impl Terminal {
         text.trim_end().to_owned()
     }
 
+    /// Rows of scrollback above the screen. A row counted from the top of the
+    /// scrollback (`history_size + screen line`) stays put while output scrolls the
+    /// screen and while the view scrolls through the history.
+    pub fn history_size(&self) -> usize {
+        self.term.grid().history_size()
+    }
+
+    /// How many rows the view is scrolled up into the history.
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+
+    /// Text between two cells given as (row from the top of the scrollback, column),
+    /// both inclusive. Wrapped rows are joined without a line break; trailing blanks
+    /// of the other rows are dropped.
+    pub fn text_range(&self, start: (usize, usize), end: (usize, usize)) -> String {
+        use alacritty_terminal::index::{Column, Line as GridLine};
+
+        let (start, end) = if start <= end { (start, end) } else { (end, start) };
+        let grid = self.term.grid();
+        let columns = self.term.columns();
+        if columns == 0 {
+            return String::new();
+        }
+        let history = grid.history_size() as i64;
+        let last = (history + self.term.screen_lines() as i64 - 1).max(0) as usize;
+        if start.0 > last {
+            return String::new();
+        }
+        let end = if end.0 > last { (last, columns - 1) } else { end };
+
+        let mut text = String::new();
+        for row in start.0..=end.0 {
+            let cells = &grid[GridLine((row as i64 - history) as i32)];
+            let from = if row == start.0 { start.1.min(columns) } else { 0 };
+            let to = if row == end.0 { (end.1 + 1).min(columns) } else { columns };
+
+            let mut line = String::new();
+            for column in from..to {
+                let cell = &cells[Column(column)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                line.push(if cell.flags.contains(Flags::HIDDEN) { ' ' } else { cell.c });
+                if let Some(extra) = cell.zerowidth() {
+                    line.extend(extra);
+                }
+            }
+
+            let wraps = cells[Column(columns - 1)].flags.contains(Flags::WRAPLINE);
+            if row < end.0 && wraps {
+                text.push_str(&line);
+            } else {
+                text.push_str(line.trim_end());
+                if row < end.0 {
+                    text.push('\n');
+                }
+            }
+        }
+        text
+    }
+
     pub fn cursor_point(&self) -> Option<(usize, usize)> {
         if !self.term.mode().contains(TermMode::SHOW_CURSOR) {
             return None;
@@ -654,6 +719,30 @@ mod tests {
 
         assert_eq!(term.find("line (", true).expect("search"), None);
         assert!(term.find("nothing here", true).expect("search").is_none());
+    }
+
+    #[test]
+    fn text_range_reads_scrollback_and_keeps_rows_stable() {
+        let (mut term, _rx) = terminal(10, 3);
+        for index in 0..6 {
+            term.advance(format!("row {index}\r\n").as_bytes());
+        }
+        // Rows: history "row 0".."row 3", screen "row 4", "row 5", "".
+        let history = term.history_size();
+        assert_eq!(history, 4);
+        assert_eq!(term.text_range((1, 0), (3, 9)), "row 1\nrow 2\nrow 3");
+
+        // More output scrolls the screen, but row 1 still holds "row 1".
+        term.advance(b"row 6\r\nrow 7\r\n");
+        assert_eq!(term.text_range((1, 0), (1, 9)), "row 1");
+
+        // Selection end past the bottom is clamped; reversed ends are ordered.
+        assert!(term.text_range((999, 0), (7, 0)).starts_with("row 7"));
+
+        // A wrapped line comes back as one line.
+        let (mut term, _rx) = terminal(5, 3);
+        term.advance(b"abcdefgh");
+        assert_eq!(term.text_range((0, 0), (1, 4)), "abcdefgh");
     }
 
     #[test]

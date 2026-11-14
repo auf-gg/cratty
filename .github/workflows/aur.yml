@@ -1,8 +1,9 @@
-# Keeps AUR packages in sync with this repository:
-#   cratty-git (dist/PKGBUILD-git) — on pushes to main / v* tags;
-#     the version is computed by pkgver() from the PKGBUILD itself.
-#   cratty-bin (dist/PKGBUILD-bin) — on v* tag pushes (and manual runs with
-#     a tag input); the version comes from the tag, sha256 checksums are
+# Keeps AUR packages in sync with this repository, on releases only: v* tag
+# pushes and manual runs. Ordinary commits to main publish nothing.
+#   cratty-git (dist/PKGBUILD-git) — the version is computed by pkgver() from
+#     the PKGBUILD itself.
+#   cratty-bin (dist/PKGBUILD-bin) — the version comes from the tag (or the
+#     tag input of a manual run), sha256 checksums are
 #     computed from the release files. Releases are created by build.yml
 #     with GITHUB_TOKEN, and such events never trigger other workflows,
 #     so this job polls until the release assets are downloadable.
@@ -16,7 +17,6 @@ name: Update AUR packages
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -33,7 +33,6 @@ concurrency:
 
 jobs:
   git-package:
-    if: github.event_name != 'release'
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel  # makepkg is required to generate .SRCINFO

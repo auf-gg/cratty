@@ -57,6 +57,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "settings",
     "square-terminal",
     "sun",
+    "zap",
 ];
 
 static BRAND: &[(&str, &[u8])] = &[(

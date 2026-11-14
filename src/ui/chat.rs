@@ -9,7 +9,7 @@
 use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt,
     button::{Button, ButtonVariants},
     clipboard::Clipboard,
     h_flex,
@@ -17,7 +17,6 @@ use gpui_kit::component::{
     label::Label,
     scroll::{ScrollableMask, Scrollbar},
     spinner::Spinner,
-    switch::Switch,
     text::{TextView, TextViewStyle},
     v_flex,
 };
@@ -2329,15 +2328,24 @@ impl Render for ChatView {
                 .disabled(self.state != State::Ready)
                 .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
         };
-        let trust = Switch::new("chat-no-ask")
+        // Pressed and lit while commands run without asking; what it does is in its tooltip.
+        let trust = Button::new("chat-no-ask")
+            .ghost()
             .small()
-            .checked(self.trusted)
-            .when(self.trusted, |this| this.color(theme.warning))
-            .label(SharedString::from(t!("chat.no_ask").to_string()))
+            .selected(self.trusted)
+            .icon(
+                Icon::empty()
+                    .path("icons/zap.svg")
+                    .text_color(if self.trusted {
+                        theme.warning
+                    } else {
+                        theme.muted_foreground
+                    }),
+            )
             .tooltip(t!("chat.no_ask_hint"))
-            .on_change(cx.listener(|this, checked: &bool, _window, cx| {
-                this.trusted = *checked;
-                cx.emit(ChatEvent::Trust(*checked));
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.trusted = !this.trusted;
+                cx.emit(ChatEvent::Trust(this.trusted));
                 cx.notify();
             }));
 

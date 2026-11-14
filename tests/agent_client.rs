@@ -14,6 +14,25 @@ use russh::keys::ssh_key::Algorithm;
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
+/// The socket folders a test made, removed when its thread ends: libtest runs each test
+/// on a thread of its own, and by then the agent has stopped.
+#[cfg(unix)]
+struct SocketFolders(std::cell::RefCell<Vec<std::path::PathBuf>>);
+
+#[cfg(unix)]
+impl Drop for SocketFolders {
+    fn drop(&mut self) {
+        for dir in self.0.get_mut().drain(..) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+#[cfg(unix)]
+thread_local! {
+    static SOCKET_FOLDERS: SocketFolders = SocketFolders(Default::default());
+}
+
 fn address(name: &str) -> srv::Address {
     let unique = format!("{}-{name}", std::process::id());
     #[cfg(windows)]
@@ -22,9 +41,10 @@ fn address(name: &str) -> srv::Address {
     }
     #[cfg(unix)]
     {
-        srv::Address::Socket(
-            std::env::temp_dir().join(format!("cratty-agent-client-{unique}.sock")),
-        )
+        // Own directory: bind restricts the socket's parent to 0700, which fails on a shared /tmp.
+        let dir = std::env::temp_dir().join(format!("cratty-agent-client-{unique}"));
+        SOCKET_FOLDERS.with(|folders| folders.0.borrow_mut().push(dir.clone()));
+        srv::Address::Socket(dir.join("agent.sock"))
     }
 }
 
